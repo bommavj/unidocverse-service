@@ -56,3 +56,4 @@ whatsapp_service/.wwebjs_cache/
 
 # License files with personal email in name
 app/scripts/license_*.json
+app/scripts/
