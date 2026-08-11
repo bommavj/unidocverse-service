@@ -1,0 +1,200 @@
+# UniDocVerse — Dockerfile.pyinstaller
+# Multi-platform PyInstaller build (linux/amd64 + linux/arm64).
+#
+# Key decisions based on requirements.txt analysis:
+#
+#   paddlepaddle     — NO arm64 Linux wheel exists on PyPI at all.
+#                      Skipped entirely on arm64 (TARGETARCH=arm64).
+#                      PaddleOCR is also skipped on arm64 for the same reason.
+#                      EasyOCR (pure PyTorch) is the arm64 OCR engine.
+#
+#   torch==2.8.0     — Very new. Falls back to latest stable if 2.8.0
+#                      wheel is unavailable for the target platform.
+#
+#   camelot-py[cv]   — Needs ghostscript + libGL system libraries.
+#
+#   psycopg2-binary  — Needs libpq system library.
+#
+#   lxml, Pillow     — Need libxml2, libjpeg, libpng system libraries.
+#
+#   easyocr          — Needs libgomp1 (OpenMP) for PyTorch CPU ops.
+#
+#   docling==2.69.1  — Heavy; may pull conflicting deps, installed last.
+
+# ── Stage 1: System deps + Python base ───────────────────────────────────────
+FROM python:3.10-slim AS builder
+
+ARG TARGETARCH
+# Passed by buildx automatically: "amd64" or "arm64"
+
+WORKDIR /build
+
+# ── All system libraries needed by the full requirements.txt ─────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Build tools
+    build-essential \
+    cmake \
+    git \
+    binutils \
+    patchelf \
+    pkg-config \
+    # PostgreSQL client (psycopg2-binary)
+    libpq-dev \
+    # SSL / FFI
+    libffi-dev \
+    libssl-dev \
+    # OpenCV / camelot-py / EasyOCR
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxrender1 \
+    libxext6 \
+    # Ghostscript (camelot-py[cv] PDF table extraction)
+    ghostscript \
+    # PDF rendering (pdf2image, pdfplumber)
+    poppler-utils \
+    # Image libraries (Pillow, pillow-heif)
+    libjpeg-dev \
+    libpng-dev \
+    libtiff-dev \
+    libwebp-dev \
+    libheif-dev \
+    # XML / HTML (lxml, beautifulsoup4)
+    libxml2-dev \
+    libxslt1-dev \
+    # OpenMP (torch CPU, EasyOCR)
+    libgomp1 \
+    # Tesseract OCR (pytesseract)
+    tesseract-ocr \
+    # Fonts for matplotlib
+    libfreetype6-dev \
+    # Java not needed — tabula-py bundles its own JRE
+    && rm -rf /var/lib/apt/lists/*
+
+# ── pip bootstrap ─────────────────────────────────────────────────────────────
+RUN pip install --upgrade pip setuptools wheel
+
+# ── Stage 2: Install Python dependencies ─────────────────────────────────────
+# Split into layers so a single package failure is easy to isolate and
+# the Docker cache doesn't re-download everything on every retry.
+
+COPY requirements.txt .
+
+# Layer A: Core FastAPI + DB (fast, no compilation)
+RUN pip install --no-cache-dir \
+    fastapi==0.115.6 \
+    "uvicorn[standard]==0.34.0" \
+    python-multipart==0.0.20 \
+    pydantic==2.10.4 \
+    "pydantic-settings>=2.4.0" \
+    python-dotenv==1.0.1 \
+    sqlalchemy==2.0.36 \
+    psycopg2-binary==2.9.10 \
+    pgvector==0.4.2
+
+# Layer B: LangChain ecosystem
+RUN pip install --no-cache-dir \
+    "langchain-core>=0.3.45,<1.0.0" \
+    langchain==0.3.21 \
+    langchain-community==0.3.20 \
+    "langchain-text-splitters>=0.3.9,<1.0.0" \
+    langgraph==0.2.59 \
+    ollama==0.4.7
+
+# Layer C: PyTorch — try pinned version, fall back to latest stable
+# torch 2.8.0 may not have wheels for all platforms yet
+RUN pip install --no-cache-dir torch==2.8.0 torchvision \
+    || pip install --no-cache-dir torch torchvision
+
+# Layer D: ML / Transformers / Embeddings
+RUN pip install --no-cache-dir \
+    transformers==4.57.6 \
+    "huggingface_hub>=0.23" \
+    "tokenizers>=0.19" \
+    sentence-transformers==3.3.1 \
+    "numpy>=2.0,<3.0" \
+    pandas==2.2.3 \
+    "scikit-learn>=1.2.2" \
+    "statsmodels>=0.14.0" \
+    "pyarrow>=11.0.0" \
+    "joblib>=1.2.0"
+
+# Layer E: Document parsing
+RUN pip install --no-cache-dir \
+    pdfplumber==0.11.4 \
+    PyPDF2==3.0.1 \
+    pdf2image==1.17.0 \
+    pymupdf==1.26.5 \
+    pdfminer.six==20231228 \
+    "tabula-py>=2.8.0" \
+    python-docx==1.1.2 \
+    python-pptx==1.0.2 \
+    openpyxl==3.1.5 \
+    xlrd==2.0.1 \
+    extract-msg==0.55.0
+
+# Layer F: OCR / Images
+RUN pip install --no-cache-dir \
+    Pillow==11.0.0 \
+    pytesseract==0.3.13 \
+    pillow-heif==0.18.0 \
+    easyocr==1.7.2
+
+# Layer G: PaddleOCR — amd64 only (no arm64 Linux wheel exists for paddlepaddle)
+# On arm64, EasyOCR (Layer F) is the sole OCR engine — no paddle at all.
+RUN if [ "$TARGETARCH" = "amd64" ]; then \
+        echo "amd64: installing paddlepaddle + paddleocr..." && \
+        pip install --no-cache-dir paddlepaddle==3.2.2 paddleocr==2.10.0; \
+    else \
+        echo "arm64: skipping paddlepaddle/paddleocr (no Linux arm64 wheel — EasyOCR handles OCR)"; \
+    fi
+
+# Layer H: Web / utilities
+RUN pip install --no-cache-dir \
+    beautifulsoup4==4.12.3 \
+    lxml==5.1.0 \
+    chardet==5.2.0 \
+    httpx==0.28.1 \
+    requests==2.32.3 \
+    orjson==3.10.12 \
+    python-dateutil==2.9.0 \
+    "pytz>=2023.3" \
+    "pyyaml>=6.0" \
+    watchdog \
+    apscheduler \
+    "matplotlib>=3.6.3" \
+    "seaborn>=0.12.2" \
+    "shap>=0.41.0"
+
+# Layer I: Security + Google APIs
+RUN pip install --no-cache-dir \
+    "passlib[bcrypt]==1.7.4" \
+    "python-jose[cryptography]==3.3.0" \
+    email-validator \
+    "pydantic[email]" \
+    google-auth \
+    google-auth-oauthlib \
+    google-auth-httplib2 \
+    google-api-python-client
+
+# Layer J: camelot-py — needs ghostscript (installed in system deps above)
+RUN pip install --no-cache-dir "camelot-py[cv]>=0.11.0"
+
+# Layer K: pydantic-ai (unpinned — latest compatible)
+RUN pip install --no-cache-dir pydantic-ai
+
+# Layer L: docling (pinned, heaviest dep — installed last to isolate conflicts)
+RUN pip install --no-cache-dir docling==2.69.1
+
+# Layer M: PyInstaller (build tool — not shipped in final binary)
+RUN pip install --no-cache-dir pyinstaller
+
+# ── Stage 3: Build the binary ─────────────────────────────────────────────────
+# Source copied last — changes here don't bust the pip cache above.
+COPY . .
+
+RUN python scripts/build_backend.py
+
+# ── Stage 4: Export — source code stays in Stage 3, never reaches host ───────
+FROM scratch AS export
+COPY --from=builder /build/dist/unidocverse-backend/unidocverse-backend /unidocverse-backend

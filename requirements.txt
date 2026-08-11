@@ -1,0 +1,130 @@
+# ============================================================================
+# UniDocVerse AI — Complete Dependencies (CLEAN + PADDLEX-FREE)
+# ============================================================================
+# Conflict resolution summary:
+#   - paddleocr 2.10.0    → first version to drop numpy<2 cap
+#   - opencv-python       → unpinned, paddleocr 2.10.0 resolves to 4.13.x natively
+#   - numpy>=2.0,<3.0     → works with paddleocr 2.10.0, opencv 4.13, langchain 0.3.21+
+#   - langchain 0.3.21+   → drops numpy<2 guard that existed on Python<3.12
+#   - pydantic-settings   → unpinned, langchain-community needs >=2.4.0
+#   - easyocr 1.7.2       → replaces paddle on Mac ARM (no C++ deadlock)
+#                            pure PyTorch, uses MPS on Apple Silicon
+#   - paddleocr/paddle    → kept for Linux/production (x86_64 only)
+#   - layoutparser        → removed (paddle.inference deadlocks on Mac ARM)
+# ============================================================================
+
+# Core FastAPI
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pydantic==2.10.4
+pydantic-settings>=2.4.0
+python-dotenv==1.0.1
+
+# Database
+sqlalchemy==2.0.36
+psycopg2-binary==2.9.10
+pgvector==0.4.2
+
+# LangChain Ecosystem
+langchain-core>=0.3.45,<1.0.0
+langchain==0.3.21
+langchain-community==0.3.20
+langchain-text-splitters>=0.3.9,<1.0.0
+langgraph==0.2.59
+
+# Ollama
+ollama==0.4.7
+
+# ML / Embeddings
+torch==2.8.0
+torchvision>=0.19.0
+transformers==4.57.6
+huggingface_hub>=0.23
+tokenizers>=0.19
+sentence-transformers==3.3.1
+
+# Data Science
+numpy>=2.0,<3.0
+pandas==2.2.3
+scikit-learn>=1.2.2
+statsmodels>=0.14.0
+pyarrow>=11.0.0
+
+# Visualization
+matplotlib>=3.6.3
+seaborn>=0.12.2
+
+# Explainability
+shap>=0.41.0
+
+# Document Parsing - PDF
+pdfplumber==0.11.4
+PyPDF2==3.0.1
+pdf2image==1.17.0
+pymupdf==1.26.5
+pdfminer.six==20231228
+tabula-py>=2.8.0
+
+# Document Parsing - Office
+python-docx==1.1.2
+python-pptx==1.0.2
+openpyxl==3.1.5
+xlrd==2.0.1
+extract-msg==0.55.0
+
+# Web / Text
+beautifulsoup4==4.12.3
+lxml==5.1.0
+chardet==5.2.0
+
+# HTTP / Networking
+httpx==0.28.1
+requests==2.32.3
+orjson==3.10.12
+
+# Utilities
+python-dateutil==2.9.0
+pytz>=2023.3
+joblib>=1.2.0
+pyyaml>=6.0
+
+# Security
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+email-validator
+pydantic[email]
+
+# Advanced PDF table extraction
+camelot-py[cv]>=0.11.0
+
+# Misc
+pydantic-ai
+watchdog
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
+apscheduler
+
+# OCR / Images
+Pillow==11.0.0
+pytesseract==0.3.13
+pillow-heif==0.18.0
+
+# EasyOCR — primary OCR engine
+# Pure PyTorch: works on Mac ARM (MPS) + Linux (CPU/CUDA)
+# No paddle C++ inference engine = no ARM deadlock
+# Models (~93 MB) download once to models/easyocr/ on first run
+easyocr==1.7.2
+
+# Classic PaddleOCR — kept for Linux/production (x86_64)
+# DO NOT use on Mac Apple Silicon — paddle.inference deadlocks on ARM
+# paddleocr 2.10.0 = first release to drop numpy<2 cap
+# opencv-python intentionally unpinned — resolves to 4.13.x cleanly
+#paddlepaddle==3.3.1
+paddleocr==2.10.0
+paddlepaddle==3.2.2
+
+# Docling (PINNED to avoid PaddleX)
+docling==2.69.1psutil>=5.9

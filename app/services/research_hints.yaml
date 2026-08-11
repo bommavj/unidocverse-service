@@ -1,0 +1,960 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Research Hints Configuration
+#
+# This file drives the document filter and question reasoner without any
+# Python code changes. Add new doc types, field synonyms, or scoring weights
+# here to extend coverage.
+#
+# Scoring (additive per document):
+#   date  : +3 if month+year match filename, +2 if only one matches
+#   type  : +2 if any doc_type keyword matches filename or db doc_type column
+#   field : +1 if any field synonym matches filename
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Document type keyword map ─────────────────────────────────────────────────
+# Maps the reasoner's doc_type_hint to filename / db doc_type keywords.
+# A document scores +2 if ANY keyword appears in its filename or doc_type.
+doc_types:
+  pay_stub:
+    keywords: [pay, stub, payslip, paycheck, earnings, salary, payroll, wages, paystub, pay-stub, pay_stub]
+    description: Employee pay stubs, payslips, earnings statements
+
+  bank_statement:
+    keywords: [bank, statement, checking, savings, account, chase, wells, citibank, boa, bofa, transaction, ledger]
+    description: Bank account statements, transaction records
+
+  invoice:
+    keywords: [invoice, inv, bill, receipt, vendor, purchase, order, po, billing, accounts-payable]
+    description: Vendor invoices, purchase orders, billing statements
+
+  expense_report:
+    keywords: [expense, reimbursement, travel, mileage, per-diem, expenses]
+    description: Employee expense reports and reimbursements
+
+  contract:
+    keywords: [contract, agreement, lease, sow, statement-of-work, msa, nda, terms, amendment, addendum, exhibit]
+    description: Legal agreements, contracts, NDAs, SOWs
+
+  annual_report:
+    keywords: [annual, 10-k, 10k, yearly, report, form-10, sec-filing, 10_k]
+    description: Annual reports, 10-K filings
+
+  proxy:
+    keywords: [proxy, def14a, 14a, proxy-statement, shareholder, vote, meeting]
+    description: SEC proxy statements, shareholder meeting docs
+
+  quarterly_report:
+    keywords: [quarterly, 10-q, 10q, q1, q2, q3, q4, quarter]
+    description: Quarterly earnings reports, 10-Q filings
+
+  tax_form:
+    keywords: [w2, w-2, 1099, 1040, tax, irs, schedule-k, k-1, 941, form-w, form-1]
+    description: Tax forms — W-2, 1099, 1040, K-1
+
+  insurance:
+    keywords: [insurance, eob, explanation-of-benefits, policy, coverage, premium, deductible, claim, underwriting]
+    description: Insurance policies, EOBs, coverage documents
+
+  medical:
+    keywords: [medical, lab, laboratory, prescription, rx, diagnosis, clinical, health, patient, doctor, hospital, radiology, pathology]
+    description: Medical records, lab results, prescriptions
+
+  real_estate:
+    keywords: [deed, mortgage, title, property, appraisal, hoa, escrow, closing, listing, mls]
+    description: Real estate documents, deeds, mortgages, appraisals
+
+  legal:
+    keywords: [complaint, motion, brief, judgment, court, legal, affidavit, deposition, summons, subpoena, filing]
+    description: Legal filings, court documents, briefs
+
+  hr_document:
+    keywords: [resume, cv, curriculum, vitae, offer, letter, employment, onboarding, handbook, performance, review, termination, hr, human-resources, linkedin, profile, candidate, applicant, work-experience, education, skills, certifications]
+    description: HR documents, resumes, CVs, offer letters, performance reviews
+
+  immigration:
+    keywords: [visa, i-94, i-20, passport, immigration, uscis, petition, i-140, i-485, green-card, h1b, h-1b, opt, stem]
+    description: Immigration documents, visa paperwork
+
+  utility_bill:
+    keywords: [utility, electric, gas, water, internet, cable, phone, bill, usage, kwh, therms]
+    description: Utility bills and usage statements
+
+  investment:
+    keywords: [investment, brokerage, portfolio, stock, 401k, ira, mutual-fund, etf, dividend, schwab, fidelity, vanguard]
+    description: Investment and brokerage account statements
+
+  # ── Insurance subtypes ───────────────────────────────────────────────────────
+  declarations_page:
+    keywords: [declarations, dec-page, dec_page, stillwater, travelers, hartford, liberty, nationwide, allstate, geico, progressive, homeowner, auto-policy, dwelling]
+    description: Insurance declarations pages — home, auto, life
+
+  insurance_policy:
+    keywords: [policy, endorsement, rider, exclusion, coverage-summary, insurance-policy, binder]
+    description: Full insurance policy documents and endorsements
+
+  insurance_claim:
+    keywords: [claim, loss, adjuster, adjudication, eob, explanation-of-benefits, remittance, claim-form]
+    description: Insurance claims, EOBs, adjudication documents
+
+  # ── Financial – transactional ────────────────────────────────────────────────
+  credit_card_statement:
+    keywords: [credit-card, creditcard, visa, mastercard, amex, discover, statement, rewards, cashback, minimum-payment]
+    description: Credit card statements and billing summaries
+
+  financial_statement:
+    keywords: [financial-statement, balance-sheet, income-statement, profit-loss, p&l, cash-flow]
+    description: Corporate financial statements — P&L, balance sheet, cash flow
+
+  credit_memo:
+    keywords: [credit-memo, credit-note, refund, adjustment, reversal, credit-memo]
+    description: Credit memos, refund notes, adjustments
+
+  purchase_order:
+    keywords: [purchase-order, po, po-number, procurement, requisition, rfq, rfp]
+    description: Purchase orders and procurement documents
+
+  sales_report:
+    keywords: [sales, revenue-report, sales-summary, pipeline, quota, ytd-sales, commission]
+    description: Sales reports, pipeline summaries, commission statements
+
+  payroll_report:
+    keywords: [payroll-report, payroll-summary, payroll-register, wage-report, labor-cost]
+    description: Payroll summary reports and registers
+
+  receipt:
+    keywords: [receipt, transaction-receipt, payment-receipt, pos, point-of-sale]
+    description: Transaction receipts and payment confirmations
+
+  # ── Real estate & lending ────────────────────────────────────────────────────
+  mortgage_document:
+    keywords: [mortgage, loan, deed-of-trust, promissory-note, origination, lender, borrower, amortization]
+    description: Mortgage and loan origination documents
+
+  mortgage_statement:
+    keywords: [mortgage-statement, loan-statement, escrow-statement, monthly-statement, servicer]
+    description: Monthly mortgage/loan servicer statements
+
+  closing_disclosure:
+    keywords: [closing-disclosure, cd, settlement-statement, hud-1, alta, closing-costs]
+    description: Real estate closing disclosures and settlement statements
+
+  loan_document:
+    keywords: [loan, personal-loan, auto-loan, student-loan, heloc, line-of-credit]
+    description: Loan agreements and personal credit documents
+
+  loan_estimate:
+    keywords: [loan-estimate, le, good-faith-estimate, gfe, rate-quote]
+    description: Loan estimates and rate quotes
+
+  payoff_statement:
+    keywords: [payoff, payoff-statement, payoff-amount, good-through, balance-payoff]
+    description: Mortgage or loan payoff statements
+
+  # ── Tax forms – specific subtypes ────────────────────────────────────────────
+  w2:
+    keywords: [w2, w-2, wage-tax-statement, employer-ein, box1, box2]
+    description: W-2 wage and tax statements
+
+  tax_return:
+    keywords: [1040, tax-return, agi, adjusted-gross-income, schedule-a, schedule-b, schedule-c, schedule-d]
+    description: Individual tax returns (1040 and schedules)
+
+  government_form:
+    keywords: [government, federal-form, state-form, irs-form, 941, 940, ss-4, i-9]
+    description: Government and regulatory forms
+
+  # ── Medical – specific subtypes ──────────────────────────────────────────────
+  medical_record:
+    keywords: [medical-record, patient-record, emr, ehr, discharge-summary, visit-notes, soap-notes, progress-notes]
+    description: Medical records, clinical notes, discharge summaries
+
+  # ── Immigration – specific subtypes ─────────────────────────────────────────
+  uscis_receipt:
+    keywords: [uscis, receipt-notice, i-797, i-797a, i-797b, priority-date, receipt-number]
+    description: USCIS receipt notices and approval notices
+
+  immigration_receipt:
+    keywords: [immigration, i-20, ds-2019, ead, employment-authorization, i-94, i-797]
+    description: Immigration status documents and travel records
+
+  # ── Operational / internal business ─────────────────────────────────────────
+  inventory_report:
+    keywords: [inventory, stock, sku, warehouse, on-hand, reorder, stockout]
+    description: Inventory counts, stock reports, warehouse summaries
+
+  forecast_report:
+    keywords: [forecast, projection, budget, plan, outlook, guidance, pipeline-forecast]
+    description: Financial or operational forecasts and budgets
+
+  employee_roster:
+    keywords: [roster, headcount, org-chart, employee-list, staff, workforce, directory]
+    description: Employee directories, rosters, org charts
+
+  order_history:
+    keywords: [order-history, order-log, sales-orders, fulfillment, shipment-history]
+    description: Order histories and fulfillment logs
+
+  transaction_log:
+    keywords: [transaction-log, ledger, journal, general-ledger, audit-trail, gl]
+    description: Transaction logs, general ledgers, audit trails
+
+  asset_register:
+    keywords: [asset, fixed-asset, equipment, depreciation, capex, asset-register]
+    description: Fixed asset registers and depreciation schedules
+
+  customer_list:
+    keywords: [customer, client-list, crm, contacts, accounts, leads]
+    description: Customer and contact lists
+
+  product_catalog:
+    keywords: [catalog, product-list, sku-catalog, price-list, part-number, item-master]
+    description: Product catalogs and price lists
+
+  # ── Generic datasets ─────────────────────────────────────────────────────────
+  dataset:
+    keywords: [dataset, data, csv, spreadsheet, tabular, data-table]
+    description: Generic tabular datasets and data tables
+
+  movie_dataset:
+    keywords: [movie, film, cinema, imdb, tmdb, box-office, genre, director, rating]
+    description: Movie and film datasets
+
+  music_dataset:
+    keywords: [music, song, artist, album, track, spotify, genre, bpm]
+    description: Music and audio datasets
+
+  book_dataset:
+    keywords: [book, author, isbn, publisher, genre, goodreads, fiction, nonfiction]
+    description: Book and literature datasets
+
+  product_dataset:
+    keywords: [product, ecommerce, amazon, listing, asin, price, category]
+    description: E-commerce and product datasets
+
+  ratings_dataset:
+    keywords: [rating, review, score, stars, feedback, sentiment, yelp]
+    description: User ratings and review datasets
+
+  location_dataset:
+    keywords: [location, geo, coordinates, latitude, longitude, city, state, zip]
+    description: Geographic and location datasets
+
+  weather_dataset:
+    keywords: [weather, temperature, precipitation, humidity, forecast, climate, noaa]
+    description: Weather and climate datasets
+
+  sports_dataset:
+    keywords: [sports, nfl, nba, mlb, soccer, stats, team, player, match, score]
+    description: Sports statistics and results datasets
+
+  health_dataset:
+    keywords: [health, clinical-trial, epidemiology, bmi, vitals, mortality, cdc, who]
+    description: Public health and clinical datasets
+
+  education_dataset:
+    keywords: [education, school, student, enrollment, graduation, test-score, gpa]
+    description: Education and academic datasets
+
+  real_estate_dataset:
+    keywords: [zillow, redfin, mls-data, listing-data, home-price, sqft, sold-price]
+    description: Real estate listing and transaction datasets
+
+  stock_dataset:
+    keywords: [stock, ticker, ohlcv, close-price, market-cap, volume, nasdaq, nyse]
+    description: Stock market price and volume datasets
+
+  census_dataset:
+    keywords: [census, population, demographic, household, income-level, acs]
+    description: Census and demographic datasets
+
+  scientific_dataset:
+    keywords: [scientific, research, experiment, measurement, laboratory, sample, trial]
+    description: Scientific research and experimental datasets
+
+  survey_dataset:
+    keywords: [survey, questionnaire, response, likert, nps, form-data]
+    description: Survey responses and questionnaire data
+
+  event_dataset:
+    keywords: [event, log, clickstream, session, pageview, analytics, ga4]
+    description: Event logs and analytics datasets
+
+  image:
+    keywords: [image, photo, scan, screenshot, png, jpg, jpeg, tiff, ocr]
+    description: Images and scanned documents
+
+  spreadsheet:
+    keywords: [spreadsheet, excel, xlsx, xls, csv, workbook, sheet]
+    description: Spreadsheet files (Excel, CSV, Google Sheets)
+
+  general:
+    keywords: []
+    description: Fallback for unclassified documents
+
+
+# ── Field synonym map ─────────────────────────────────────────────────────────
+# Maps canonical field names to all variations found in real documents.
+# Used by the reasoner prompt as examples and by the multi-search query builder.
+field_synonyms:
+  # Payroll fields
+  gross_pay:
+    synonyms: [gross pay, gross earnings, total gross, gross wages, gross compensation, earnings before deductions, gross income]
+    doc_types: [pay_stub]
+
+  net_pay:
+    synonyms: [net pay, net earnings, take home pay, net wages, net income, amount deposited, direct deposit amount]
+    doc_types: [pay_stub]
+
+  federal_tax:
+    synonyms: [federal income tax, federal withholding, fed tax, federal tax withheld]
+    doc_types: [pay_stub, tax_form]
+
+  state_tax:
+    synonyms: [state income tax, state withholding, state tax withheld]
+    doc_types: [pay_stub, tax_form]
+
+  social_security:
+    synonyms: [social security, fica, ss tax, oasdi, social security tax]
+    doc_types: [pay_stub]
+
+  medicare:
+    synonyms: [medicare, medicare tax, med tax, medicare withholding]
+    doc_types: [pay_stub]
+
+  medical_insurance:
+    synonyms: [medical insurance, health insurance, medical premium, health premium, medical deduction, health benefit deduction, medical plan]
+    doc_types: [pay_stub, insurance]
+
+  dental_insurance:
+    synonyms: [dental insurance, dental premium, dental plan, dental deduction]
+    doc_types: [pay_stub, insurance]
+
+  vision_insurance:
+    synonyms: [vision insurance, vision premium, vision plan, vision deduction]
+    doc_types: [pay_stub, insurance]
+
+  retirement_401k:
+    synonyms: [401k, 401(k), retirement contribution, pre-tax retirement, roth 401k, employer match]
+    doc_types: [pay_stub, investment]
+
+  ytd_gross:
+    synonyms: [ytd gross, year to date gross, year-to-date gross pay, ytd earnings]
+    doc_types: [pay_stub]
+
+  # Banking fields
+  account_balance:
+    synonyms: [balance, account balance, available balance, ending balance, closing balance, current balance]
+    doc_types: [bank_statement]
+
+  deposits:
+    synonyms: [deposits, total deposits, credits, incoming transfers, direct deposits]
+    doc_types: [bank_statement]
+
+  withdrawals:
+    synonyms: [withdrawals, debits, total withdrawals, outgoing transfers, payments]
+    doc_types: [bank_statement]
+
+  # Invoice / billing
+  invoice_amount:
+    synonyms: [invoice amount, total due, amount due, total billed, invoice total, balance due]
+    doc_types: [invoice]
+
+  # Insurance / medical
+  amount_billed:
+    synonyms: [amount billed, billed amount, charges, total charges]
+    doc_types: [insurance, medical]
+
+  plan_paid:
+    synonyms: [plan paid, insurance paid, amount paid by plan, plan allowed, insurance covered]
+    doc_types: [insurance]
+
+  patient_responsibility:
+    synonyms: [patient responsibility, you owe, your share, copay, coinsurance, patient portion, out of pocket]
+    doc_types: [insurance, medical]
+
+  # Real estate
+  monthly_payment:
+    synonyms: [monthly payment, mortgage payment, rent, lease payment, principal and interest]
+    doc_types: [real_estate, contract]
+
+  # Business / financial
+  revenue:
+    synonyms: [revenue, net revenue, total revenue, net sales, total sales, top line]
+    doc_types: [annual_report, quarterly_report]
+
+  net_income:
+    synonyms: [net income, net loss, net earnings, bottom line, profit, loss]
+    doc_types: [annual_report, quarterly_report]
+
+  risk_factors:
+    synonyms: [risk factors, material risks, business risks, key risks, risk disclosures]
+    doc_types: [annual_report, proxy]
+
+  executive_compensation:
+    synonyms: [executive compensation, ceo pay, executive pay, compensation table, named executive]
+    doc_types: [proxy, annual_report]
+
+
+# ── Month aliases ─────────────────────────────────────────────────────────────
+# Used for date extraction and filename matching.
+months:
+  january:  { abbr: jan, num: "01" }
+  february: { abbr: feb, num: "02" }
+  march:    { abbr: mar, num: "03" }
+  april:    { abbr: apr, num: "04" }
+  may:      { abbr: may, num: "05" }
+  june:     { abbr: jun, num: "06" }
+  july:     { abbr: jul, num: "07" }
+  august:   { abbr: aug, num: "08" }
+  september: { abbr: sep, num: "09" }
+  october:  { abbr: oct, num: "10" }
+  november: { abbr: nov, num: "11" }
+  december: { abbr: dec, num: "12" }
+
+
+# ── Scoring weights ───────────────────────────────────────────────────────────
+scoring:
+  date_month_and_year:    3   # both month + year match filename
+  date_partial:           2   # only month or only year matches
+  doc_type_match:         2   # doc_type_hint keywords match filename/db type
+  field_in_filename:      1   # field or synonym appears in filename
+  named_subject_match:   30   # all named_subject tokens found in filename/metadata → strong boost
+  named_subject_partial: 10   # partial named_subject token match
+  min_score_to_include:   1   # documents scoring below this are excluded
+
+
+# ── Date label patterns ───────────────────────────────────────────────────────
+# {pattern: regex matched before the date value, field: stored key}
+# Covers: payroll, banking, invoices, insurance, medical, legal, real estate,
+#         supply chain, immigration, HR, tax, contracts, utilities, investment
+date_patterns:
+  # ── Payroll ──
+  - {pattern: 'period\s+begin(?:ning)?[\s:]+',               field: period_start}
+  - {pattern: 'period\s+end(?:ing)?[\s:]+',                  field: period_end}
+  - {pattern: '(?:pay|check|payment)\s+date[\s:]+',          field: pay_date}
+  - {pattern: 'pay\s+period[\s:]+',                          field: period_start}
+  - {pattern: 'check\s+period[\s:]+',                        field: period_start}
+  - {pattern: 'earnings\s+period[\s:]+',                     field: period_start}
+  - {pattern: 'work\s+period[\s:]+',                         field: period_start}
+  - {pattern: 'payroll\s+date[\s:]+',                        field: pay_date}
+  - {pattern: 'deposit\s+date[\s:]+',                        field: pay_date}
+  # ── Banking / Financial ──
+  - {pattern: 'statement\s+(?:period|date)[\s:]+',           field: period_start}
+  - {pattern: 'statement\s+(?:end|closing)\s+date[\s:]+',    field: period_end}
+  - {pattern: 'account\s+open(?:ed|ing)?\s+date[\s:]+',      field: period_start}
+  - {pattern: 'transaction\s+date[\s:]+',                    field: period_start}
+  - {pattern: 'posting\s+date[\s:]+',                        field: period_start}
+  - {pattern: 'value\s+date[\s:]+',                          field: period_start}
+  - {pattern: 'settlement\s+date[\s:]+',                     field: period_start}
+  - {pattern: 'trade\s+date[\s:]+',                          field: period_start}
+  - {pattern: 'maturity\s+date[\s:]+',                       field: period_end}
+  - {pattern: 'interest\s+(?:through|to)\s+date[\s:]+',      field: period_end}
+  - {pattern: 'cycle\s+(?:end|close)\s+date[\s:]+',          field: period_end}
+  # ── Invoices / Billing ──
+  - {pattern: 'invoice\s+date[\s:]+',                        field: period_start}
+  - {pattern: 'billing\s+(?:period|date)[\s:]+',             field: period_start}
+  - {pattern: 'bill\s+date[\s:]+',                           field: period_start}
+  - {pattern: 'due\s+date[\s:]+',                            field: due_date}
+  - {pattern: 'payment\s+due[\s:]+',                         field: due_date}
+  - {pattern: 'net\s+(?:30|60|90)\s+due[\s:]+',              field: due_date}
+  - {pattern: 'purchase\s+(?:order\s+)?date[\s:]+',          field: period_start}
+  - {pattern: 'order\s+date[\s:]+',                          field: period_start}
+  - {pattern: 'ship(?:ment|ping|ped)?\s+date[\s:]+',         field: ship_date}
+  - {pattern: 'delivery\s+date[\s:]+',                       field: delivery_date}
+  - {pattern: 'receipt\s+date[\s:]+',                        field: period_start}
+  - {pattern: 'receipt\s+of\s+goods[\s:]+',                  field: period_start}
+  # ── Insurance ──
+  - {pattern: 'coverage\s+(?:period|date|begin\w*|start)[\s:]+', field: period_start}
+  - {pattern: 'coverage\s+(?:end|expir\w*)[\s:]+',           field: period_end}
+  - {pattern: 'policy\s+(?:effective|start|begin\w*)[\s:]+', field: period_start}
+  - {pattern: 'policy\s+(?:expir\w*|end|term\w*)[\s:]+',     field: period_end}
+  - {pattern: 'claim\s+date[\s:]+',                          field: period_start}
+  - {pattern: 'claim\s+(?:received|filed|submitted)[\s:]+',  field: period_start}
+  - {pattern: 'renewal\s+date[\s:]+',                        field: period_end}
+  - {pattern: 'underwriting\s+date[\s:]+',                   field: period_start}
+  # ── Medical / Healthcare ──
+  - {pattern: 'date\s+of\s+service[\s:]+',                   field: period_start}
+  - {pattern: 'service\s+(?:period|date)[\s:]+',             field: period_start}
+  - {pattern: 'admission\s+date[\s:]+',                      field: period_start}
+  - {pattern: 'discharge\s+date[\s:]+',                      field: period_end}
+  - {pattern: 'date\s+of\s+(?:birth|dob)[\s:]+',             field: date_of_birth}
+  - {pattern: 'dob[\s:]+',                                   field: date_of_birth}
+  - {pattern: 'lab\s+(?:date|collected|drawn)[\s:]+',        field: period_start}
+  - {pattern: 'specimen\s+(?:date|collected)[\s:]+',         field: period_start}
+  - {pattern: 'report\s+date[\s:]+',                         field: period_start}
+  - {pattern: 'result\s+date[\s:]+',                         field: period_start}
+  - {pattern: 'prescription\s+date[\s:]+',                   field: period_start}
+  - {pattern: 'fill\s+date[\s:]+',                           field: period_start}
+  - {pattern: 'next\s+refill[\s:]+',                         field: period_end}
+  - {pattern: 'appointment\s+date[\s:]+',                    field: period_start}
+  - {pattern: 'visit\s+date[\s:]+',                          field: period_start}
+  # ── Legal / Contracts ──
+  - {pattern: '(?:effective|start|begin)\s+date[\s:]+',      field: period_start}
+  - {pattern: '(?:end|expir\w*|terminat\w*)\s+date[\s:]+',   field: period_end}
+  - {pattern: '(?:filing|filed)\s+date[\s:]+',               field: period_start}
+  - {pattern: '(?:issue|issued)\s+date[\s:]+',               field: period_start}
+  - {pattern: 'execution\s+date[\s:]+',                      field: period_start}
+  - {pattern: 'agreement\s+date[\s:]+',                      field: period_start}
+  - {pattern: 'signing\s+date[\s:]+',                        field: period_start}
+  - {pattern: 'hearing\s+date[\s:]+',                        field: hearing_date}
+  - {pattern: 'trial\s+date[\s:]+',                          field: hearing_date}
+  - {pattern: 'judgment\s+date[\s:]+',                       field: period_start}
+  - {pattern: 'deposition\s+date[\s:]+',                     field: period_start}
+  - {pattern: 'notice\s+date[\s:]+',                         field: period_start}
+  - {pattern: 'default\s+date[\s:]+',                        field: period_start}
+  # ── Real Estate ──
+  - {pattern: 'lease\s+(?:start|begin\w*|commencement)[\s:]+', field: period_start}
+  - {pattern: 'lease\s+(?:end|expir\w*|terminat\w*)[\s:]+',  field: period_end}
+  - {pattern: '(?:close|closing)\s+date[\s:]+',              field: period_end}
+  - {pattern: 'possession\s+date[\s:]+',                     field: period_start}
+  - {pattern: 'move[\s\-]?in\s+date[\s:]+',                  field: period_start}
+  - {pattern: 'move[\s\-]?out\s+date[\s:]+',                 field: period_end}
+  - {pattern: 'recording\s+date[\s:]+',                      field: period_start}
+  - {pattern: 'appraisal\s+date[\s:]+',                      field: period_start}
+  - {pattern: 'list(?:ing)?\s+date[\s:]+',                   field: period_start}
+  - {pattern: 'escrow\s+(?:open|close)\s+date[\s:]+',        field: period_start}
+  - {pattern: 'property\s+tax\s+due[\s:]+',                  field: due_date}
+  # ── Supply Chain / Logistics ──
+  - {pattern: 'purchase\s+order\s+date[\s:]+',               field: period_start}
+  - {pattern: 'goods\s+receipt\s+date[\s:]+',                field: period_start}
+  - {pattern: 'bill\s+of\s+lading\s+date[\s:]+',             field: period_start}
+  - {pattern: 'customs\s+(?:entry|clearance)\s+date[\s:]+',  field: period_start}
+  - {pattern: 'export\s+date[\s:]+',                         field: period_start}
+  - {pattern: 'import\s+date[\s:]+',                         field: period_start}
+  - {pattern: 'estimated\s+(?:arrival|delivery)[\s:]+',      field: delivery_date}
+  - {pattern: 'actual\s+(?:arrival|delivery)[\s:]+',         field: delivery_date}
+  - {pattern: 'warehouse\s+receipt\s+date[\s:]+',            field: period_start}
+  # ── Immigration ──
+  - {pattern: '(?:visa|i-?94|i-?20|i-?797)\s+(?:issue|issued)\s+date[\s:]+', field: period_start}
+  - {pattern: '(?:visa|passport|i-?94|status)\s+expir\w*[\s:]+', field: period_end}
+  - {pattern: 'authorized\s+(?:stay|until|through)[\s:]+',   field: period_end}
+  - {pattern: 'admission\s+(?:until|through|date)[\s:]+',    field: period_end}
+  - {pattern: 'opt\s+(?:start|end|expir\w*)[\s:]+',          field: period_start}
+  - {pattern: 'employment\s+authorization\s+(?:date|expir\w*)[\s:]+', field: period_end}
+  - {pattern: 'passport\s+expir\w*[\s:]+',                   field: period_end}
+  - {pattern: 'priority\s+date[\s:]+',                       field: period_start}
+  - {pattern: 'receipt\s+notice\s+date[\s:]+',               field: period_start}
+  # ── HR / Employment ──
+  - {pattern: 'hire\s+date[\s:]+',                           field: hire_date}
+  - {pattern: 'start\s+date[\s:]+',                          field: hire_date}
+  - {pattern: 'employment\s+(?:start|begin\w*)[\s:]+',       field: hire_date}
+  - {pattern: 'termination\s+date[\s:]+',                    field: termination_date}
+  - {pattern: 'last\s+(?:day|date)\s+(?:of\s+)?(?:work|employment)[\s:]+', field: termination_date}
+  - {pattern: 'review\s+(?:date|period)[\s:]+',              field: period_start}
+  - {pattern: 'performance\s+review\s+(?:date|period)[\s:]+',field: period_start}
+  - {pattern: 'offer\s+(?:date|letter\s+date)[\s:]+',        field: period_start}
+  - {pattern: 'anniversary\s+date[\s:]+',                    field: period_start}
+  # ── Tax ──
+  - {pattern: 'tax\s+(?:year|period)[\s:]+',                 field: period_start}
+  - {pattern: 'fiscal\s+year[\s:]+',                         field: period_start}
+  - {pattern: 'taxable\s+year[\s:]+',                        field: period_start}
+  - {pattern: 'return\s+(?:period|year)[\s:]+',              field: period_start}
+  - {pattern: 'quarter[\s:]+',                               field: period_start}
+  # ── Utilities ──
+  - {pattern: 'service\s+(?:from|start)[\s:]+',              field: period_start}
+  - {pattern: 'service\s+(?:to|end|through)[\s:]+',          field: period_end}
+  - {pattern: 'meter\s+read\s+date[\s:]+',                   field: period_end}
+  - {pattern: 'billing\s+from[\s:]+',                        field: period_start}
+  - {pattern: 'billing\s+(?:to|through)[\s:]+',              field: period_end}
+
+
+# ── Amount label patterns ─────────────────────────────────────────────────────
+# {pattern: regex, field: stored key}
+# Covers financial values across all domains.
+amount_patterns:
+  # ── Payroll ──
+  - {pattern: 'gross\s+pay[\s:\|]+',                         field: gross_pay}
+  - {pattern: 'gross\s+earn\w*[\s:\|]+',                     field: gross_pay}
+  - {pattern: 'total\s+gross[\s:\|]+',                       field: gross_pay}
+  - {pattern: 'gross\s+wages[\s:\|]+',                       field: gross_pay}
+  - {pattern: 'gross\s+(?:compensation|salary)[\s:\|]+',     field: gross_pay}
+  - {pattern: 'regular\s+pay[\s:\|]+',                       field: regular_pay}
+  - {pattern: 'overtime\s+pay[\s:\|]+',                      field: overtime_pay}
+  - {pattern: 'overtime[\s:\|]+',                            field: overtime_pay}
+  - {pattern: 'holiday\s+pay[\s:\|]+',                       field: holiday_pay}
+  - {pattern: 'vacation\s+pay[\s:\|]+',                      field: vacation_pay}
+  - {pattern: 'sick\s+pay[\s:\|]+',                          field: sick_pay}
+  - {pattern: 'bonus[\s:\|]+',                               field: bonus}
+  - {pattern: 'commission[\s:\|]+',                          field: commission}
+  - {pattern: 'tips[\s:\|]+',                                field: tips}
+  - {pattern: 'net\s+pay[\s:\|]+',                           field: net_pay}
+  - {pattern: 'net\s+(?:check|deposit|wages)[\s:\|]+',       field: net_pay}
+  - {pattern: 'take[\s\-]?home\s+pay[\s:\|]+',               field: net_pay}
+  - {pattern: 'direct\s+deposit\s+amount[\s:\|]+',           field: net_pay}
+  - {pattern: 'federal\s+(?:income\s+)?tax[\s:\|]+',         field: federal_tax}
+  - {pattern: 'federal\s+withholding[\s:\|]+',               field: federal_tax}
+  - {pattern: 'fed\s+tax[\s:\|]+',                           field: federal_tax}
+  - {pattern: 'state\s+(?:income\s+)?tax[\s:\|]+',           field: state_tax}
+  - {pattern: 'state\s+withholding[\s:\|]+',                 field: state_tax}
+  - {pattern: 'local\s+(?:income\s+)?tax[\s:\|]+',           field: local_tax}
+  - {pattern: 'city\s+tax[\s:\|]+',                          field: local_tax}
+  - {pattern: 'social\s+security[\s:\|]+',                   field: social_security_tax}
+  - {pattern: 'fica[\s:\|]+',                                field: social_security_tax}
+  - {pattern: 'oasdi[\s:\|]+',                               field: social_security_tax}
+  - {pattern: 'medicare[\s:\|]+',                            field: medicare_tax}
+  - {pattern: 'med\s+tax[\s:\|]+',                           field: medicare_tax}
+  - {pattern: 'medical\s+ins(?:urance)?[\s:\|]+',            field: medical_insurance}
+  - {pattern: 'health\s+ins(?:urance)?[\s:\|]+',             field: medical_insurance}
+  - {pattern: 'health\s+(?:plan|benefit)[\s:\|]+',           field: medical_insurance}
+  - {pattern: 'dental[\s:\|]+',                              field: dental}
+  - {pattern: 'dental\s+(?:plan|ins\w*)[\s:\|]+',            field: dental}
+  - {pattern: 'vision[\s:\|]+',                              field: vision}
+  - {pattern: 'vision\s+(?:plan|ins\w*)[\s:\|]+',            field: vision}
+  - {pattern: '401\s*\(?k\)?[\s:\|]+',                       field: 401k}
+  - {pattern: 'roth\s+401\s*\(?k\)?[\s:\|]+',                field: roth_401k}
+  - {pattern: '403\s*\(?b\)?[\s:\|]+',                       field: 403b}
+  - {pattern: 'hsa[\s:\|]+',                                 field: hsa}
+  - {pattern: 'fsa[\s:\|]+',                                 field: fsa}
+  - {pattern: 'life\s+ins(?:urance)?[\s:\|]+',               field: life_insurance}
+  - {pattern: 'disability[\s:\|]+',                          field: disability}
+  - {pattern: 'std[\s:\|]+',                                 field: short_term_disability}
+  - {pattern: 'ltd[\s:\|]+',                                 field: long_term_disability}
+  - {pattern: 'ytd\s+gross[\s:\|]+',                         field: ytd_gross}
+  - {pattern: 'ytd\s+net[\s:\|]+',                           field: ytd_net}
+  - {pattern: 'year[\s\-]?to[\s\-]?date\s+gross[\s:\|]+',   field: ytd_gross}
+  - {pattern: 'year[\s\-]?to[\s\-]?date\s+(?:earnings|pay)[\s:\|]+', field: ytd_gross}
+  # ── Banking ──
+  - {pattern: 'ending\s+balance[\s:\|]+',                    field: ending_balance}
+  - {pattern: 'closing\s+balance[\s:\|]+',                   field: ending_balance}
+  - {pattern: 'beginning\s+balance[\s:\|]+',                 field: beginning_balance}
+  - {pattern: 'opening\s+balance[\s:\|]+',                   field: beginning_balance}
+  - {pattern: 'available\s+balance[\s:\|]+',                 field: available_balance}
+  - {pattern: 'current\s+balance[\s:\|]+',                   field: current_balance}
+  - {pattern: 'ledger\s+balance[\s:\|]+',                    field: ending_balance}
+  - {pattern: 'total\s+(?:deposits?|credits?)[\s:\|]+',      field: total_deposits}
+  - {pattern: 'total\s+(?:withdrawals?|debits?)[\s:\|]+',    field: total_withdrawals}
+  - {pattern: 'minimum\s+(?:payment|due)[\s:\|]+',           field: minimum_payment}
+  - {pattern: 'credit\s+limit[\s:\|]+',                      field: credit_limit}
+  - {pattern: 'interest\s+(?:charged|paid|earned)[\s:\|]+',  field: interest}
+  - {pattern: 'interest\s+rate[\s:\|]+',                     field: interest_rate}
+  - {pattern: 'apr[\s:\|]+',                                 field: apr}
+  - {pattern: 'annual\s+(?:fee|charge)[\s:\|]+',             field: annual_fee}
+  - {pattern: 'cash\s+advance[\s:\|]+',                      field: cash_advance}
+  - {pattern: 'late\s+(?:fee|charge|payment)[\s:\|]+',       field: late_fee}
+  - {pattern: 'overdraft\s+fee[\s:\|]+',                     field: overdraft_fee}
+  - {pattern: 'service\s+charge[\s:\|]+',                    field: service_charge}
+  # ── Investment / Brokerage ──
+  - {pattern: 'portfolio\s+value[\s:\|]+',                   field: portfolio_value}
+  - {pattern: 'total\s+(?:assets|value|market\s+value)[\s:\|]+', field: total_assets}
+  - {pattern: 'total\s+(?:gain|loss)[\s:\|]+',               field: total_gain_loss}
+  - {pattern: 'realized\s+(?:gain|loss)[\s:\|]+',            field: realized_gain_loss}
+  - {pattern: 'unrealized\s+(?:gain|loss)[\s:\|]+',          field: unrealized_gain_loss}
+  - {pattern: 'dividend\s+(?:paid|received|income)[\s:\|]+', field: dividends}
+  - {pattern: 'interest\s+income[\s:\|]+',                   field: interest_income}
+  - {pattern: 'capital\s+(?:gain|loss)[\s:\|]+',             field: capital_gains}
+  - {pattern: 'cost\s+basis[\s:\|]+',                        field: cost_basis}
+  - {pattern: 'management\s+fee[\s:\|]+',                    field: management_fee}
+  # ── Tax ──
+  - {pattern: 'wages[\s,]\s*tips[\s,]\s*other\s+comp\w*[\s:\|]+', field: w2_box1_wages}
+  - {pattern: 'federal\s+income\s+tax\s+withheld[\s:\|]+',   field: w2_box2_federal_withheld}
+  - {pattern: 'social\s+security\s+wages[\s:\|]+',           field: w2_box3_ss_wages}
+  - {pattern: 'social\s+security\s+tax\s+withheld[\s:\|]+',  field: w2_box4_ss_withheld}
+  - {pattern: 'medicare\s+wages[\s:\|]+',                    field: w2_box5_medicare_wages}
+  - {pattern: 'medicare\s+tax\s+withheld[\s:\|]+',           field: w2_box6_medicare_withheld}
+  - {pattern: 'total\s+(?:income|earnings)[\s:\|]+',         field: total_income}
+  - {pattern: 'adjusted\s+gross\s+income[\s:\|]+',           field: agi}
+  - {pattern: 'taxable\s+income[\s:\|]+',                    field: taxable_income}
+  - {pattern: 'total\s+tax[\s:\|]+',                         field: total_tax}
+  - {pattern: 'refund[\s:\|]+',                              field: tax_refund}
+  - {pattern: 'amount\s+owed[\s:\|]+',                       field: amount_owed}
+  - {pattern: 'nonemployee\s+compensation[\s:\|]+',          field: nonemployee_compensation}
+  - {pattern: 'other\s+income[\s:\|]+',                      field: other_income}
+  - {pattern: 'self[\s\-]employment\s+tax[\s:\|]+',          field: self_employment_tax}
+  # ── Invoices / Billing ──
+  - {pattern: 'total\s+(?:due|amount)[\s:\|]+',              field: total_due}
+  - {pattern: 'invoice\s+total[\s:\|]+',                     field: invoice_total}
+  - {pattern: 'amount\s+(?:due|billed)[\s:\|]+',             field: amount_due}
+  - {pattern: 'sub\s*total[\s:\|]+',                         field: subtotal}
+  - {pattern: 'tax\s+(?:amount)?[\s:\|]+',                   field: tax_amount}
+  - {pattern: 'discount[\s:\|]+',                            field: discount}
+  - {pattern: 'shipping[\s:\|]+',                            field: shipping}
+  - {pattern: 'freight[\s:\|]+',                             field: freight}
+  - {pattern: 'handling[\s:\|]+',                            field: handling}
+  - {pattern: 'amount\s+paid[\s:\|]+',                       field: amount_paid}
+  - {pattern: 'balance\s+(?:due|remaining|forward)[\s:\|]+', field: balance_due}
+  - {pattern: 'unit\s+price[\s:\|]+',                        field: unit_price}
+  - {pattern: 'quantity[\s:\|]+',                            field: quantity}
+  - {pattern: 'extended\s+(?:price|amount)[\s:\|]+',         field: extended_price}
+  # ── Insurance ──
+  - {pattern: 'plan\s+paid[\s:\|]+',                         field: plan_paid}
+  - {pattern: 'insurance\s+paid[\s:\|]+',                    field: plan_paid}
+  - {pattern: 'you\s+owe[\s:\|]+',                           field: patient_responsibility}
+  - {pattern: 'patient\s+responsibility[\s:\|]+',            field: patient_responsibility}
+  - {pattern: 'amount\s+billed[\s:\|]+',                     field: amount_billed}
+  - {pattern: 'allowed\s+amount[\s:\|]+',                    field: allowed_amount}
+  - {pattern: 'contractual\s+(?:adjust\w*|discount)[\s:\|]+',field: contractual_adjustment}
+  - {pattern: 'deductible[\s:\|]+',                          field: deductible}
+  - {pattern: 'deductible\s+(?:applied|met)[\s:\|]+',        field: deductible_applied}
+  - {pattern: 'out[\s\-]of[\s\-]pocket[\s:\|]+',             field: out_of_pocket}
+  - {pattern: 'out[\s\-]of[\s\-]pocket\s+(?:max|maximum)[\s:\|]+', field: out_of_pocket_max}
+  - {pattern: 'copay[\s:\|]+',                               field: copay}
+  - {pattern: 'co[\s\-]?pay[\s:\|]+',                        field: copay}
+  - {pattern: 'coinsurance[\s:\|]+',                         field: coinsurance}
+  - {pattern: 'premium[\s:\|]+',                             field: premium}
+  - {pattern: 'monthly\s+premium[\s:\|]+',                   field: monthly_premium}
+  - {pattern: 'annual\s+premium[\s:\|]+',                    field: annual_premium}
+  - {pattern: 'benefit\s+(?:amount|paid|limit)[\s:\|]+',     field: benefit_amount}
+  - {pattern: 'coverage\s+(?:amount|limit)[\s:\|]+',         field: coverage_limit}
+  # ── Medical ──
+  - {pattern: 'total\s+charges[\s:\|]+',                     field: total_charges}
+  - {pattern: 'total\s+billed[\s:\|]+',                      field: amount_billed}
+  - {pattern: 'co[\s\-]?insurance[\s:\|]+',                  field: coinsurance}
+  - {pattern: 'lab\s+(?:fee|charge)[\s:\|]+',                field: lab_fee}
+  - {pattern: 'rx\s+(?:cost|price|charge)[\s:\|]+',          field: rx_cost}
+  - {pattern: 'prescription\s+cost[\s:\|]+',                 field: rx_cost}
+  - {pattern: 'facility\s+(?:fee|charge)[\s:\|]+',           field: facility_fee}
+  # ── Real Estate ──
+  - {pattern: 'monthly\s+(?:payment|premium|rent)[\s:\|]+',  field: monthly_payment}
+  - {pattern: 'rent[\s:\|]+',                                field: rent}
+  - {pattern: 'monthly\s+rent[\s:\|]+',                      field: rent}
+  - {pattern: 'mortgage\s+payment[\s:\|]+',                  field: mortgage_payment}
+  - {pattern: 'principal[\s:\|]+',                           field: principal}
+  - {pattern: 'interest[\s:\|]+',                            field: interest}
+  - {pattern: 'escrow[\s:\|]+',                              field: escrow}
+  - {pattern: 'property\s+tax[\s:\|]+',                      field: property_tax}
+  - {pattern: 'hoa\s+(?:fee|dues)?[\s:\|]+',                 field: hoa_fee}
+  - {pattern: 'home\s*owners\s+(?:fee|dues|association)[\s:\|]+', field: hoa_fee}
+  - {pattern: 'closing\s+costs?[\s:\|]+',                    field: closing_costs}
+  - {pattern: 'down\s+payment[\s:\|]+',                      field: down_payment}
+  - {pattern: 'purchase\s+price[\s:\|]+',                    field: purchase_price}
+  - {pattern: 'sale\s+price[\s:\|]+',                        field: sale_price}
+  - {pattern: 'appraised\s+value[\s:\|]+',                   field: appraised_value}
+  - {pattern: 'assessed\s+value[\s:\|]+',                    field: assessed_value}
+  - {pattern: 'market\s+value[\s:\|]+',                      field: market_value}
+  - {pattern: 'loan\s+amount[\s:\|]+',                       field: loan_amount}
+  - {pattern: 'loan\s+balance[\s:\|]+',                      field: loan_balance}
+  - {pattern: 'security\s+deposit[\s:\|]+',                  field: security_deposit}
+  - {pattern: 'earnest\s+money[\s:\|]+',                     field: earnest_money}
+  - {pattern: 'origination\s+fee[\s:\|]+',                   field: origination_fee}
+  - {pattern: 'title\s+(?:fee|insurance)[\s:\|]+',           field: title_fee}
+  - {pattern: 'recording\s+(?:fee|charge)[\s:\|]+',          field: recording_fee}
+  # ── Legal / Contracts ──
+  - {pattern: 'retainer[\s:\|]+',                            field: retainer}
+  - {pattern: 'settlement[\s:\|]+',                          field: settlement_amount}
+  - {pattern: 'judgment[\s:\|]+',                            field: judgment_amount}
+  - {pattern: 'damages[\s:\|]+',                             field: damages}
+  - {pattern: 'attorney\s+(?:fee|costs)[\s:\|]+',            field: attorney_fees}
+  - {pattern: 'legal\s+(?:fee|costs)[\s:\|]+',               field: attorney_fees}
+  - {pattern: 'court\s+(?:fee|costs|filing)[\s:\|]+',        field: court_fees}
+  - {pattern: 'contract\s+value[\s:\|]+',                    field: contract_value}
+  - {pattern: 'contract\s+(?:amount|price)[\s:\|]+',         field: contract_value}
+  - {pattern: 'penalty[\s:\|]+',                             field: penalty}
+  - {pattern: 'liquidated\s+damages[\s:\|]+',                field: liquidated_damages}
+  - {pattern: 'earnest\s+money[\s:\|]+',                     field: earnest_money}
+  # ── Supply Chain / Logistics ──
+  - {pattern: 'unit\s+cost[\s:\|]+',                         field: unit_cost}
+  - {pattern: 'total\s+cost[\s:\|]+',                        field: total_cost}
+  - {pattern: 'freight\s+charge[\s:\|]+',                    field: freight}
+  - {pattern: 'customs\s+(?:duty|fee|tariff)[\s:\|]+',       field: customs_duty}
+  - {pattern: 'import\s+(?:duty|tariff)[\s:\|]+',            field: customs_duty}
+  - {pattern: 'insurance\s+(?:charge|cost)[\s:\|]+',         field: shipping_insurance}
+  - {pattern: 'handling\s+(?:charge|fee)[\s:\|]+',           field: handling}
+  - {pattern: 'declared\s+value[\s:\|]+',                    field: declared_value}
+  - {pattern: 'gross\s+weight[\s:\|]+',                      field: gross_weight}
+  - {pattern: 'net\s+weight[\s:\|]+',                        field: net_weight}
+  # ── Utilities ──
+  - {pattern: 'current\s+charges?[\s:\|]+',                  field: current_charges}
+  - {pattern: 'previous\s+balance[\s:\|]+',                  field: previous_balance}
+  - {pattern: 'total\s+(?:charges?|bill)[\s:\|]+',           field: total_charges}
+  - {pattern: 'electric\s+(?:charge|usage)[\s:\|]+',         field: electric_charge}
+  - {pattern: 'gas\s+(?:charge|usage)[\s:\|]+',              field: gas_charge}
+  - {pattern: 'water\s+(?:charge|usage)[\s:\|]+',            field: water_charge}
+  - {pattern: 'usage[\s:\|]+',                               field: usage}
+  - {pattern: 'kwh[\s:\|]+',                                 field: kwh_usage}
+  - {pattern: 'therms?[\s:\|]+',                             field: therms_usage}
+  # ── Annual / Quarterly Reports ──
+  - {pattern: 'total\s+revenue[\s:\|]+',                     field: revenue}
+  - {pattern: 'net\s+revenue[\s:\|]+',                       field: revenue}
+  - {pattern: 'net\s+sales[\s:\|]+',                         field: revenue}
+  - {pattern: 'gross\s+(?:profit|margin)[\s:\|]+',           field: gross_profit}
+  - {pattern: 'operating\s+(?:income|profit|loss)[\s:\|]+',  field: operating_income}
+  - {pattern: 'net\s+(?:income|loss|earnings)[\s:\|]+',      field: net_income}
+  - {pattern: 'ebitda[\s:\|]+',                              field: ebitda}
+  - {pattern: 'earnings\s+per\s+share[\s:\|]+',              field: eps}
+  - {pattern: 'eps[\s:\|]+',                                 field: eps}
+  - {pattern: 'total\s+assets[\s:\|]+',                      field: total_assets}
+  - {pattern: 'total\s+liabilities[\s:\|]+',                 field: total_liabilities}
+  - {pattern: 'stockholders\s+equity[\s:\|]+',               field: shareholders_equity}
+  - {pattern: 'cash\s+and\s+(?:cash\s+)?equivalents[\s:\|]+',field: cash}
+  - {pattern: 'research\s+(?:and\s+)?development[\s:\|]+',   field: r_and_d}
+  - {pattern: 'capital\s+expenditure[\s:\|]+',               field: capex}
+  - {pattern: 'free\s+cash\s+flow[\s:\|]+',                  field: free_cash_flow}
+  - {pattern: 'shares\s+outstanding[\s:\|]+',                field: shares_outstanding}
+  - {pattern: 'market\s+cap(?:italization)?[\s:\|]+',        field: market_cap}
+
+
+# ── Identifier patterns ───────────────────────────────────────────────────────
+# {pattern: regex, field: stored key}
+# Extracts reference numbers, IDs, codes — enables exact lookup queries.
+# e.g. "find invoice #1042" or "what happened to claim A12345"
+identifier_patterns:
+  # Documents
+  - {pattern: 'invoice\s+(?:#|no\.?|number)[\s:]+',          field: invoice_number}
+  - {pattern: 'inv\s*(?:#|no\.?|number)[\s:]+',              field: invoice_number}
+  - {pattern: 'purchase\s+order\s+(?:#|no\.?|number)[\s:]+', field: po_number}
+  - {pattern: 'p\.?o\.?\s+(?:#|no\.?|number)[\s:]+',         field: po_number}
+  - {pattern: 'order\s+(?:#|no\.?|number|id)[\s:]+',         field: order_number}
+  - {pattern: 'receipt\s+(?:#|no\.?|number)[\s:]+',          field: receipt_number}
+  - {pattern: 'reference\s+(?:#|no\.?|number)[\s:]+',        field: reference_number}
+  - {pattern: 'ref\s*(?:#|no\.?|number)[\s:]+',              field: reference_number}
+  - {pattern: 'confirmation\s+(?:#|no\.?|number)[\s:]+',     field: confirmation_number}
+  - {pattern: 'transaction\s+(?:#|id|number)[\s:]+',         field: transaction_id}
+  - {pattern: 'tracking\s+(?:#|no\.?|number)[\s:]+',         field: tracking_number}
+  # Insurance
+  - {pattern: 'policy\s+(?:#|no\.?|number)[\s:]+',           field: policy_number}
+  - {pattern: 'claim\s+(?:#|no\.?|number|id)[\s:]+',         field: claim_number}
+  - {pattern: 'group\s+(?:#|no\.?|number)[\s:]+',            field: group_number}
+  - {pattern: 'member\s+(?:#|id|number)[\s:]+',              field: member_id}
+  - {pattern: 'subscriber\s+(?:#|id|number)[\s:]+',          field: subscriber_id}
+  # Medical
+  - {pattern: 'patient\s+(?:#|id|number|mrn)[\s:]+',         field: patient_id}
+  - {pattern: 'mrn[\s:]+',                                   field: patient_id}
+  - {pattern: 'npi[\s:]+',                                   field: provider_npi}
+  - {pattern: 'provider\s+(?:#|id|number|npi)[\s:]+',        field: provider_id}
+  - {pattern: 'authorization\s+(?:#|no\.?|number)[\s:]+',    field: auth_number}
+  - {pattern: 'prior\s+auth(?:orization)?\s+(?:#|no\.?|number)[\s:]+', field: prior_auth_number}
+  - {pattern: 'diagnosis\s+code[\s:]+',                      field: diagnosis_code}
+  - {pattern: 'icd[\s\-]?(?:9|10)\s+(?:code)?[\s:]+',        field: diagnosis_code}
+  - {pattern: 'cpt\s+code[\s:]+',                            field: procedure_code}
+  - {pattern: 'procedure\s+code[\s:]+',                      field: procedure_code}
+  - {pattern: 'ndc\s+(?:code|number)[\s:]+',                 field: ndc_code}
+  - {pattern: 'rx\s+(?:#|number)[\s:]+',                     field: prescription_number}
+  # Banking / Finance
+  - {pattern: 'account\s+(?:#|no\.?|number)[\s:]+',          field: account_number}
+  - {pattern: 'routing\s+(?:#|no\.?|number)[\s:]+',          field: routing_number}
+  - {pattern: 'check\s+(?:#|no\.?|number)[\s:]+',            field: check_number}
+  - {pattern: 'wire\s+(?:#|id|reference)[\s:]+',             field: wire_id}
+  - {pattern: 'ach\s+(?:#|id|reference|trace)[\s:]+',        field: ach_trace}
+  # Tax
+  - {pattern: 'ein[\s:]+',                                   field: employer_ein}
+  - {pattern: 'employer\s+(?:id|identification)\s+(?:number|no\.?)[\s:]+', field: employer_ein}
+  - {pattern: 'tin[\s:]+',                                   field: tin}
+  - {pattern: 'tax\s+id[\s:]+',                              field: tin}
+  - {pattern: 'ssn[\s:]+',                                   field: ssn_last4}
+  # Real Estate
+  - {pattern: 'parcel\s+(?:#|id|number)[\s:]+',              field: parcel_number}
+  - {pattern: 'apn[\s:]+',                                   field: parcel_number}
+  - {pattern: 'mls\s+(?:#|id|number)[\s:]+',                 field: mls_number}
+  - {pattern: 'loan\s+(?:#|no\.?|number)[\s:]+',             field: loan_number}
+  - {pattern: 'escrow\s+(?:#|no\.?|number)[\s:]+',           field: escrow_number}
+  # Legal
+  - {pattern: 'case\s+(?:#|no\.?|number)[\s:]+',             field: case_number}
+  - {pattern: 'docket\s+(?:#|no\.?|number)[\s:]+',           field: docket_number}
+  - {pattern: 'matter\s+(?:#|no\.?|number)[\s:]+',           field: matter_number}
+  - {pattern: 'contract\s+(?:#|no\.?|number|id)[\s:]+',      field: contract_number}
+  # Immigration
+  - {pattern: 'i[\s\-]?94\s+(?:#|no\.?|number)?[\s:]+',      field: i94_number}
+  - {pattern: 'alien\s+(?:reg\w*|registration)\s+(?:#|no\.?|number)?[\s:]+', field: alien_number}
+  - {pattern: 'a[\s\-]?number[\s:]+',                        field: alien_number}
+  - {pattern: 'receipt\s+(?:#|no\.?|number)\s+(?:uscis)?[\s:]+', field: uscis_receipt_number}
+  - {pattern: 'passport\s+(?:#|no\.?|number)[\s:]+',         field: passport_number}
+  - {pattern: 'visa\s+(?:#|no\.?|number)[\s:]+',             field: visa_number}
+  # HR / Payroll
+  - {pattern: 'employee\s+(?:#|id|number)[\s:]+',            field: employee_id}
+  - {pattern: 'emp\s*(?:#|id|no\.?)[\s:]+',                  field: employee_id}
+  - {pattern: 'badge\s+(?:#|id|number)[\s:]+',               field: employee_id}
+  - {pattern: 'department\s+(?:#|code|id)[\s:]+',            field: department_code}
+  # Supply Chain
+  - {pattern: 'bill\s+of\s+lading\s+(?:#|no\.?|number)?[\s:]+', field: bol_number}
+  - {pattern: 'bol[\s:]+',                                   field: bol_number}
+  - {pattern: 'container\s+(?:#|id|number)[\s:]+',           field: container_number}
+  - {pattern: 'shipment\s+(?:#|id|number)[\s:]+',            field: shipment_id}
+  - {pattern: 'customs\s+entry\s+(?:#|no\.?|number)[\s:]+',  field: customs_entry_number}
+  - {pattern: 'hs\s+(?:code|tariff)[\s:]+',                  field: hs_code}
+  - {pattern: 'harmonized\s+(?:tariff|code)[\s:]+',          field: hs_code}
+  - {pattern: 'vendor\s+(?:#|id|number|code)[\s:]+',         field: vendor_id}
+  - {pattern: 'supplier\s+(?:#|id|number|code)[\s:]+',       field: vendor_id}
+
+
+# ── Entity / party patterns ───────────────────────────────────────────────────
+# {pattern: regex, field: stored key}  — captures WHO is involved
+# Values extracted as short text strings (first ~40 chars after the label).
+entity_patterns:
+  # Payroll / HR
+  - {pattern: 'employee\s+name[\s:]+',                       field: employee_name}
+  - {pattern: 'employee[\s:]+',                              field: employee_name}
+  - {pattern: 'employer[\s:]+',                              field: employer_name}
+  - {pattern: 'company\s+name[\s:]+',                        field: employer_name}
+  - {pattern: 'department[\s:]+',                            field: department}
+  - {pattern: 'job\s+title[\s:]+',                           field: job_title}
+  - {pattern: 'position[\s:]+',                              field: job_title}
+  - {pattern: 'employment\s+type[\s:]+',                     field: employment_type}
+  - {pattern: 'pay\s+(?:type|frequency|schedule)[\s:]+',     field: pay_frequency}
+  - {pattern: 'manager[\s:]+',                               field: manager_name}
+  - {pattern: 'supervisor[\s:]+',                            field: manager_name}
+  # Insurance
+  - {pattern: 'insured\s+name[\s:]+',                        field: insured_name}
+  - {pattern: 'insured[\s:]+',                               field: insured_name}
+  - {pattern: 'subscriber\s+name[\s:]+',                     field: subscriber_name}
+  - {pattern: 'patient\s+name[\s:]+',                        field: patient_name}
+  - {pattern: 'plan\s+name[\s:]+',                           field: plan_name}
+  - {pattern: 'insurance\s+company[\s:]+',                   field: insurance_company}
+  - {pattern: 'carrier[\s:]+',                               field: insurance_company}
+  - {pattern: 'agent\s+name[\s:]+',                          field: agent_name}
+  - {pattern: 'coverage\s+type[\s:]+',                       field: coverage_type}
+  - {pattern: 'plan\s+type[\s:]+',                           field: plan_type}
+  # Medical
+  - {pattern: 'provider\s+name[\s:]+',                       field: provider_name}
+  - {pattern: 'physician[\s:]+',                             field: provider_name}
+  - {pattern: 'doctor[\s:]+',                                field: provider_name}
+  - {pattern: 'referring\s+provider[\s:]+',                  field: referring_provider}
+  - {pattern: 'facility[\s:]+',                              field: facility_name}
+  - {pattern: 'hospital[\s:]+',                              field: facility_name}
+  - {pattern: 'lab(?:oratory)?[\s:]+',                       field: lab_name}
+  - {pattern: 'medication[\s:]+',                            field: medication_name}
+  - {pattern: 'drug\s+name[\s:]+',                           field: medication_name}
+  - {pattern: 'diagnosis[\s:]+',                             field: diagnosis}
+  - {pattern: 'condition[\s:]+',                             field: diagnosis}
+  # Legal
+  - {pattern: 'plaintiff[\s:]+',                             field: plaintiff}
+  - {pattern: 'defendant[\s:]+',                             field: defendant}
+  - {pattern: 'petitioner[\s:]+',                            field: plaintiff}
+  - {pattern: 'respondent[\s:]+',                            field: defendant}
+  - {pattern: 'attorney\s+for[\s:]+',                        field: attorney}
+  - {pattern: 'counsel[\s:]+',                               field: attorney}
+  - {pattern: 'law\s+firm[\s:]+',                            field: law_firm}
+  - {pattern: 'court[\s:]+',                                 field: court_name}
+  - {pattern: 'judge[\s:]+',                                 field: judge_name}
+  - {pattern: 'jurisdiction[\s:]+',                          field: jurisdiction}
+  - {pattern: 'governing\s+law[\s:]+',                       field: governing_law}
+  # Real Estate
+  - {pattern: 'buyer[\s:]+',                                 field: buyer_name}
+  - {pattern: 'seller[\s:]+',                                field: seller_name}
+  - {pattern: 'lessor[\s:]+',                                field: lessor_name}
+  - {pattern: 'lessee[\s:]+',                                field: lessee_name}
+  - {pattern: 'landlord[\s:]+',                              field: landlord_name}
+  - {pattern: 'tenant[\s:]+',                                field: tenant_name}
+  - {pattern: 'property\s+address[\s:]+',                    field: property_address}
+  - {pattern: 'property\s+type[\s:]+',                       field: property_type}
+  - {pattern: 'lender[\s:]+',                                field: lender_name}
+  # Supply Chain
+  - {pattern: 'vendor\s+name[\s:]+',                         field: vendor_name}
+  - {pattern: 'supplier\s+name[\s:]+',                       field: vendor_name}
+  - {pattern: 'shipper[\s:]+',                               field: shipper_name}
+  - {pattern: 'carrier\s+name[\s:]+',                        field: carrier_name}
+  - {pattern: 'consignee[\s:]+',                             field: consignee_name}
+  - {pattern: 'ship\s+to[\s:]+',                             field: ship_to}
+  - {pattern: 'ship\s+from[\s:]+',                           field: ship_from}
+  - {pattern: 'origin\s+port[\s:]+',                         field: origin_port}
+  - {pattern: 'destination\s+port[\s:]+',                    field: destination_port}
+  # Immigration
+  - {pattern: 'visa\s+type[\s:]+',                           field: visa_type}
+  - {pattern: 'visa\s+class[\s:]+',                          field: visa_type}
+  - {pattern: 'visa\s+category[\s:]+',                       field: visa_type}
+  - {pattern: 'nonimmigrant\s+(?:class|status)[\s:]+',       field: visa_type}
+  - {pattern: 'country\s+of\s+(?:birth|citizenship)[\s:]+',  field: country_of_birth}
+  - {pattern: 'nationality[\s:]+',                           field: nationality}
+  - {pattern: 'port\s+of\s+entry[\s:]+',                     field: port_of_entry}
+  - {pattern: 'petitioner\s+name[\s:]+',                     field: petitioner_name}
+  - {pattern: 'beneficiary\s+name[\s:]+',                    field: beneficiary_name}
+  # Banking / Finance
+  - {pattern: 'account\s+(?:holder|owner|name)[\s:]+',       field: account_holder}
+  - {pattern: 'bank\s+name[\s:]+',                           field: bank_name}
+  - {pattern: 'financial\s+institution[\s:]+',               field: bank_name}
+  - {pattern: 'payee[\s:]+',                                 field: payee_name}
+  - {pattern: 'payer[\s:]+',                                 field: payer_name}
+  # Invoice / Billing
+  - {pattern: 'bill\s+to[\s:]+',                             field: bill_to}
+  - {pattern: 'sold\s+to[\s:]+',                             field: sold_to}
+  - {pattern: 'client\s+name[\s:]+',                         field: client_name}
+  - {pattern: 'customer\s+name[\s:]+',                       field: client_name}

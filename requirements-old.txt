@@ -1,0 +1,111 @@
+# ============================================================================
+# UniDocVerse AI — STABLE LOCAL STACK (Python 3.10)
+# LangChain 0.3.x (Production Safe)
+# ============================================================================
+
+# Core
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pydantic==2.10.4
+pydantic-settings==2.7.1
+python-dotenv==1.0.1
+
+# Database
+sqlalchemy==2.0.36
+psycopg2-binary==2.9.10
+pgvector==0.3.6
+
+# LangChain Ecosystem (COMPATIBLE)
+langchain-core==0.3.63
+langchain==0.3.14
+langchain-community==0.3.14
+langchain-text-splitters==0.3.8
+langgraph==0.2.59
+
+# Ollama
+ollama==0.4.7
+
+# ML / Embeddings
+torch==2.6.0
+transformers==4.47.1
+tokenizers==0.21.0
+sentence-transformers==3.3.1
+
+# Data
+numpy==1.26.4
+pandas==2.2.3
+
+# Document Parsing
+pdfplumber==0.11.4
+PyPDF2==3.0.1
+pdf2image==1.17.0
+python-docx==1.1.2
+python-pptx==1.0.2
+openpyxl==3.1.5
+xlrd==2.0.1
+extract-msg==0.55.0
+pymupdf==1.26.7
+pdfminer.six==20231228
+
+
+# OCR / Images
+Pillow==11.0.0
+pytesseract==0.3.13
+pillow-heif==0.18.0
+
+# Web / Text
+beautifulsoup4==4.12.3
+lxml==5.1.0
+chardet==5.2.0
+
+# Utilities
+httpx==0.28.1
+requests==2.32.3
+orjson==3.10.12
+python-dateutil==2.9.0
+
+# Security
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+
+fitz  # PyMuPDF
+pyyaml>=6.0
+
+
+
+# Core data stack
+pandas>=1.5.3
+numpy>=1.24.3
+
+# I/O for Excel files
+openpyxl>=3.1.0
+xlrd>=2.0.1
+
+# Stats, modeling, and ML
+scikit-learn>=1.2.2
+statsmodels>=0.14.0
+
+# Visualization
+matplotlib>=3.6.3
+seaborn>=0.12.2
+
+# Explainability
+shap>=0.41.0
+
+# Utilities
+joblib>=1.2.0
+
+# Optional but recommended for large data / parquet
+pyarrow>=11.0.0
+
+# FastAPI / server integration (if analyzer runs inside backend)
+fastapi>=0.95.0
+uvicorn[standard]>=0.22.0
+
+# Misc helpers
+python-dateutil>=2.8.2
+pytz>=2023.3
+
+pdfplumber>=0.10.0
+tabula-py>=2.8.0

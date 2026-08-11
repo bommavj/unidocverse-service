@@ -1,0 +1,14 @@
+[environments.default]
+url = "jdbc:postgresql://localhost:54321/unidocverse_db"
+user = "unidocverse"
+password = "unidocverse"
+
+[flyway]
+locations = ["filesystem:migrations"]
+baselineOnMigrate = true
+validateOnMigrate = true
+
+#[flyway]
+#locations = ["filesystem:migrations"]
+#baselineOnMigrate = true
+#validateOnMigrate = true

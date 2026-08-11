@@ -1,0 +1,141 @@
+# ============================================================================
+# CORE FRAMEWORK
+# ============================================================================
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+pydantic==2.5.3
+pydantic-settings==2.1.0
+
+# ============================================================================
+# DATABASE
+# ============================================================================
+sqlalchemy==2.0.25
+psycopg2-binary==2.9.9
+pgvector==0.2.4
+alembic==1.13.1
+
+# ============================================================================
+# AI & LLM - Use compatible versions
+# ============================================================================
+# Option 1: Latest LangChain (Recommended)
+langgraph>=0.2.0
+langchain>=0.3.0
+langchain-community>=0.3.0
+langchain-core>=0.3.0
+
+# Option 2: OR use older compatible versions (uncomment if Option 1 fails)
+# langgraph==0.0.26
+# langchain==0.1.6
+# langchain-community==0.0.20
+# langchain-core==0.1.23
+# langsmith==0.0.87
+
+# Ollama for local LLM
+ollama==0.1.6
+
+# Embeddings
+sentence-transformers==2.3.1
+transformers==4.36.2
+torch==2.9.1
+
+# ============================================================================
+# DOCUMENT PARSING
+# ============================================================================
+# PDF parsing
+pdfplumber==0.10.3
+PyPDF2==3.0.1
+
+# Office documents (Word, Excel, PowerPoint)
+python-docx==1.1.0
+python-pptx==0.6.23
+openpyxl==3.1.2
+xlrd==2.0.1
+
+# Data processing
+pandas==2.2.2
+numpy==1.26.3
+
+# OCR for scanned documents
+pytesseract==0.3.10
+Pillow>=10.0.0
+
+# ============================================================================
+# MCP (Model Context Protocol)
+# ============================================================================
+#mcp==1.23.3
+#anthropic-mcp==0.1.0
+
+# ============================================================================
+# UTILITIES
+# ============================================================================
+# HTTP requests
+httpx>=0.25.2
+requests==2.31.0
+
+# Date/time handling
+python-dateutil==2.8.2
+
+# Environment variables
+python-dotenv==1.0.0
+
+# Logging
+loguru==0.7.2
+
+# File handling
+pathlib2==2.3.7.post1
+
+# JSON handling
+orjson==3.9.12
+
+# UUID generation
+uuid==1.30
+
+# ============================================================================
+# TESTING & DEVELOPMENT
+# ============================================================================
+pytest==7.4.4
+pytest-asyncio==0.23.3
+pytest-cov==4.1.0
+black==23.12.1
+flake8==7.0.0
+mypy==1.8.0
+
+# ============================================================================
+# MONITORING & DEBUGGING
+# ============================================================================
+# Performance monitoring
+py-spy==0.3.14
+
+# Memory profiling
+memory-profiler==0.61.0
+
+# ============================================================================
+# SECURITY
+# ============================================================================
+# Password hashing (for future auth)
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+
+# CORS
+python-multipart==0.0.6
+
+# ============================================================================
+# OPTIONAL BUT RECOMMENDED
+# ============================================================================
+# Rate limiting
+slowapi==0.1.9
+
+# Caching
+redis==5.0.1
+hiredis==2.3.2
+
+# Task queue (for future scaling)
+celery==5.3.6
+
+# ============================================================================
+# VERSION NOTES
+# ============================================================================
+# Python version: 3.10+
+# PostgreSQL: 14+ with pgvector extension
+# Tesseract OCR: Must be installed separately (system package)

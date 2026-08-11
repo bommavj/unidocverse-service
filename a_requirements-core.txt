@@ -1,0 +1,30 @@
+# Absolute essentials only
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+pydantic==2.5.3
+sqlalchemy==2.0.25
+psycopg2-binary==2.9.9
+pgvector==0.2.4
+
+# AI (with latest versions)
+langgraph==0.2.45
+langchain==0.3.13
+langchain-community==0.3.13
+ollama==0.4.4
+sentence-transformers==3.3.1
+torch==2.9.1
+numpy==1.26.4
+
+# Document parsing
+pdfplumber==0.11.4
+python-docx==1.1.2
+python-pptx==1.0.2
+openpyxl==3.1.5
+pandas==2.2.3
+pytesseract==0.3.13
+Pillow==11.0.0
+
+# Utils
+python-dotenv==1.0.1
+python-dateutil==2.9.0

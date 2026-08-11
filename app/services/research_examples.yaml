@@ -1,0 +1,459 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Research Examples — Dynamic Few-Shot Library
+#
+# Each entry has:
+#   q        : the example question (used for embedding + similarity lookup)
+#   a        : the JSON answer (injected verbatim into the prompt)
+#   intent   : for filtering / analytics
+#   doc_type : for filtering / analytics
+#
+# At startup these are embedded with the same sentence-transformer used for
+# chunk search. At query time the top-N most similar examples are selected
+# and injected into the REASONER_PROMPT instead of a fixed set.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAY STUB — field_extract / aggregate / compare / trend / multi_period
+# ══════════════════════════════════════════════════════════════════════════════
+- q: "whats the gross pay for month may 2026"
+  intent: aggregate
+  doc_type: pay_stub
+  a: '{"intent":"aggregate","field":"gross pay","field_synonyms":["gross earnings","total gross","gross compensation","earnings before deductions","gross wages"],"doc_type_hint":"pay_stub","date_hint":{"type":"specific_month","months":["May"],"years":["2026"],"range_description":null},"needs_aggregation":true,"aggregation_op":"sum","search_queries":["gross pay may 2026","gross earnings paycheck may 2026","total gross pay stub"],"reasoning":"User wants the total gross pay across all pay stubs for May 2026"}'
+
+- q: "what did i take home last month"
+  intent: field_extract
+  doc_type: pay_stub
+  a: '{"intent":"field_extract","field":"net pay","field_synonyms":["net earnings","take home pay","net wages","net check","direct deposit amount"],"doc_type_hint":"pay_stub","date_hint":{"type":"relative","months":[],"years":[],"range_description":"last month"},"needs_aggregation":false,"aggregation_op":null,"search_queries":["net pay take home","net check direct deposit","net wages paycheck"],"reasoning":"User wants their net pay from the most recent pay stub"}'
+
+- q: "how much federal tax was withheld this year"
+  intent: aggregate
+  doc_type: pay_stub
+  a: '{"intent":"aggregate","field":"federal tax","field_synonyms":["federal income tax","federal withholding","fed tax withheld"],"doc_type_hint":"pay_stub","date_hint":{"type":"year","months":[],"years":[],"range_description":"this year"},"needs_aggregation":true,"aggregation_op":"sum","search_queries":["federal income tax withheld","federal withholding paycheck","fed tax deduction"],"reasoning":"User wants the total federal income tax withheld across all pay stubs for the current year"}'
+
+- q: "how much did I pay for medical insurance from February to July 2026"
+  intent: aggregate
+  doc_type: pay_stub
+  a: '{"intent":"aggregate","field":"medical insurance","field_synonyms":["health insurance","medical premium","insurance deduction","health benefit","medical ins"],"doc_type_hint":"pay_stub","date_hint":{"type":"date_range","months":["February","March","April","May","June","July"],"years":["2026"],"range_description":"February through July 2026"},"needs_aggregation":true,"aggregation_op":"sum","search_queries":["medical insurance deduction","health insurance premium paycheck","medical ins health benefit"],"reasoning":"User wants the total medical insurance deductions across 6 months of pay stubs"}'
+
+- q: "how much 401k did i contribute"
+  intent: aggregate
+  doc_type: pay_stub
+  a: '{"intent":"aggregate","field":"401k","field_synonyms":["401(k)","retirement contribution","401k deduction","roth 401k","pre-tax retirement","403b"],"doc_type_hint":"pay_stub","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":true,"aggregation_op":"sum","search_queries":["401k retirement contribution","401(k) deduction paycheck","pre-tax retirement savings"],"reasoning":"User wants total 401k contributions across pay stubs"}'
+
+- q: "what is my dental and vision deduction"
+  intent: field_extract
+  doc_type: pay_stub
+  a: '{"intent":"field_extract","field":"dental vision","field_synonyms":["dental insurance","vision insurance","dental plan","vision plan","dental deduction","vision deduction"],"doc_type_hint":"pay_stub","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["dental vision deduction","dental plan vision plan","dental insurance vision insurance"],"reasoning":"User wants the dental and vision insurance deduction amounts from pay stubs"}'
+
+- q: "compare my Q1 and Q2 net pay"
+  intent: compare
+  doc_type: pay_stub
+  a: '{"intent":"compare","field":"net pay","field_synonyms":["net earnings","take home pay","net wages","net income","net check"],"doc_type_hint":"pay_stub","date_hint":{"type":"date_range","months":["January","February","March","April","May","June"],"years":[],"range_description":"Q1 and Q2"},"needs_aggregation":true,"aggregation_op":"compare","search_queries":["net pay take home","net wages paycheck","net earnings period"],"reasoning":"User wants to compare net pay totals between Q1 and Q2"}'
+
+- q: "which month had the highest gross pay in 2025"
+  intent: trend
+  doc_type: pay_stub
+  a: '{"intent":"trend","field":"gross pay","field_synonyms":["gross earnings","total gross","gross wages","gross compensation"],"doc_type_hint":"pay_stub","date_hint":{"type":"year","months":[],"years":["2025"],"range_description":null},"needs_aggregation":true,"aggregation_op":"max","search_queries":["gross pay earnings","gross wages paycheck 2025","total gross compensation"],"reasoning":"User wants to find the month with maximum gross pay across all 2025 pay stubs"}'
+
+- q: "compare these statements and give me insights"
+  intent: compare
+  doc_type: pay_stub
+  a: '{"intent":"compare","field":null,"field_synonyms":["gross pay","net pay","deductions","federal tax","state tax","medical insurance","dental","vision","401k"],"doc_type_hint":"pay_stub","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":true,"aggregation_op":"compare","search_queries":["gross pay net pay earnings","deductions federal tax state tax","medical dental vision 401k"],"reasoning":"User wants a side-by-side comparison of all key financial fields across the uploaded statements"}'
+
+- q: "what are my total deductions"
+  intent: aggregate
+  doc_type: pay_stub
+  a: '{"intent":"aggregate","field":"total deductions","field_synonyms":["deductions","withholdings","pre-tax deductions","post-tax deductions","total withheld"],"doc_type_hint":"pay_stub","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":true,"aggregation_op":"sum","search_queries":["total deductions withholdings","federal state tax social security medicare","medical dental vision 401k deductions"],"reasoning":"User wants the sum of all deductions from their paycheck"}'
+
+- q: "what is my social security and medicare deduction"
+  intent: field_extract
+  doc_type: pay_stub
+  a: '{"intent":"field_extract","field":"fica","field_synonyms":["social security tax","medicare tax","fica","oasdi","ss tax","med tax","social security withholding","medicare withholding"],"doc_type_hint":"pay_stub","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["social security medicare fica","oasdi med tax withholding","ss tax medicare deduction paycheck"],"reasoning":"User wants their FICA deduction amounts from pay stubs"}'
+
+- q: "give me insights from these paychecks"
+  intent: compare
+  doc_type: pay_stub
+  a: '{"intent":"compare","field":null,"field_synonyms":["gross pay","net pay","federal tax","state tax","deductions","pay period","pay date"],"doc_type_hint":"pay_stub","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":true,"aggregation_op":"compare","search_queries":["gross pay net pay pay period","federal tax state tax deductions","earnings pay date period"],"reasoning":"User wants analytical insights by comparing key fields across multiple pay stubs"}'
+
+- q: "show my earnings broken down by month for all of 2026"
+  intent: multi_period
+  doc_type: pay_stub
+  a: '{"intent":"multi_period","field":"gross pay","field_synonyms":["gross earnings","gross wages","monthly earnings","total gross"],"doc_type_hint":"pay_stub","date_hint":{"type":"year","months":[],"years":["2026"],"range_description":"all of 2026 by month"},"needs_aggregation":true,"aggregation_op":"sum","search_queries":["gross pay monthly 2026","earnings pay period 2026","gross wages pay stub"],"reasoning":"User wants gross pay totals broken down month by month for 2026"}'
+
+- q: "which deduction costs me the most each month"
+  intent: rank
+  doc_type: pay_stub
+  a: '{"intent":"rank","field":"deductions","field_synonyms":["deductions","withholdings","pre-tax deductions","benefit costs"],"doc_type_hint":"pay_stub","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":true,"aggregation_op":"rank","search_queries":["deductions medical dental vision 401k federal tax","withholdings benefit costs paycheck","pre-tax post-tax deduction amounts"],"reasoning":"User wants deductions ranked from largest to smallest"}'
+
+- q: "list all my pay stubs from 2025"
+  intent: list
+  doc_type: pay_stub
+  a: '{"intent":"list","field":"pay stubs","field_synonyms":["paycheck","pay period","pay date","earnings statement"],"doc_type_hint":"pay_stub","date_hint":{"type":"year","months":[],"years":["2025"],"range_description":"all of 2025"},"needs_aggregation":false,"aggregation_op":"list","search_queries":["pay period pay date 2025","paycheck earnings 2025","pay stub period ending"],"reasoning":"User wants an enumeration of all pay stubs from 2025"}'
+
+- q: "summarize my payroll for this year"
+  intent: summarize
+  doc_type: pay_stub
+  a: '{"intent":"summarize","field":null,"field_synonyms":["gross pay","net pay","deductions","taxes","benefits","ytd"],"doc_type_hint":"pay_stub","date_hint":{"type":"year","months":[],"years":[],"range_description":"this year"},"needs_aggregation":true,"aggregation_op":"list","search_queries":["gross pay net pay ytd","deductions taxes benefits year to date","earnings summary pay stub"],"reasoning":"User wants a high-level summary of all payroll data for the current year"}'
+
+- q: "does my total deductions add up correctly"
+  intent: verify
+  doc_type: pay_stub
+  a: '{"intent":"verify","field":"total deductions","field_synonyms":["total deductions","sum of deductions","withholdings total"],"doc_type_hint":"pay_stub","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":true,"aggregation_op":"verify","search_queries":["total deductions federal state tax social security","medical dental vision 401k deductions","gross pay net pay deductions"],"reasoning":"User wants to verify that the individual deductions sum to the stated total deductions"}'
+
+- q: "what percentage of my gross pay goes to taxes"
+  intent: calculate
+  doc_type: pay_stub
+  a: '{"intent":"calculate","field":"effective tax rate","field_synonyms":["tax rate","percent taxes","federal state tax percent","tax burden"],"doc_type_hint":"pay_stub","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":true,"aggregation_op":"calculate","search_queries":["gross pay federal state tax","total taxes withheld paycheck","federal income state income social security medicare"],"reasoning":"User wants to calculate taxes as a percentage of gross pay"}'
+
+- q: "do i have any paychecks from 2024"
+  intent: exists_check
+  doc_type: pay_stub
+  a: '{"intent":"exists_check","field":"pay stubs 2024","field_synonyms":["paycheck","pay period","pay date","earnings 2024"],"doc_type_hint":"pay_stub","date_hint":{"type":"year","months":[],"years":["2024"],"range_description":null},"needs_aggregation":false,"aggregation_op":"exists","search_queries":["pay period 2024","pay date pay stub 2024","earnings paycheck 2024"],"reasoning":"User wants to know if any pay stub documents from 2024 exist"}'
+
+- q: "are there any unusual deductions on my recent paychecks"
+  intent: anomaly
+  doc_type: pay_stub
+  a: '{"intent":"anomaly","field":"deductions","field_synonyms":["deductions","withholdings","unusual charges","unexpected deduction"],"doc_type_hint":"pay_stub","date_hint":{"type":"relative","months":[],"years":[],"range_description":"recent"},"needs_aggregation":true,"aggregation_op":"anomaly","search_queries":["deductions withholdings paycheck","federal state tax medical dental vision","unusual deduction amount"],"reasoning":"User wants to identify any deductions that look abnormal or unexpected"}'
+
+- q: "based on my pay history what will i earn this year"
+  intent: forecast
+  doc_type: pay_stub
+  a: '{"intent":"forecast","field":"annual earnings","field_synonyms":["gross pay","annual salary","projected earnings","year to date"],"doc_type_hint":"pay_stub","date_hint":{"type":"year","months":[],"years":[],"range_description":"this year"},"needs_aggregation":true,"aggregation_op":"forecast","search_queries":["gross pay ytd year to date","earnings pay period monthly","gross wages pay stub history"],"reasoning":"User wants to project annual earnings based on historical pay stub data"}'
+
+# ══════════════════════════════════════════════════════════════════════════════
+# BANK STATEMENT
+# ══════════════════════════════════════════════════════════════════════════════
+- q: "what is my account balance"
+  intent: field_extract
+  doc_type: bank_statement
+  a: '{"intent":"field_extract","field":"account balance","field_synonyms":["ending balance","closing balance","available balance","current balance","ledger balance"],"doc_type_hint":"bank_statement","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["ending balance closing balance","available balance account","current balance statement"],"reasoning":"User wants the current or ending balance from their bank statement"}'
+
+- q: "how much was deposited this month"
+  intent: aggregate
+  doc_type: bank_statement
+  a: '{"intent":"aggregate","field":"deposits","field_synonyms":["total deposits","credits","direct deposits","incoming transfers","deposits received"],"doc_type_hint":"bank_statement","date_hint":{"type":"relative","months":[],"years":[],"range_description":"this month"},"needs_aggregation":true,"aggregation_op":"sum","search_queries":["total deposits credits","direct deposit incoming","deposits received statement"],"reasoning":"User wants total deposits credited to their bank account this month"}'
+
+- q: "show me all transactions over 1000 dollars"
+  intent: list
+  doc_type: bank_statement
+  a: '{"intent":"list","field":"transactions","field_synonyms":["transactions","debits","credits","charges","payments"],"doc_type_hint":"bank_statement","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":"list","search_queries":["transaction amount debit credit","charges payments withdrawals","transactions balance"],"reasoning":"User wants a list of all transactions above $1000"}'
+
+- q: "are there any suspicious charges on my account"
+  intent: anomaly
+  doc_type: bank_statement
+  a: '{"intent":"anomaly","field":"transactions","field_synonyms":["charges","debits","unusual transactions","unexpected payments"],"doc_type_hint":"bank_statement","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":"anomaly","search_queries":["transactions debits charges","withdrawals payments","unusual large transaction"],"reasoning":"User wants to identify any suspicious or unusual charges on their bank statement"}'
+
+- q: "how much did I spend on average per month last year"
+  intent: calculate
+  doc_type: bank_statement
+  a: '{"intent":"calculate","field":"average monthly spend","field_synonyms":["total withdrawals","debits","spending","payments","charges"],"doc_type_hint":"bank_statement","date_hint":{"type":"year","months":[],"years":[],"range_description":"last year"},"needs_aggregation":true,"aggregation_op":"avg","search_queries":["total withdrawals debits payments","charges spending monthly","transactions debit"],"reasoning":"User wants to calculate their average monthly spending from bank statements"}'
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CREDIT CARD STATEMENT
+# ══════════════════════════════════════════════════════════════════════════════
+- q: "what is my credit card balance"
+  intent: field_extract
+  doc_type: credit_card_statement
+  a: '{"intent":"field_extract","field":"statement balance","field_synonyms":["statement balance","current balance","balance due","total owed","amount due"],"doc_type_hint":"credit_card_statement","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["statement balance amount due","current balance credit card","total owed minimum payment"],"reasoning":"User wants the current balance on their credit card statement"}'
+
+- q: "what is the minimum payment due on my credit card"
+  intent: field_extract
+  doc_type: credit_card_statement
+  a: '{"intent":"field_extract","field":"minimum payment","field_synonyms":["minimum payment due","min payment","payment due","amount due","due date"],"doc_type_hint":"credit_card_statement","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["minimum payment due date","min payment credit card","payment due amount"],"reasoning":"User wants the minimum payment amount and due date from their credit card statement"}'
+
+- q: "how much did i charge on my credit card this month"
+  intent: aggregate
+  doc_type: credit_card_statement
+  a: '{"intent":"aggregate","field":"purchases","field_synonyms":["purchases","charges","transactions","new charges","spending"],"doc_type_hint":"credit_card_statement","date_hint":{"type":"relative","months":[],"years":[],"range_description":"this month"},"needs_aggregation":true,"aggregation_op":"sum","search_queries":["purchases charges new transactions","spending credit card statement","total charges this period"],"reasoning":"User wants the total purchases charged to their credit card this month"}'
+
+# ══════════════════════════════════════════════════════════════════════════════
+# INVOICE / PURCHASE ORDER
+# ══════════════════════════════════════════════════════════════════════════════
+- q: "what is the invoice total"
+  intent: field_extract
+  doc_type: invoice
+  a: '{"intent":"field_extract","field":"invoice total","field_synonyms":["total due","amount due","total amount","balance due","invoice amount","total billed","grand total"],"doc_type_hint":"invoice","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["invoice total amount due","total due balance","grand total billed"],"reasoning":"User wants the total amount owed on an invoice"}'
+
+- q: "when is the invoice due"
+  intent: field_extract
+  doc_type: invoice
+  a: '{"intent":"field_extract","field":"due date","field_synonyms":["payment due date","due date","net 30","payment terms","invoice date"],"doc_type_hint":"invoice","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["due date payment terms","invoice date net 30","payment due"],"reasoning":"User wants the payment due date from the invoice"}'
+
+- q: "does this invoice match the purchase order"
+  intent: verify
+  doc_type: invoice
+  a: '{"intent":"verify","field":"invoice vs PO","field_synonyms":["invoice total","PO amount","purchase order","line items","quantity price"],"doc_type_hint":"invoice","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":"verify","search_queries":["invoice total line items unit price","purchase order PO number quantity","amount billed vs ordered"],"reasoning":"User wants to verify that the invoice amounts and line items match the corresponding purchase order"}'
+
+- q: "list all invoices from this vendor"
+  intent: list
+  doc_type: invoice
+  a: '{"intent":"list","field":"invoices","field_synonyms":["invoice number","vendor","supplier","billing","invoices"],"doc_type_hint":"invoice","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":"list","search_queries":["invoice number vendor supplier","billing invoice date","vendor invoices"],"reasoning":"User wants a list of all invoices from a specific vendor"}'
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAX FORMS — W2, 1099, 1040
+# ══════════════════════════════════════════════════════════════════════════════
+- q: "what is my adjusted gross income"
+  intent: field_extract
+  doc_type: tax_form
+  a: '{"intent":"field_extract","field":"adjusted gross income","field_synonyms":["AGI","adjusted gross income","taxable income","total income","gross income"],"doc_type_hint":"tax_form","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["adjusted gross income AGI","taxable income total income","gross income schedule"],"reasoning":"User wants their adjusted gross income from a tax form"}'
+
+- q: "how much federal tax did i pay this year"
+  intent: field_extract
+  doc_type: tax_form
+  a: '{"intent":"field_extract","field":"federal income tax","field_synonyms":["federal tax paid","total tax","income tax","federal income tax withheld","tax liability"],"doc_type_hint":"tax_form","date_hint":{"type":"year","months":[],"years":[],"range_description":"this year"},"needs_aggregation":false,"aggregation_op":null,"search_queries":["federal income tax total tax liability","income tax withheld W2","federal tax paid refund"],"reasoning":"User wants the total federal income tax paid or withheld"}'
+
+- q: "what does my W2 say for box 1"
+  intent: field_extract
+  doc_type: w2
+  a: '{"intent":"field_extract","field":"wages tips compensation","field_synonyms":["box 1","wages tips","total wages","compensation","W2 box 1"],"doc_type_hint":"w2","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["wages tips compensation box 1","W2 total wages","employer wages reported"],"reasoning":"User wants the wages tips and compensation amount from W2 box 1"}'
+
+- q: "am i getting a tax refund or do i owe"
+  intent: field_extract
+  doc_type: tax_return
+  a: '{"intent":"field_extract","field":"refund or owe","field_synonyms":["tax refund","amount owed","balance due","overpayment","refund amount","tax due"],"doc_type_hint":"tax_return","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["tax refund overpayment amount","balance due tax owed","refund amount total tax"],"reasoning":"User wants to know whether they are owed a refund or owe additional tax"}'
+
+- q: "what is my effective tax rate"
+  intent: calculate
+  doc_type: tax_return
+  a: '{"intent":"calculate","field":"effective tax rate","field_synonyms":["effective rate","average tax rate","total tax percent","tax burden"],"doc_type_hint":"tax_return","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":true,"aggregation_op":"calculate","search_queries":["total tax liability","adjusted gross income taxable income","federal income tax total"],"reasoning":"User wants to calculate their effective tax rate as total tax divided by AGI"}'
+
+# ══════════════════════════════════════════════════════════════════════════════
+# INSURANCE — declarations, policy, EOB
+# ══════════════════════════════════════════════════════════════════════════════
+- q: "when does my policy expire"
+  intent: field_extract
+  doc_type: insurance
+  a: '{"intent":"field_extract","field":"policy expiration","field_synonyms":["policy expiry","coverage end date","policy end date","renewal date","expiration date"],"doc_type_hint":"insurance","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["policy expiration expiry date","coverage end date renewal","policy term end"],"reasoning":"User wants to know when their insurance policy expires"}'
+
+- q: "what did insurance pay vs what i owe"
+  intent: compare
+  doc_type: insurance
+  a: '{"intent":"compare","field":"plan paid vs patient responsibility","field_synonyms":["plan paid","insurance paid","you owe","patient responsibility","copay","coinsurance","out of pocket"],"doc_type_hint":"insurance","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":"compare","search_queries":["plan paid insurance covered","patient responsibility you owe","copay coinsurance out of pocket"],"reasoning":"User wants to compare what insurance paid versus what they owe on a claim"}'
+
+- q: "what is my deductible and how much have i met"
+  intent: field_extract
+  doc_type: insurance
+  a: '{"intent":"field_extract","field":"deductible","field_synonyms":["deductible","deductible met","annual deductible","deductible remaining","out of pocket"],"doc_type_hint":"insurance","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["deductible annual deductible met","out of pocket maximum remaining","deductible balance"],"reasoning":"User wants their deductible amount and how much has been met"}'
+
+- q: "what is my annual premium"
+  intent: field_extract
+  doc_type: declarations_page
+  a: '{"intent":"field_extract","field":"annual premium","field_synonyms":["premium","annual premium","total premium","insurance cost","policy premium"],"doc_type_hint":"declarations_page","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["annual premium total premium","policy premium insurance cost","premium due"],"reasoning":"User wants the annual premium amount from their insurance declarations page"}'
+
+- q: "is flood damage covered under my policy"
+  intent: exists_check
+  doc_type: insurance_policy
+  a: '{"intent":"exists_check","field":"flood coverage","field_synonyms":["flood","flood damage","flood coverage","water damage","flooding exclusion"],"doc_type_hint":"insurance_policy","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":"exists","search_queries":["flood coverage water damage","exclusions flood","covered perils flood"],"reasoning":"User wants to know if flood damage is covered or excluded from their insurance policy"}'
+
+- q: "summarize my insurance policy coverage"
+  intent: summarize
+  doc_type: insurance_policy
+  a: '{"intent":"summarize","field":null,"field_synonyms":["coverage","policy terms","covered perils","exclusions","limits","deductible"],"doc_type_hint":"insurance_policy","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":"list","search_queries":["coverage limits exclusions","covered perils deductible","policy terms conditions"],"reasoning":"User wants an overview of what their insurance policy covers"}'
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MEDICAL / HEALTHCARE
+# ══════════════════════════════════════════════════════════════════════════════
+- q: "what were my total medical charges"
+  intent: aggregate
+  doc_type: medical
+  a: '{"intent":"aggregate","field":"total charges","field_synonyms":["total charges","billed amount","amount billed","total billed","charges"],"doc_type_hint":"medical","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":true,"aggregation_op":"sum","search_queries":["total charges billed amount","amount billed provider","medical charges"],"reasoning":"User wants the total medical charges billed"}'
+
+- q: "what medications was I prescribed"
+  intent: list
+  doc_type: medical_record
+  a: '{"intent":"list","field":"medications","field_synonyms":["medications","prescriptions","drugs","rx","prescribed","dosage"],"doc_type_hint":"medical_record","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":"list","search_queries":["medications prescribed dosage","rx prescription drug","medication list"],"reasoning":"User wants a list of all medications prescribed in their medical records"}'
+
+- q: "what was my diagnosis"
+  intent: field_extract
+  doc_type: medical_record
+  a: '{"intent":"field_extract","field":"diagnosis","field_synonyms":["diagnosis","condition","ICD code","assessment","clinical findings","chief complaint"],"doc_type_hint":"medical_record","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["diagnosis condition ICD code","assessment clinical findings","primary diagnosis"],"reasoning":"User wants to know their medical diagnosis from the record"}'
+
+- q: "are my lab results within normal range"
+  intent: verify
+  doc_type: medical_record
+  a: '{"intent":"verify","field":"lab results","field_synonyms":["lab results","test values","normal range","reference range","blood work"],"doc_type_hint":"medical_record","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":"verify","search_queries":["lab results normal range reference","test values CBC metabolic","blood work results"],"reasoning":"User wants to check whether their lab values fall within the normal reference ranges"}'
+
+# ══════════════════════════════════════════════════════════════════════════════
+# REAL ESTATE / MORTGAGE
+# ══════════════════════════════════════════════════════════════════════════════
+- q: "what is my monthly mortgage payment"
+  intent: field_extract
+  doc_type: mortgage_statement
+  a: '{"intent":"field_extract","field":"monthly payment","field_synonyms":["monthly payment","payment amount","PITI","principal interest taxes insurance","mortgage payment"],"doc_type_hint":"mortgage_statement","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["monthly payment amount due","principal interest escrow","PITI mortgage payment"],"reasoning":"User wants their monthly mortgage payment amount"}'
+
+- q: "what is my remaining mortgage balance"
+  intent: field_extract
+  doc_type: mortgage_statement
+  a: '{"intent":"field_extract","field":"principal balance","field_synonyms":["outstanding balance","remaining balance","principal balance","loan balance","payoff amount"],"doc_type_hint":"mortgage_statement","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["principal balance outstanding loan balance","remaining balance mortgage","current balance payoff"],"reasoning":"User wants the remaining principal balance on their mortgage"}'
+
+- q: "how much interest have I paid this year"
+  intent: aggregate
+  doc_type: mortgage_statement
+  a: '{"intent":"aggregate","field":"interest paid","field_synonyms":["interest paid","interest ytd","year to date interest","mortgage interest"],"doc_type_hint":"mortgage_statement","date_hint":{"type":"year","months":[],"years":[],"range_description":"this year"},"needs_aggregation":true,"aggregation_op":"sum","search_queries":["interest paid year to date","mortgage interest ytd","interest paid statement"],"reasoning":"User wants total mortgage interest paid year to date"}'
+
+- q: "what are the closing costs"
+  intent: field_extract
+  doc_type: closing_disclosure
+  a: '{"intent":"field_extract","field":"closing costs","field_synonyms":["closing costs","total closing costs","fees","origination charges","title fees","cash to close"],"doc_type_hint":"closing_disclosure","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["closing costs total fees","origination charges title fees","cash to close settlement"],"reasoning":"User wants the total closing costs from their closing disclosure"}'
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LEGAL / CONTRACT
+# ══════════════════════════════════════════════════════════════════════════════
+- q: "what are the key terms of this contract"
+  intent: info_retrieve
+  doc_type: contract
+  a: '{"intent":"info_retrieve","field":"contract terms","field_synonyms":["terms and conditions","agreement terms","key clauses","obligations","payment terms","termination clause"],"doc_type_hint":"contract","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["terms conditions obligations","payment terms due date","termination clause effective date"],"reasoning":"User wants a summary of the key terms and conditions in a contract"}'
+
+- q: "when does this contract expire"
+  intent: field_extract
+  doc_type: contract
+  a: '{"intent":"field_extract","field":"contract end date","field_synonyms":["expiration date","end date","term end","contract term","expiry","termination date"],"doc_type_hint":"contract","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["contract end date expiration term","termination date effective period","agreement end date"],"reasoning":"User wants to know when the contract expires"}'
+
+- q: "is there a penalty clause in this contract"
+  intent: exists_check
+  doc_type: contract
+  a: '{"intent":"exists_check","field":"penalty clause","field_synonyms":["penalty","liquidated damages","late fee","breach penalty","termination penalty"],"doc_type_hint":"contract","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":"exists","search_queries":["penalty clause liquidated damages","late fee breach penalty","termination penalty"],"reasoning":"User wants to know if a penalty or liquidated damages clause exists in the contract"}'
+
+- q: "summarize this legal document"
+  intent: summarize
+  doc_type: legal
+  a: '{"intent":"summarize","field":null,"field_synonyms":["parties","obligations","terms","key provisions","governing law","effective date"],"doc_type_hint":"legal","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":"list","search_queries":["parties obligations terms","key provisions governing law","effective date agreement"],"reasoning":"User wants a plain-language summary of the legal document"}'
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HR DOCUMENT
+# ══════════════════════════════════════════════════════════════════════════════
+- q: "what is my base salary in the offer letter"
+  intent: field_extract
+  doc_type: hr_document
+  a: '{"intent":"field_extract","field":"base salary","field_synonyms":["base salary","base pay","annual salary","starting salary","compensation","annual compensation"],"doc_type_hint":"hr_document","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["base salary annual compensation","starting salary offer","base pay annual"],"reasoning":"User wants their base salary from an offer letter or HR document"}'
+
+- q: "what is my performance rating"
+  intent: field_extract
+  doc_type: hr_document
+  a: '{"intent":"field_extract","field":"performance rating","field_synonyms":["performance rating","review score","performance score","rating","evaluation","appraisal"],"doc_type_hint":"hr_document","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["performance rating score review","appraisal evaluation rating","overall rating"],"reasoning":"User wants their performance review rating"}'
+
+# ══════════════════════════════════════════════════════════════════════════════
+# IMMIGRATION
+# ══════════════════════════════════════════════════════════════════════════════
+- q: "what is my visa expiration date"
+  intent: field_extract
+  doc_type: immigration
+  a: '{"intent":"field_extract","field":"visa expiry","field_synonyms":["visa expiration","authorized stay until","admission until","status expiry","i-94 expiry","passport expiry"],"doc_type_hint":"immigration","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["visa expiration authorized stay until","admission until status expiry","i-94 expiry date"],"reasoning":"User wants to know when their visa or immigration status expires"}'
+
+- q: "what is the priority date on my petition"
+  intent: field_extract
+  doc_type: uscis_receipt
+  a: '{"intent":"field_extract","field":"priority date","field_synonyms":["priority date","receipt date","petition date","filing date"],"doc_type_hint":"uscis_receipt","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["priority date receipt notice","filing date petition","I-797 priority date"],"reasoning":"User wants the priority date from their USCIS receipt notice"}'
+
+- q: "when does my EAD expire"
+  intent: field_extract
+  doc_type: immigration_receipt
+  a: '{"intent":"field_extract","field":"EAD expiration","field_synonyms":["EAD expiry","employment authorization expiration","work authorization valid through","card expires"],"doc_type_hint":"immigration_receipt","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["EAD employment authorization valid through","card expires work authorization","employment authorization expiration"],"reasoning":"User wants to know when their Employment Authorization Document expires"}'
+
+# ══════════════════════════════════════════════════════════════════════════════
+# INVESTMENT / BROKERAGE
+# ══════════════════════════════════════════════════════════════════════════════
+- q: "what is my portfolio value"
+  intent: field_extract
+  doc_type: investment
+  a: '{"intent":"field_extract","field":"portfolio value","field_synonyms":["account value","total value","portfolio balance","market value","total assets"],"doc_type_hint":"investment","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["account value total portfolio","market value holdings","total assets balance"],"reasoning":"User wants the total value of their investment portfolio"}'
+
+- q: "how much did I gain or lose this year"
+  intent: calculate
+  doc_type: investment
+  a: '{"intent":"calculate","field":"gain loss","field_synonyms":["realized gain","unrealized gain","total gain loss","return","profit loss"],"doc_type_hint":"investment","date_hint":{"type":"year","months":[],"years":[],"range_description":"this year"},"needs_aggregation":true,"aggregation_op":"calculate","search_queries":["realized unrealized gain loss","total return portfolio","gain loss ytd"],"reasoning":"User wants to calculate their total investment gain or loss for the year"}'
+
+- q: "what dividends did I receive"
+  intent: aggregate
+  doc_type: investment
+  a: '{"intent":"aggregate","field":"dividends","field_synonyms":["dividends","dividend income","distributions","interest income","dividend received"],"doc_type_hint":"investment","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":true,"aggregation_op":"sum","search_queries":["dividends received income","dividend distributions","interest dividend income"],"reasoning":"User wants the total dividends received from their investment account"}'
+
+# ══════════════════════════════════════════════════════════════════════════════
+# UTILITY BILL
+# ══════════════════════════════════════════════════════════════════════════════
+- q: "how much is my electricity bill this month"
+  intent: field_extract
+  doc_type: utility_bill
+  a: '{"intent":"field_extract","field":"amount due","field_synonyms":["amount due","total due","current charges","bill amount","balance due"],"doc_type_hint":"utility_bill","date_hint":{"type":"relative","months":[],"years":[],"range_description":"this month"},"needs_aggregation":false,"aggregation_op":null,"search_queries":["amount due current charges","total due balance","electric bill amount"],"reasoning":"User wants the total amount due on their utility bill"}'
+
+- q: "how much electricity did I use this month"
+  intent: field_extract
+  doc_type: utility_bill
+  a: '{"intent":"field_extract","field":"usage","field_synonyms":["kilowatt hours","kWh","energy usage","consumption","meter reading"],"doc_type_hint":"utility_bill","date_hint":{"type":"relative","months":[],"years":[],"range_description":"this month"},"needs_aggregation":false,"aggregation_op":null,"search_queries":["kilowatt hours kWh usage","energy consumption meter reading","usage current period"],"reasoning":"User wants their electricity consumption in kWh for the current billing period"}'
+
+- q: "is my utility usage higher than last month"
+  intent: compare
+  doc_type: utility_bill
+  a: '{"intent":"compare","field":"usage","field_synonyms":["kWh usage","consumption","energy usage","current usage","previous usage"],"doc_type_hint":"utility_bill","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":"compare","search_queries":["current usage kWh consumption","previous usage last month","energy usage comparison"],"reasoning":"User wants to compare current utility usage against the previous month"}'
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ANNUAL REPORT / QUARTERLY / PROXY
+# ══════════════════════════════════════════════════════════════════════════════
+- q: "what are the risk factors for Lexicon"
+  intent: info_retrieve
+  doc_type: annual_report
+  a: '{"intent":"info_retrieve","field":"risk factors","field_synonyms":["risks","risk disclosures","material risks","business risks","key risks"],"doc_type_hint":"annual_report","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["risk factors","material risks business operations","key risks annual report"],"reasoning":"User wants the risk factor disclosures from an annual report"}'
+
+- q: "what is the revenue and net income"
+  intent: field_extract
+  doc_type: annual_report
+  a: '{"intent":"field_extract","field":"revenue net income","field_synonyms":["total revenue","net sales","net income","net loss","operating income","gross profit"],"doc_type_hint":"annual_report","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["total revenue net sales","net income earnings profit","operating income gross margin"],"reasoning":"User wants the top-line revenue and bottom-line net income from a financial report"}'
+
+- q: "how did Q3 revenue compare to Q2"
+  intent: compare
+  doc_type: quarterly_report
+  a: '{"intent":"compare","field":"revenue","field_synonyms":["quarterly revenue","net sales","total revenue","revenue growth"],"doc_type_hint":"quarterly_report","date_hint":{"type":"none","months":[],"years":[],"range_description":"Q2 vs Q3"},"needs_aggregation":true,"aggregation_op":"compare","search_queries":["quarterly revenue net sales","Q2 Q3 revenue comparison","revenue quarter over quarter"],"reasoning":"User wants to compare Q3 revenue against Q2"}'
+
+- q: "what is the CEO compensation"
+  intent: field_extract
+  doc_type: proxy
+  a: '{"intent":"field_extract","field":"executive compensation","field_synonyms":["CEO compensation","executive pay","salary bonus equity","total compensation","named executive"],"doc_type_hint":"proxy","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":null,"search_queries":["CEO compensation salary bonus equity","executive pay total compensation","named executive officer"],"reasoning":"User wants the CEO or executive compensation details from a proxy statement"}'
+
+# ══════════════════════════════════════════════════════════════════════════════
+# EXPENSE REPORT / RECEIPT
+# ══════════════════════════════════════════════════════════════════════════════
+- q: "what is my total expense claim"
+  intent: aggregate
+  doc_type: expense_report
+  a: '{"intent":"aggregate","field":"total expenses","field_synonyms":["total expenses","reimbursement total","expense total","claim amount"],"doc_type_hint":"expense_report","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":true,"aggregation_op":"sum","search_queries":["total expenses reimbursement","expense report total","claim amount receipts"],"reasoning":"User wants the total amount claimed on their expense report"}'
+
+- q: "list all my travel expenses"
+  intent: list
+  doc_type: expense_report
+  a: '{"intent":"list","field":"travel expenses","field_synonyms":["travel","airfare","hotel","meals","mileage","per diem","lodging"],"doc_type_hint":"expense_report","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":"list","search_queries":["travel airfare hotel lodging","meals mileage per diem","travel expense category"],"reasoning":"User wants a list of all travel-related expenses from their expense report"}'
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DATASETS — generic + domain-specific
+# ══════════════════════════════════════════════════════════════════════════════
+- q: "what is the average rating in this dataset"
+  intent: calculate
+  doc_type: ratings_dataset
+  a: '{"intent":"calculate","field":"average rating","field_synonyms":["average rating","mean score","avg rating","rating distribution"],"doc_type_hint":"ratings_dataset","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":true,"aggregation_op":"avg","search_queries":["rating score average","mean rating distribution","rating count total"],"reasoning":"User wants the average rating value from the dataset"}'
+
+- q: "which product has the highest sales"
+  intent: rank
+  doc_type: product_dataset
+  a: '{"intent":"rank","field":"sales","field_synonyms":["sales","revenue","units sold","top product","best seller"],"doc_type_hint":"product_dataset","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":true,"aggregation_op":"rank","search_queries":["product sales revenue units sold","top products best seller","sales ranking"],"reasoning":"User wants to rank products by sales to find the highest performer"}'
+
+- q: "what is the total revenue in this sales report"
+  intent: aggregate
+  doc_type: sales_report
+  a: '{"intent":"aggregate","field":"total revenue","field_synonyms":["total revenue","total sales","gross sales","net sales","revenue total"],"doc_type_hint":"sales_report","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":true,"aggregation_op":"sum","search_queries":["total revenue gross sales","net sales revenue","sales total period"],"reasoning":"User wants the total revenue figure from the sales report"}'
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CROSS-DOCUMENT / GENERAL
+# ══════════════════════════════════════════════════════════════════════════════
+- q: "show me a summary of all my documents"
+  intent: cross_doc
+  doc_type: general
+  a: '{"intent":"cross_doc","field":null,"field_synonyms":["gross pay","net pay","balance","total","amount","earnings","deductions"],"doc_type_hint":"general","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":true,"aggregation_op":"list","search_queries":["gross pay net pay earnings summary","total amount balance due","deductions taxes period date"],"reasoning":"User wants a high-level summary combining information across all uploaded documents"}'
+
+- q: "how much have I spent in total across all my bills"
+  intent: cross_doc
+  doc_type: general
+  a: '{"intent":"cross_doc","field":"total spend","field_synonyms":["total amount due","total billed","total charges","amount paid","payments"],"doc_type_hint":"general","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":true,"aggregation_op":"sum","search_queries":["total amount due billed","charges payments total","amount due balance"],"reasoning":"User wants to sum all amounts due across different bill types"}'
+
+- q: "find anything that looks wrong or out of place"
+  intent: anomaly
+  doc_type: general
+  a: '{"intent":"anomaly","field":null,"field_synonyms":["amount","total","balance","charges","deductions","unusual"],"doc_type_hint":"general","date_hint":{"type":"none","months":[],"years":[],"range_description":null},"needs_aggregation":false,"aggregation_op":"anomaly","search_queries":["amount total balance charges","deductions payments unusual","figures values summary"],"reasoning":"User wants to identify any anomalous or suspicious values across all documents"}'

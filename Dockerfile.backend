@@ -1,0 +1,64 @@
+# ============================================================================
+# STAGE 1: Build/Compilation Stage (Compiling to bytecode .pyc)
+# ============================================================================
+FROM python:3.11-slim AS builder
+
+WORKDIR /app
+
+# Install build dependencies (needed for some pip installs)
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libpq-dev \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy app code
+COPY app/ ./app/
+COPY migrations/ ./migrations/
+
+# Compile python source to legacy .pyc files and delete original .py source files
+RUN python -m compileall -b app && \
+    find app -name "*.py" -delete
+
+# ============================================================================
+# STAGE 2: Runner Stage (lean production image containing NO raw source code)
+# ============================================================================
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install runtime dependencies (Tesseract OCR, Ghostscript, libpq for Postgres)
+RUN apt-get update && apt-get install -y \
+    libpq-dev \
+    libpq5 \
+    curl \
+    tesseract-ocr \
+    ghostscript \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy python dependencies from builder
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Copy ONLY compiled app and migrations
+COPY --from=builder /app/app /app/app
+COPY --from=builder /app/migrations /app/migrations
+
+# Expose API port
+EXPOSE 8000
+
+# Environment variables matching database container and ollama container in compose
+ENV DB_HOST=postgres
+ENV DB_PORT=5432
+ENV DB_NAME=unidocverse_db
+ENV DB_USER=unidocverse
+ENV DB_PASSWORD=unidocverse
+ENV OLLAMA_HOST=http://ollama:11434
+ENV PORT=8000
+
+# Run FastAPI backend via Uvicorn loading the compiled app/main.pyc
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
