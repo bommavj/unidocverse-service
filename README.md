@@ -5,6 +5,7 @@
 [![Python](https://img.shields.io/badge/Python-3.11+-blue)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green)](https://fastapi.tiangolo.com)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue)](../LICENSE)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21880388.svg)](https://doi.org/10.5281/zenodo.21880388)
 [![Migrations](https://img.shields.io/badge/DB%20Migrations-V47-orange)](migrations/sql)
 
 ---
