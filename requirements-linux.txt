@@ -1,0 +1,3 @@
+paddleocr==2.10.0
+paddlepaddle==3.2.2
+# Linux can use Docker-based Ollama and optional GPU acceleration.

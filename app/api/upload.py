@@ -1,0 +1,121 @@
+import threading
+import logging
+from pathlib import Path
+from typing import Optional
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Request
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from app.core import config
+from app.core.database import get_db
+from app.core.tenant import get_current_tenant_id, DEFAULT_TENANT_ID
+from app.models.document import Document
+from app.schemas.document import DocumentUploadResponse
+#from app.services.processing_service import ProcessingService
+from app.core.paths import UPLOADS_DIR
+from app.services.processing_service import ProcessingService
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/api", tags=["upload"])
+
+
+storage_path = UPLOADS_DIR
+
+
+@router.post("/upload", response_model=DocumentUploadResponse)
+async def upload_document(
+        request: Request,
+        file: UploadFile = File(...),
+        lang: Optional[str] = None,
+        client_id: Optional[str] = None,
+        db: Session = Depends(get_db)
+):
+    """Upload document - processing happens in background"""
+
+    try:
+        from app.core.language import get_request_language
+        doc_lang = lang or get_request_language(request, db)
+
+        # Validate file type
+        file_extension = Path(file.filename).suffix.lower()
+        # 🔍 DEBUG: Log to verify settings are loaded
+        print(f"📁 File extension: {file_extension}")
+
+        if file_extension not in config.settings.ALLOWED_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type. Allowed: {', '.join(config.settings.ALLOWED_EXTENSIONS)}"
+            )
+
+
+        logger.info(f"📤 Upload started: {file.filename} (lang={doc_lang})")
+
+        # Read file content first
+        content = await file.read()
+
+        # Generate file path
+        #storage_path = Path("storage/uploads")
+        storage_path.mkdir(parents=True, exist_ok=True)
+
+        # Use a temporary ID for the filename
+        import uuid
+        temp_id = str(uuid.uuid4())
+        file_path = storage_path / f"{temp_id}_{file.filename}"
+
+        # Save file to storage
+        with file_path.open("wb") as buffer:
+            buffer.write(content)
+
+        # Create document record with file_path
+        doc = Document(
+            filename=file.filename,
+            file_path=str(file_path),
+            file_size=len(content),
+            status="pending",
+            doc_type=None,
+            language=doc_lang,
+            client_id=client_id or None,
+            tenant_id=get_current_tenant_id() or DEFAULT_TENANT_ID,
+        )
+        db.add(doc)
+        db.commit()
+        db.refresh(doc)
+
+        doc_id = str(doc.id)
+
+        # Rename file to use actual doc ID
+        final_file_path = storage_path / f"{doc_id}_{file.filename}"
+        file_path.rename(final_file_path)
+
+        # Update file path in database
+        doc.file_path = str(final_file_path)
+        db.commit()
+
+        logger.info(f"💾 File saved: {file.filename} ({len(content)} bytes)")
+
+        # Start background processing
+        thread = threading.Thread(
+            target=ProcessingService.process_document_background,
+            args=(doc_id, str(final_file_path), file.filename),
+            daemon=True
+        )
+        thread.start()
+
+        logger.info(f"🚀 Background processing started for: {file.filename}")
+
+        return DocumentUploadResponse(
+            id=doc_id,
+            filename=file.filename,
+            file_size=len(content),
+            status="processing",
+            message="File uploaded successfully. Processing in background..."
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Upload failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))

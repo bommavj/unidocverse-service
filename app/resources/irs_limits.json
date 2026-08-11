@@ -1,0 +1,49 @@
+{
+  "_comment": "IRS contribution limits and SS wage bases by tax year.",
+  "_source": "IRS Revenue Procedures + SSA OACT announcements (published each October).",
+  "_update": "Add a new year block each October when IRS publishes limits. No code changes needed.",
+  "_last_updated": "2025-03-07",
+
+  "contribution_limits": {
+    "2022": {
+      "401k":         20500, "401k_catchup": 27000,
+      "ira":           6000, "ira_catchup":   7000,
+      "hsa_single":    3650, "hsa_family":    7300,
+      "fsa":           2850, "dependent_fsa": 5000
+    },
+    "2023": {
+      "401k":         22500, "401k_catchup": 30000,
+      "ira":           6500, "ira_catchup":   7500,
+      "hsa_single":    3850, "hsa_family":    7750,
+      "fsa":           3050, "dependent_fsa": 5000
+    },
+    "2024": {
+      "401k":         23000, "401k_catchup": 30500,
+      "ira":           7000, "ira_catchup":   8000,
+      "hsa_single":    4150, "hsa_family":    8300,
+      "fsa":           3200, "dependent_fsa": 5000
+    },
+    "2025": {
+      "401k":         23500, "401k_catchup": 31000,
+      "ira":           7000, "ira_catchup":   8000,
+      "hsa_single":    4300, "hsa_family":    8550,
+      "fsa":           3300, "dependent_fsa": 5000
+    }
+  },
+
+  "ss_wage_base": {
+    "2018": 128400,
+    "2019": 132900,
+    "2020": 137700,
+    "2021": 142800,
+    "2022": 147000,
+    "2023": 160200,
+    "2024": 168600,
+    "2025": 176100
+  },
+
+  "ss_tax_rate":       0.062,
+  "medicare_tax_rate": 0.0145,
+  "additional_medicare_rate":      0.009,
+  "additional_medicare_threshold": 200000
+}

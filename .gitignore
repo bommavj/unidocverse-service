@@ -1,0 +1,58 @@
+# Secrets
+.env
+*.env
+*.pem
+*.key
+*private_key*
+*recovery*
+
+# Virtual environments
+venv/
+venv_*/
+.venv/
+.buildenv/
+env/
+
+# ML models (large — download separately)
+models/
+
+# Uploaded / processed documents
+storage/
+
+# Logs
+logs/
+*.log
+
+# Build artifacts
+build/
+dist/
+bin/
+__pycache__/
+*.pyc
+*.pyo
+*.spec
+*.egg-info/
+.eggs/
+
+# Test outputs
+test_docs/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+.claude/
+
+# Packaging
+*.zip
+nuitka-crash-report.xml
+whatsapp_service/node_modules/
+
+# WhatsApp session auth (contains live credentials)
+whatsapp_service/.wwebjs_auth/
+whatsapp_service/.wwebjs_cache/
+
+# License files with personal email in name
+app/scripts/license_*.json

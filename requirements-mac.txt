@@ -1,0 +1,2 @@
+easyocr==1.7.2
+# macOS-native Ollama is preferred over Docker on Apple Silicon.

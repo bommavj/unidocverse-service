@@ -1,0 +1,1613 @@
+patterns:
+  # ==================== FINANCIAL SUITE (Additional) ====================
+  purchase_order:
+    suite: financial
+    priority: 92
+    processing_path: logic
+    keywords:
+      - purchase order
+      - po number
+      - vendor
+      - ship to
+      - billing address
+      - requested delivery
+      - requisitioner
+    regex_patterns:
+      - 'purchase\s+order\s+#'
+      - 'po\s+number'
+      - 'vendor\s+name'
+    filename_patterns:
+      - 'purchase.*order'
+      - 'po_'
+      - 'purchase_req'
+    entities_to_extract:
+      - po_number
+      - vendor_id
+      - order_id
+      - email
+
+  expense_report:
+    suite: financial
+    priority: 87
+    processing_path: hybrid
+    keywords:
+      - expense
+      - reimbursement
+      - business expense
+      - travel
+      - meal
+      - mileage
+      - per diem
+    regex_patterns:
+      - 'expense\s+report'
+      - 'reimbursement\s+request'
+      - 'business\s+expense'
+    filename_patterns:
+      - 'expense.*report'
+      - 'reimbursement'
+      - 'travel_expense'
+    entities_to_extract:
+      - employee_id
+      - expense_id
+      - receipt_number
+    math_operations:
+      - sum: [total, amount, expense]
+
+  credit_memo:
+    suite: financial
+    priority: 85
+    processing_path: logic
+    keywords:
+      - credit memo
+      - credit note
+      - refund
+      - return authorization
+      - customer credit
+    regex_patterns:
+      - 'credit\s+memo'
+      - 'credit\s+note'
+      - 'rma\s+number'
+    filename_patterns:
+      - 'credit.*memo'
+      - 'credit_note'
+      - 'rma'
+    entities_to_extract:
+      - credit_memo_number
+      - invoice_number
+      - customer_id
+
+  statement_of_work:
+    suite: financial
+    priority: 88
+    processing_path: logic
+    keywords:
+      - statement of work
+      - sow
+      - deliverables
+      - milestones
+      - project scope
+      - payment terms
+    regex_patterns:
+      - 'statement\s+of\s+work'
+      - 'scope\s+of\s+work'
+      - 'deliverable'
+    filename_patterns:
+      - 'sow'
+      - 'statement.*work'
+      - 'scope_document'
+    entities_to_extract:
+      - project_id
+      - contract_id
+      - client_name
+
+  wire_transfer:
+    suite: financial
+    priority: 93
+    processing_path: logic
+    keywords:
+      - wire transfer
+      - swift
+      - routing number
+      - beneficiary
+      - remittance
+      - bank transfer
+    regex_patterns:
+      - 'wire\s+transfer'
+      - 'swift\s+code'
+      - 'beneficiary\s+account'
+    filename_patterns:
+      - 'wire'
+      - 'transfer'
+      - 'remittance'
+    entities_to_extract:
+      - reference_number
+      - swift_code
+      - account_number
+
+  # ==================== HR SUITE (Additional) ====================
+  offer_letter:
+    suite: hr
+    priority: 91
+    processing_path: logic
+    keywords:
+      - offer letter
+      - employment offer
+      - salary
+      - start date
+      - benefits
+      - position
+      - compensation
+    regex_patterns:
+      - 'offer\s+of\s+employment'
+      - 'pleased\s+to\s+offer'
+      - 'starting\s+salary'
+    filename_patterns:
+      - 'offer.*letter'
+      - 'employment_offer'
+    entities_to_extract:
+      - candidate_name
+      - position_title
+      - employee_id
+      - email
+
+  performance_review:
+    suite: hr
+    priority: 86
+    processing_path: logic
+    keywords:
+      - performance review
+      - evaluation
+      - rating
+      - objectives
+      - competencies
+      - feedback
+      - goals
+    regex_patterns:
+      - 'performance\s+review'
+      - 'annual\s+evaluation'
+      - 'performance\s+rating'
+    filename_patterns:
+      - 'performance.*review'
+      - 'evaluation'
+      - 'appraisal'
+    entities_to_extract:
+      - employee_id
+      - reviewer_name
+      - review_period
+
+  termination_letter:
+    suite: hr
+    priority: 94
+    processing_path: logic
+    keywords:
+      - termination
+      - employment end
+      - final paycheck
+      - severance
+      - last day
+      - resignation
+    regex_patterns:
+      - 'termination\s+of\s+employment'
+      - 'final\s+day\s+of\s+work'
+      - 'separation\s+agreement'
+    filename_patterns:
+      - 'termination'
+      - 'separation'
+      - 'exit_letter'
+    entities_to_extract:
+      - employee_id
+      - termination_date
+
+  job_description:
+    suite: hr
+    priority: 78
+    processing_path: logic
+    keywords:
+      - job description
+      - responsibilities
+      - qualifications
+      - requirements
+      - duties
+      - skills required
+    regex_patterns:
+      - 'job\s+description'
+      - 'position\s+summary'
+      - 'essential\s+functions'
+    filename_patterns:
+      - 'job.*description'
+      - 'jd'
+      - 'position_desc'
+    entities_to_extract:
+      - position_title
+      - department
+
+  # ==================== LEGAL SUITE (Additional) ====================
+  power_of_attorney:
+    suite: legal
+    priority: 94
+    processing_path: logic
+    keywords:
+      - power of attorney
+      - poa
+      - agent
+      - principal
+      - authority
+      - durable
+    regex_patterns:
+      - 'power\s+of\s+attorney'
+      - 'attorney-in-fact'
+      - 'grant\s+authority'
+    filename_patterns:
+      - 'poa'
+      - 'power_attorney'
+    entities_to_extract:
+      - principal_name
+      - agent_name
+      - effective_date
+
+  will_testament:
+    suite: legal
+    priority: 97
+    processing_path: logic
+    keywords:
+      - last will
+      - testament
+      - beneficiary
+      - executor
+      - estate
+      - bequest
+    regex_patterns:
+      - 'last\s+will\s+and\s+testament'
+      - 'being\s+of\s+sound\s+mind'
+      - 'executor\s+of\s+estate'
+    filename_patterns:
+      - 'will'
+      - 'testament'
+      - 'estate_plan'
+    entities_to_extract:
+      - testator_name
+      - executor_name
+
+  patent_application:
+    suite: legal
+    priority: 89
+    processing_path: logic
+    keywords:
+      - patent
+      - invention
+      - claims
+      - prior art
+      - inventor
+      - patent pending
+      - uspto
+    regex_patterns:
+      - 'patent\s+application'
+      - 'invention\s+disclosure'
+      - 'claim\s+\d+'
+    filename_patterns:
+      - 'patent'
+      - 'invention'
+      - 'provisional'
+    entities_to_extract:
+      - patent_number
+      - inventor_name
+      - application_number
+
+  trademark_registration:
+    suite: legal
+    priority: 87
+    processing_path: logic
+    keywords:
+      - trademark
+      - service mark
+      - registration
+      - logo
+      - brand name
+      - uspto
+    regex_patterns:
+      - 'trademark\s+application'
+      - 'service\s+mark'
+      - 'registration\s+number'
+    filename_patterns:
+      - 'trademark'
+      - 'servicemark'
+      - 'brand_registration'
+    entities_to_extract:
+      - registration_number
+      - owner_name
+
+  # ==================== INSURANCE SUITE (New) ====================
+  insurance_policy:
+    suite: insurance
+    priority: 91
+    processing_path: logic
+    keywords:
+      - insurance policy
+      - policyholder
+      - premium
+      - coverage
+      - deductible
+      - beneficiary
+      - insured
+    regex_patterns:
+      - 'policy\s+number'
+      - 'coverage\s+amount'
+      - 'effective\s+date'
+    filename_patterns:
+      - 'policy'
+      - 'insurance'
+      - 'coverage'
+    entities_to_extract:
+      - policy_number
+      - policyholder_name
+      - agent_name
+
+  insurance_claim:
+    suite: insurance
+    priority: 90
+    processing_path: logic
+    keywords:
+      - claim
+      - incident
+      - loss
+      - adjuster
+      - claimant
+      - accident
+      - damage
+    regex_patterns:
+      - 'claim\s+number'
+      - 'date\s+of\s+loss'
+      - 'incident\s+report'
+    filename_patterns:
+      - 'claim'
+      - 'incident'
+      - 'loss_report'
+    entities_to_extract:
+      - claim_number
+      - policy_number
+      - adjuster_name
+
+  # ==================== EDUCATION SUITE (New) ====================
+  transcript:
+    suite: education
+    priority: 88
+    processing_path: hybrid
+    keywords:
+      - transcript
+      - grades
+      - gpa
+      - credits
+      - semester
+      - course
+      - degree
+    regex_patterns:
+      - 'academic\s+transcript'
+      - 'grade\s+point\s+average'
+      - 'credits\s+earned'
+    filename_patterns:
+      - 'transcript'
+      - 'grades'
+      - 'academic_record'
+    entities_to_extract:
+      - student_id
+      - student_name
+    math_operations:
+      - average: [gpa, grade]
+      - sum: [credits]
+
+  diploma:
+    suite: education
+    priority: 85
+    processing_path: logic
+    keywords:
+      - diploma
+      - degree
+      - bachelor
+      - master
+      - doctorate
+      - conferred
+      - honors
+    regex_patterns:
+      - 'bachelor\s+of'
+      - 'master\s+of'
+      - 'degree\s+conferred'
+    filename_patterns:
+      - 'diploma'
+      - 'degree'
+      - 'certificate'
+    entities_to_extract:
+      - graduate_name
+      - degree_type
+      - institution
+
+  enrollment_form:
+    suite: education
+    priority: 80
+    processing_path: logic
+    keywords:
+      - enrollment
+      - registration
+      - student
+      - tuition
+      - semester
+      - courses
+    regex_patterns:
+      - 'enrollment\s+form'
+      - 'course\s+registration'
+      - 'student\s+id'
+    filename_patterns:
+      - 'enrollment'
+      - 'registration'
+      - 'course_selection'
+    entities_to_extract:
+      - student_id
+      - email
+
+  # ==================== REAL ESTATE SUITE (Additional) ====================
+  appraisal_report:
+    suite: real_estate
+    priority: 89
+    processing_path: hybrid
+    keywords:
+      - appraisal
+      - property value
+      - market value
+      - comparable sales
+      - square footage
+      - appraiser
+    regex_patterns:
+      - 'appraisal\s+report'
+      - 'estimated\s+value'
+      - 'comparable\s+properties'
+    filename_patterns:
+      - 'appraisal'
+      - 'valuation'
+      - 'property_value'
+    entities_to_extract:
+      - property_address
+      - appraisal_number
+    math_operations:
+      - sum: [value, price]
+
+  home_inspection:
+    suite: real_estate
+    priority: 84
+    processing_path: logic
+    keywords:
+      - inspection
+      - defects
+      - repairs
+      - condition
+      - inspector
+      - foundation
+      - roof
+    regex_patterns:
+      - 'inspection\s+report'
+      - 'findings\s+and\s+recommendations'
+      - 'inspector\s+observations'
+    filename_patterns:
+      - 'inspection'
+      - 'home_inspection'
+      - 'property_inspection'
+    entities_to_extract:
+      - property_address
+      - inspector_name
+
+  mortgage_document:
+    suite: real_estate
+    priority: 93
+    processing_path: hybrid
+    keywords:
+      - mortgage
+      - loan amount
+      - interest rate
+      - monthly payment
+      - lender
+      - borrower
+      - amortization
+    regex_patterns:
+      - 'mortgage\s+loan'
+      - 'loan\s+number'
+      - 'principal\s+and\s+interest'
+    filename_patterns:
+      - 'mortgage'
+      - 'loan_document'
+      - 'promissory_note'
+    entities_to_extract:
+      - loan_number
+      - property_address
+      - borrower_name
+    math_operations:
+      - sum: [loan_amount, payment]
+
+  # ==================== LOGISTICS SUITE (Additional) ====================
+  customs_declaration:
+    suite: logistics
+    priority: 90
+    processing_path: logic
+    keywords:
+      - customs
+      - import
+      - export
+      - tariff
+      - duty
+      - harmonized code
+      - country of origin
+    regex_patterns:
+      - 'customs\s+declaration'
+      - 'hs\s+code'
+      - 'country\s+of\s+origin'
+    filename_patterns:
+      - 'customs'
+      - 'declaration'
+      - 'import_doc'
+    entities_to_extract:
+      - declaration_number
+      - hs_code
+
+  delivery_receipt:
+    suite: logistics
+    priority: 83
+    processing_path: logic
+    keywords:
+      - delivery
+      - received
+      - signature
+      - proof of delivery
+      - pod
+      - delivered by
+    regex_patterns:
+      - 'proof\s+of\s+delivery'
+      - 'delivered\s+to'
+      - 'received\s+by'
+    filename_patterns:
+      - 'delivery.*receipt'
+      - 'pod'
+      - 'proof_delivery'
+    entities_to_extract:
+      - tracking_number
+      - recipient_name
+
+  # ==================== COMPLIANCE SUITE (New) ====================
+  audit_report:
+    suite: compliance
+    priority: 92
+    processing_path: logic
+    keywords:
+      - audit
+      - findings
+      - compliance
+      - non-conformance
+      - recommendations
+      - auditor
+      - assessment
+    regex_patterns:
+      - 'audit\s+report'
+      - 'audit\s+findings'
+      - 'compliance\s+assessment'
+    filename_patterns:
+      - 'audit'
+      - 'compliance_report'
+      - 'assessment'
+    entities_to_extract:
+      - audit_id
+      - auditor_name
+      - date
+
+  safety_data_sheet:
+    suite: compliance
+    priority: 86
+    processing_path: logic
+    keywords:
+      - sds
+      - msds
+      - hazardous
+      - safety
+      - emergency
+      - chemical
+      - exposure
+    regex_patterns:
+      - 'safety\s+data\s+sheet'
+      - 'material\s+safety'
+      - 'hazard\s+identification'
+    filename_patterns:
+      - 'sds'
+      - 'msds'
+      - 'safety_sheet'
+    entities_to_extract:
+      - chemical_name
+      - cas_number
+
+  certificate_of_insurance:
+    suite: compliance
+    priority: 87
+    processing_path: logic
+    keywords:
+      - certificate of insurance
+      - coi
+      - coverage
+      - insured
+      - certificate holder
+      - policy number
+    regex_patterns:
+      - 'certificate\s+of\s+insurance'
+      - 'this\s+is\s+to\s+certify'
+      - 'certificate\s+holder'
+    filename_patterns:
+      - 'coi'
+      - 'certificate.*insurance'
+      - 'insurance_cert'
+    entities_to_extract:
+      - policy_number
+      - certificate_number
+      - holder_name
+
+  # ==================== VENDOR MANAGEMENT SUITE (New) ====================
+  vendor_agreement:
+    suite: vendor
+    priority: 88
+    processing_path: logic
+    keywords:
+      - vendor
+      - supplier
+      - service agreement
+      - terms and conditions
+      - pricing
+      - deliverables
+    regex_patterns:
+      - 'vendor\s+agreement'
+      - 'supplier\s+contract'
+      - 'service\s+level\s+agreement'
+    filename_patterns:
+      - 'vendor.*agreement'
+      - 'supplier.*contract'
+      - 'sla'
+    entities_to_extract:
+      - vendor_id
+      - contract_id
+      - email
+
+  rfp_document:
+    suite: vendor
+    priority: 82
+    processing_path: logic
+    keywords:
+      - request for proposal
+      - rfp
+      - bidding
+      - submission
+      - evaluation criteria
+      - proposal
+    regex_patterns:
+      - 'request\s+for\s+proposal'
+      - 'rfp\s+number'
+      - 'submission\s+deadline'
+    filename_patterns:
+      - 'rfp'
+      - 'request.*proposal'
+      - 'bid_request'
+    entities_to_extract:
+      - rfp_number
+      - project_name
+
+  # ==================== PROJECT MANAGEMENT SUITE (New) ====================
+  project_charter:
+    suite: project_management
+    priority: 81
+    processing_path: logic
+    keywords:
+      - project charter
+      - objectives
+      - stakeholders
+      - scope
+      - budget
+      - timeline
+      - deliverables
+    regex_patterns:
+      - 'project\s+charter'
+      - 'project\s+objectives'
+      - 'project\s+scope'
+    filename_patterns:
+      - 'charter'
+      - 'project_plan'
+      - 'initiation'
+    entities_to_extract:
+      - project_id
+      - project_manager
+      - sponsor_name
+
+  risk_assessment:
+    suite: project_management
+    priority: 79
+    processing_path: logic
+    keywords:
+      - risk assessment
+      - risk matrix
+      - mitigation
+      - likelihood
+      - impact
+      - threat
+    regex_patterns:
+      - 'risk\s+assessment'
+      - 'risk\s+register'
+      - 'mitigation\s+strategy'
+    filename_patterns:
+      - 'risk.*assessment'
+      - 'risk_register'
+      - 'risk_analysis'
+    entities_to_extract:
+      - project_id
+      - risk_id
+
+  # ==================== QUALITY ASSURANCE SUITE (New) ====================
+  test_report:
+    suite: qa
+    priority: 80
+    processing_path: hybrid
+    keywords:
+      - test report
+      - test case
+      - pass
+      - fail
+      - quality assurance
+      - testing
+      - defects
+    regex_patterns:
+      - 'test\s+report'
+      - 'test\s+results'
+      - 'pass\s+rate'
+    filename_patterns:
+      - 'test.*report'
+      - 'qa_report'
+      - 'testing_results'
+    entities_to_extract:
+      - test_id
+      - tester_name
+    math_operations:
+      - count: [passed, failed, total]
+
+  certificate_of_compliance:
+    suite: qa
+    priority: 86
+    processing_path: logic
+    keywords:
+      - certificate of compliance
+      - compliant
+      - standards
+      - certification
+      - iso
+      - meets requirements
+    regex_patterns:
+      - 'certificate\s+of\s+compliance'
+      - 'certifies\s+that'
+      - 'compliant\s+with'
+    filename_patterns:
+      - 'compliance.*cert'
+      - 'certification'
+      - 'coc'
+    entities_to_extract:
+      - certificate_number
+      - standard_name
+
+  # ==================== MISCELLANEOUS ====================
+  report_generic:
+    suite: general
+    priority: 60
+    processing_path: logic
+    keywords:
+      - report
+      - analysis
+      - findings
+      - summary
+      - conclusions
+      - recommendations
+    regex_patterns:
+      - 'executive\s+summary'
+      - 'findings\s+and\s+recommendations'
+    filename_patterns:
+      - 'report'
+      - 'analysis'
+      - 'summary'
+    entities_to_extract:
+      - report_id
+      - author_name
+      - date
+
+  memo:
+    suite: general
+    priority: 65
+    processing_path: logic
+    keywords:
+      - memorandum
+      - memo
+      - to
+      - from
+      - subject
+      - date
+      - re
+    regex_patterns:
+      - 'memorandum'
+      - 'to:\s*'
+      - 'from:\s*'
+      - 'subject:\s*'
+    filename_patterns:
+      - 'memo'
+      - 'memorandum'
+      - 'internal_note'
+    entities_to_extract:
+      - recipient
+      - sender
+      - date
+
+  questionnaire:
+    suite: general
+    priority: 68
+    processing_path: logic
+    keywords:
+      - questionnaire
+      - survey
+      - response
+      - questions
+      - feedback
+      - rating
+    regex_patterns:
+      - 'questionnaire'
+      - 'survey\s+response'
+      - 'rate\s+your'
+    filename_patterns:
+      - 'questionnaire'
+      - 'survey'
+      - 'feedback_form'
+    entities_to_extract:
+      - respondent_id
+      - survey_id
+
+  warranty_document:
+    suite: general
+    priority: 75
+    processing_path: logic
+    keywords:
+      - warranty
+      - guarantee
+      - coverage period
+      - limited warranty
+      - warranty terms
+      - manufacturer
+    regex_patterns:
+      - 'warranty\s+period'
+      - 'limited\s+warranty'
+      - 'warranty\s+coverage'
+    filename_patterns:
+      - 'warranty'
+      - 'guarantee'
+      - 'coverage'
+    entities_to_extract:
+      - serial_number
+      - product_name
+      - purchase_date
+
+
+  # ==================== FINANCIAL SUITE ====================
+  sales_data:
+    suite: financial
+    priority: 95
+    processing_path: math  # Uses Pandas for calculations
+    keywords:
+      - sales
+      - revenue
+      - region
+      - product
+      - quarterly
+      - monthly
+      - fiscal
+      - performance
+      - territory
+      - forecast
+      - pipeline
+      - quota
+      - commission
+    regex_patterns:
+      - 'sales\s+by\s+region'
+      - 'product\s+sales'
+      - 'regional\s+sales'
+      - 'revenue\s+by'
+      - 'sales\s+tracking'
+    filename_patterns:
+      - 'sales.*region'
+      - 'product.*sales'
+      - 'regional.*data'
+      - 'sales.*tracking'
+    entities_to_extract:
+      - order_id
+      - customer_id
+      - product_id
+    math_operations:
+      - sum: [total, sales, revenue, amount, value]
+      - average: [price, cost, quantity]
+      - count: [transactions, orders, items, products]
+      - max: [price, revenue, sales]
+      - min: [price, cost]
+      - median: [price, quantity]
+    file_extensions:
+      - .xlsx
+      - .xls
+      - .csv
+
+  inventory:
+    suite: operations
+    priority: 90
+    processing_path: math
+    keywords:
+      - inventory
+      - stock
+      - warehouse
+      - sku
+      - quantity
+      - tracking
+      - items
+      - products
+    regex_patterns:
+      - 'inventory\s+tracking'
+      - 'stock\s+level'
+      - 'warehouse\s+inventory'
+    filename_patterns:
+      - 'inventory.*tracking'
+      - 'stock.*level'
+      - 'warehouse.*data'
+    entities_to_extract:
+      - sku
+      - product_id
+      - warehouse_id
+    math_operations:
+      - sum: [quantity, stock]
+      - count: [items, products]
+
+  bank_statement:
+    suite: financial
+    priority: 95
+    processing_path: hybrid
+    keywords:
+      - account
+      - statement
+      - balance
+      - deposit
+      - withdrawal
+      - transaction
+      - banking
+      - checking
+      - savings
+    regex_patterns:
+      - 'account\s+statement'
+      - 'beginning\s+balance'
+      - 'ending\s+balance'
+      - 'transaction\s+history'
+    filename_patterns:
+      - 'bank.*statement'
+      - 'account.*statement'
+      - 'checking.*statement'
+    entities_to_extract:
+      - account_number
+      - transaction_id
+    math_operations:
+      - sum: [deposits, withdrawals]
+      - balance: [beginning, ending]
+
+  invoice:
+    suite: financial
+    priority: 90
+    processing_path: logic
+    keywords:
+      - invoice
+      - bill
+      - payment
+      - due
+      - vendor
+      - purchaser
+      - terms
+    regex_patterns:
+      - 'invoice\s+#'
+      - 'invoice\s+number'
+      - 'payment\s+terms'
+      - 'due\s+date'
+    filename_patterns:
+      - 'invoice'
+      - 'bill'
+    entities_to_extract:
+      - invoice_number
+      - order_id
+      - vendor_id
+      - email
+
+  receipt:
+    suite: financial
+    priority: 50
+    processing_path: logic
+    keywords:
+      - receipt
+      - purchase
+      - subtotal
+      - tax
+      - total
+      - paid
+      - tender
+      - change
+    regex_patterns:
+      - 'receipt\s+#'
+      - 'transaction\s+id'
+      - 'subtotal:?\s*\$'
+      - 'amount\s+tendered'
+    filename_patterns:
+      - 'receipt'
+      - 'transaction'
+    entities_to_extract:
+      - transaction_id
+      - merchant_name
+
+  # ==================== LEGAL SUITE ====================
+  contract:
+    suite: legal
+    priority: 85
+    processing_path: logic
+    keywords:
+      - contract
+      - agreement
+      - parties
+      - terms
+      - conditions
+      - obligations
+      - signature
+    regex_patterns:
+      - 'this\s+agreement'
+      - 'contract\s+between'
+      - 'parties\s+agree'
+    filename_patterns:
+      - 'contract'
+      - 'agreement'
+    entities_to_extract:
+      - contract_id
+      - party_names
+      - effective_date
+      - email
+
+  nda_document:
+    suite: legal
+    priority: 96
+    processing_path: logic
+    keywords:
+      - non-disclosure
+      - confidential
+      - proprietary
+      - trade secret
+      - disclosure
+      - recipient
+    regex_patterns:
+      - 'confidentiality\s+agreement'
+      - 'non-disclosure\s+agreement'
+      - 'nda'
+    filename_patterns:
+      - 'nda'
+      - 'confidentiality'
+    entities_to_extract:
+      - contract_id
+      - party_names
+      - email
+
+  lease_agreement:
+    suite: legal
+    priority: 92
+    processing_path: logic
+    keywords:
+      - landlord
+      - tenant
+      - premises
+      - rent
+      - security deposit
+      - occupancy
+      - term
+    regex_patterns:
+      - 'residential\s+lease'
+      - 'lease\s+agreement'
+      - 'rental\s+contract'
+    filename_patterns:
+      - 'lease'
+      - 'rental'
+    entities_to_extract:
+      - lease_id
+      - property_address
+      - email
+
+  # ==================== HR SUITE ====================
+  resume:
+    suite: hr
+    priority: 85
+    processing_path: logic
+    keywords:
+      - experience
+      - education
+      - skills
+      - employment
+      - objective
+      - qualifications
+      - certification
+    regex_patterns:
+      - 'work\s+history'
+      - 'professional\s+summary'
+      - 'curriculum\s+vitae'
+    filename_patterns:
+      - 'resume'
+      - 'cv'
+      - 'bio'
+    entities_to_extract:
+      - email
+      - phone
+      - name
+
+  payroll_stub:
+    suite: hr
+    priority: 95
+    processing_path: hybrid
+    keywords:
+      - earnings
+      - deductions
+      - net pay
+      - gross pay
+      - pay period
+      - employer
+      - employee id
+    regex_patterns:
+      - 'pay\s+stub'
+      - 'salary\s+statement'
+      - 'earnings\s+statement'
+    filename_patterns:
+      - 'paystub'
+      - 'payroll'
+      - 'payslip'
+    entities_to_extract:
+      - employee_id
+    math_operations:
+      - sum: [gross, net, deductions]
+
+  # ==================== TAX SUITE ====================
+  tax_document:
+    suite: tax
+    priority: 92
+    processing_path: hybrid
+    keywords:
+      - tax
+      - w2
+      - "1099"
+      - irs
+      - federal
+      - deduction
+      - withholding
+    regex_patterns:
+      - 'form\s+w-?2'
+      - 'form\s+1099'
+      - 'tax\s+return'
+    filename_patterns:
+      - 'tax.*form'
+      - 'w2'
+      - '1099'
+    entities_to_extract:
+      - ssn
+      - ein
+      - tax_year
+    math_operations:
+      - sum: [income, deductions, withheld]
+
+  # ==================== OPERATIONS SUITE ====================
+  financial_report:
+    suite: operations
+    priority: 88
+    processing_path: hybrid
+    keywords:
+      - balance sheet
+      - income statement
+      - profit
+      - loss
+      - assets
+      - liabilities
+      - equity
+      - expenses
+    regex_patterns:
+      - 'balance\s+sheet'
+      - 'income\s+statement'
+      - 'profit\s+and\s+loss'
+      - 'p&l'
+    filename_patterns:
+      - 'financial.*report'
+      - 'balance.*sheet'
+      - 'income.*statement'
+    entities_to_extract:
+      - company_name
+      - fiscal_year
+    math_operations:
+      - sum: [assets, liabilities, revenue, expenses]
+
+  bill_of_lading:
+    suite: operations
+    priority: 94
+    processing_path: logic
+    keywords:
+      - carrier
+      - shipper
+      - consignee
+      - freight
+      - vessel
+      - port of loading
+      - bill of lading
+      - weight
+    regex_patterns:
+      - 'b/l\s+no'
+      - 'ocean\s+bill\s+of\s+lading'
+      - 'freight\s+prepaid'
+    filename_patterns:
+      - 'bol'
+      - 'bill_of_lading'
+      - 'shipping_advice'
+    entities_to_extract:
+      - bol_number
+      - carrier_name
+      - consignee
+
+  packing_slip:
+    suite: operations
+    priority: 85
+    processing_path: logic
+    keywords:
+      - shipment
+      - contents
+      - package
+      - bundle
+      - quantity shipped
+      - backordered
+    regex_patterns:
+      - 'packing\s+(list|slip)'
+      - 'delivery\s+note'
+    filename_patterns:
+      - 'packing'
+      - 'delivery_slip'
+    entities_to_extract:
+      - shipment_id
+      - order_id
+
+  # ==================== MEDICAL SUITE ====================
+  medical_report:
+    suite: medical
+    priority: 98
+    processing_path: logic
+    keywords:
+      - patient
+      - diagnosis
+      - treatment
+      - physician
+      - clinical
+      - laboratory
+      - symptoms
+    regex_patterns:
+      - 'medical\s+history'
+      - 'lab\s+results'
+      - 'diagnostic\s+report'
+    filename_patterns:
+      - 'medical'
+      - 'health'
+      - 'patient_record'
+    entities_to_extract:
+      - patient_id
+      - mrn
+
+  prescription:
+    suite: medical
+    priority: 95
+    processing_path: logic
+    keywords:
+      - dosage
+      - pharmacy
+      - rx
+      - medication
+      - refills
+      - mg
+      - capsule
+    regex_patterns:
+      - 'take\s+\d+\s+capsule'
+      - 'refill\s+count'
+    filename_patterns:
+      - 'prescription'
+      - 'rx'
+    entities_to_extract:
+      - patient_id
+      - rx_number
+
+  # ==================== GOVERNMENT SUITE ====================
+  identification:
+    suite: government
+    priority: 99
+    processing_path: logic
+    keywords:
+      - passport
+      - license
+      - birth date
+      - expiration
+      - nationality
+      - identity
+    regex_patterns:
+      - 'driver\s+license'
+      - 'identification\s+card'
+      - 'passport\s+no'
+    filename_patterns:
+      - 'id_card'
+      - 'passport'
+      - 'drivers_license'
+    entities_to_extract:
+      - id_number
+      - name
+
+  property_deed:
+    suite: government
+    priority: 95
+    processing_path: logic
+    keywords:
+      - grantor
+      - grantee
+      - conveyance
+      - parcel
+      - legal description
+      - quitclaim
+      - warranty deed
+    regex_patterns:
+      - 'transfer\s+of\s+title'
+      - 'recorded\s+document'
+    filename_patterns:
+      - 'deed'
+      - 'title_document'
+    entities_to_extract:
+      - property_address
+      - parcel_id
+
+  legal_notice:
+    suite: government
+    priority: 90
+    processing_path: logic
+    keywords:
+      - summons
+      - complaint
+      - defendant
+      - plaintiff
+      - court
+      - jurisdiction
+      - lawsuit
+    regex_patterns:
+      - 'legal\s+notice'
+      - 'court\s+of\s+appeals'
+      - 'notary\s+public'
+    filename_patterns:
+      - 'notice'
+      - 'legal_filing'
+    entities_to_extract:
+      - case_number
+      - court_name
+
+  # ==================== MARKETING SUITE ====================
+  marketing_brief:
+    suite: marketing
+    priority: 75
+    processing_path: logic
+    keywords:
+      - campaign
+      - target audience
+      - objectives
+      - brand
+      - demographics
+      - messaging
+      - creative
+    regex_patterns:
+      - 'marketing\s+strategy'
+      - 'brand\s+guidelines'
+      - 'campaign\s+brief'
+    filename_patterns:
+      - 'brief'
+      - 'campaign'
+      - 'marketing'
+    entities_to_extract:
+      - campaign_id
+      - brand_name
+
+  press_release:
+    suite: marketing
+    priority: 80
+    processing_path: logic
+    keywords:
+      - for immediate release
+      - contact info
+      - media contact
+      - headline
+      - boilerplate
+      - news
+    regex_patterns:
+      - 'press\s+release'
+      - 'news\s+wire'
+      - 'media\s+advisory'
+    filename_patterns:
+      - 'press_release'
+      - 'announcement'
+    entities_to_extract:
+      - contact_email
+      - phone
+
+  # ==================== TECHNICAL SUITE ====================
+  technical_specification:
+    suite: technical
+    priority: 80
+    processing_path: logic
+    keywords:
+      - requirements
+      - architecture
+      - implementation
+      - protocol
+      - interface
+      - compliance
+      - standard
+    regex_patterns:
+      - 'tech\s+spec'
+      - 'design\s+document'
+      - 'functional\s+requirements'
+    filename_patterns:
+      - 'spec'
+      - 'architecture'
+      - 'design_doc'
+    entities_to_extract:
+      - project_id
+      - version
+
+  user_manual:
+    suite: technical
+    priority: 70
+    processing_path: logic
+    keywords:
+      - instructions
+      - guide
+      - troubleshooting
+      - installation
+      - operation
+      - setup
+      - warranty
+    regex_patterns:
+      - 'user\s+guide'
+      - 'how-to'
+      - 'getting\s+started'
+    filename_patterns:
+      - 'manual'
+      - 'guide'
+      - 'handbook'
+    entities_to_extract:
+      - product_id
+      - version
+
+  # ==================== ADMINISTRATIVE SUITE ====================
+  meeting_minutes:
+    suite: administrative
+    priority: 82
+    processing_path: logic
+    keywords:
+      - attendees
+      - agenda
+      - adjourned
+      - quorum
+      - resolution
+      - motion
+      - seconded
+    regex_patterns:
+      - 'minutes\s+of\s+the\s+meeting'
+      - 'board\s+meeting'
+      - 'action\s+items'
+    filename_patterns:
+      - 'minutes'
+      - 'board_notes'
+    entities_to_extract:
+      - meeting_id
+      - date
+
+  spreadsheet:
+    suite: data
+    priority: 95
+    processing_path: math
+
+    # Stronger keyword detection
+    keywords:
+      - csv
+      - excel
+      - dataset
+      - data
+      - table
+      - rows
+      - columns
+      - rating
+      - score
+      - id
+      - value
+      - amount
+
+    # File extensions alone should be enough to classify
+    file_extensions:
+      - .xlsx
+      - .xls
+      - .csv
+
+    # Filename patterns
+    filename_patterns:
+      - '.*\.(xlsx|xls|csv)$'
+      - '.*ratings.*'
+      - '.*data.*'
+      - '.*table.*'
+
+    # Optional: detect column‑like structure
+    structural_patterns:
+      - '.*,.*,.*,.*'     # CSV with multiple commas
+      - '^[A-Za-z0-9_ ]+,.*$'  # header row
+
+    math_operations:
+      - sum: [ total, amount, value ]
+      - average: [ price, cost, rating, score ]
+      - count: [ rows, records, movies ]
+
+
+# ==================== ENTITY EXTRACTION PATTERNS ====================
+entity_patterns:
+  order_id:
+    patterns:
+      - 'order[_\s#-]*([A-Z0-9]{6,})'
+      - 'po[_\s#-]*([A-Z0-9]{6,})'
+    priority: high
+
+  invoice_number:
+    patterns:
+      - 'invoice[_\s#-]*([A-Z0-9]{6,})'
+      - 'inv[_\s#-]*([A-Z0-9]{6,})'
+    priority: high
+
+  email:
+    patterns:
+      - '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    priority: medium
+
+  phone:
+    patterns:
+      - '\b\d{3}[-.]?\d{3}[-.]?\d{4}\b'
+      - '\+\d{1,3}\s?\d{3,}'
+    priority: medium
+
+  customer_id:
+    patterns:
+      - 'customer[_\s#-]*([A-Z0-9]{4,})'
+      - 'cust[_\s#-]*([A-Z0-9]{4,})'
+    priority: high
+
+  product_id:
+    patterns:
+      - 'product[_\s#-]*([A-Z0-9]{4,})'
+      - 'sku[_\s#-]*([A-Z0-9]{4,})'
+    priority: high
+
+  transaction_id:
+    patterns:
+      - 'trans(action)?[_\s#-]*([A-Z0-9]{6,})'
+      - 'txn[_\s#-]*([A-Z0-9]{6,})'
+    priority: high
+
+  account_number:
+    patterns:
+      - 'account[_\s#-]*(\d{8,})'
+      - 'acct[_\s#-]*(\d{8,})'
+    priority: high
+
+# ==================== PROCESSING CONFIGURATION ====================
+processing:
+  math_path:
+    max_rows: 100000
+    precision: 2
+    currency_symbol: "$"
+
+  logic_path:
+    max_text_length: 15000
+    model: "mistral:7b"
+    temperature: 0.1

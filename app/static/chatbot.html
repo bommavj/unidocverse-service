@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>UniDocVerse Assistant</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:          #f4f6fa;
+    --surface:     #ffffff;
+    --surface2:    #f0f3f9;
+    --border:      #dde3ef;
+    --accent:      #1a56db;
+    --accent-dark: #1340b0;
+    --accent-light:#e8eefb;
+    --text:        #111827;
+    --text-muted:  #6b7280;
+    --user-bg:     #1a56db;
+    --user-text:   #ffffff;
+    --bot-bg:      #ffffff;
+    --bot-text:    #111827;
+    --danger:      #dc2626;
+    --success:     #16a34a;
+    --radius:      12px;
+    --shadow:      0 1px 4px rgba(0,0,0,.08);
+    --font:        -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+
+  body {
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* ── Header ── */
+  header {
+    background: var(--accent);
+    color: #fff;
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+    box-shadow: 0 2px 8px rgba(26,86,219,.3);
+  }
+  .header-icon {
+    width: 36px; height: 36px;
+    background: rgba(255,255,255,.18);
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; flex-shrink: 0;
+  }
+  .header-text h1 { font-size: 16px; font-weight: 700; letter-spacing: -.2px; }
+  .header-text p  { font-size: 12px; opacity: .75; margin-top: 1px; }
+  .header-status {
+    margin-left: auto;
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px; opacity: .85;
+  }
+  .status-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #4ade80;
+    box-shadow: 0 0 0 2px rgba(74,222,128,.3);
+  }
+
+  /* ── Upload bar ── */
+  #upload-bar {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 16px;
+    display: flex; align-items: center; gap: 10px;
+    flex-shrink: 0;
+  }
+  #upload-bar label {
+    display: flex; align-items: center; gap: 6px;
+    background: var(--accent-light);
+    color: var(--accent);
+    border: 1px dashed var(--accent);
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 13px; font-weight: 500;
+    cursor: pointer; transition: background .15s;
+    white-space: nowrap;
+  }
+  #upload-bar label:hover { background: #d5e2fc; }
+  #file-input { display: none; }
+  #upload-status {
+    font-size: 12px; color: var(--text-muted);
+    flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #upload-status.success { color: var(--success); }
+  #upload-status.error   { color: var(--danger); }
+
+  /* ── Docs pill list ── */
+  #docs-list {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    padding: 0 16px 8px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  #docs-list:empty { display: none; }
+  .doc-pill {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 3px 10px;
+    font-size: 11px; color: var(--text-muted);
+    display: flex; align-items: center; gap: 4px;
+  }
+  .doc-pill span { color: var(--accent); }
+
+  /* ── Messages ── */
+  #messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px 16px;
+    display: flex; flex-direction: column; gap: 14px;
+    scroll-behavior: smooth;
+  }
+  #messages::-webkit-scrollbar { width: 4px; }
+  #messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+  .msg { display: flex; gap: 10px; max-width: 100%; }
+  .msg.user { flex-direction: row-reverse; }
+
+  .avatar {
+    width: 30px; height: 30px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; flex-shrink: 0; align-self: flex-end;
+  }
+  .msg.user .avatar  { background: var(--accent); color: #fff; }
+  .msg.bot  .avatar  { background: var(--surface2); border: 1px solid var(--border); }
+
+  .bubble {
+    max-width: min(75%, 560px);
+    padding: 11px 14px;
+    border-radius: var(--radius);
+    font-size: 14px; line-height: 1.6;
+    box-shadow: var(--shadow);
+  }
+  .msg.user .bubble {
+    background: var(--user-bg); color: var(--user-text);
+    border-bottom-right-radius: 4px;
+  }
+  .msg.bot .bubble {
+    background: var(--bot-bg); color: var(--bot-text);
+    border: 1px solid var(--border);
+    border-bottom-left-radius: 4px;
+  }
+
+  /* markdown formatting inside bubbles */
+  .bubble p  { margin: 0 0 8px; }
+  .bubble p:last-child { margin-bottom: 0; }
+  .bubble strong { font-weight: 600; }
+  .bubble em { font-style: italic; }
+  .bubble h3 { font-size: 14px; font-weight: 700; margin: 10px 0 4px; }
+  .bubble ul, .bubble ol { padding-left: 20px; margin: 4px 0 8px; }
+  .bubble li { margin-bottom: 4px; line-height: 1.5; }
+  .bubble code {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 5px; font-size: 12px; font-family: monospace;
+  }
+  .bubble pre {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 10px; overflow-x: auto;
+    font-size: 12px; margin: 6px 0;
+  }
+  /* tables */
+  .bubble .md-table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 12px; overflow-x: auto; display: block; }
+  .bubble .md-table th { background: var(--accent-light); color: var(--accent); font-weight: 600; padding: 6px 10px; text-align: left; border-bottom: 2px solid var(--accent); white-space: nowrap; }
+  .bubble .md-table td { padding: 5px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .bubble .md-table tr:last-child td { border-bottom: none; }
+  .bubble .md-table tr:hover td { background: var(--accent-light); }
+  .bubble .md-table td:last-child, .bubble .md-table th:last-child { text-align: right; }
+  /* chart card */
+  .chart-card { margin: 10px 0; background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+  .chart-title { font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .chart-bar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px; }
+  .chart-bar-label { width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; color: var(--text-muted); flex-shrink: 0; }
+  .chart-bar-track { flex: 1; background: var(--border); border-radius: 4px; height: 18px; overflow: hidden; }
+  .chart-bar-fill { height: 100%; background: var(--accent); border-radius: 4px; transition: width 0.6s ease; display: flex; align-items: center; justify-content: flex-end; padding-right: 6px; }
+  .chart-bar-val { font-size: 11px; font-weight: 600; color: #fff; white-space: nowrap; }
+
+  /* sources */
+  .sources {
+    margin-top: 8px; padding-top: 8px;
+    border-top: 1px solid var(--border);
+    font-size: 11px; color: var(--text-muted);
+    display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
+  }
+  .source-chip {
+    background: var(--accent-light); color: var(--accent);
+    border-radius: 20px; padding: 2px 8px; font-size: 11px;
+  }
+
+  /* typing indicator */
+  .typing { display: flex; align-items: center; gap: 4px; padding: 6px 0; }
+  .typing span {
+    width: 6px; height: 6px; background: var(--text-muted);
+    border-radius: 50%; animation: bounce .9s infinite;
+  }
+  .typing span:nth-child(2) { animation-delay: .15s; }
+  .typing span:nth-child(3) { animation-delay: .30s; }
+  @keyframes bounce {
+    0%,60%,100% { transform: translateY(0); }
+    30%          { transform: translateY(-5px); }
+  }
+
+  /* welcome */
+  #welcome {
+    text-align: center; margin: auto;
+    display: flex; flex-direction: column; align-items: center; gap: 12px;
+  }
+  #welcome .w-icon {
+    width: 56px; height: 56px; background: var(--accent-light);
+    border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    font-size: 28px;
+  }
+  #welcome h2 { font-size: 18px; font-weight: 700; }
+  #welcome p  { font-size: 14px; color: var(--text-muted); max-width: 300px; line-height: 1.5; }
+  .suggestions {
+    display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 340px;
+  }
+  .suggestion {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 9px 14px;
+    font-size: 13px; color: var(--accent);
+    cursor: pointer; text-align: left; transition: background .15s;
+  }
+  .suggestion:hover { background: var(--accent-light); }
+
+  /* ── Input bar ── */
+  #input-bar {
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding: 12px 16px;
+    display: flex; gap: 8px; align-items: flex-end;
+    flex-shrink: 0;
+  }
+  #question {
+    flex: 1;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 14px; font-family: var(--font);
+    resize: none; outline: none;
+    max-height: 120px; min-height: 42px;
+    line-height: 1.5;
+    background: var(--surface2);
+    color: var(--text);
+    transition: border-color .15s;
+  }
+  #question:focus { border-color: var(--accent); background: #fff; }
+  #question::placeholder { color: var(--text-muted); }
+
+  #send-btn {
+    width: 42px; height: 42px; flex-shrink: 0;
+    background: var(--accent); color: #fff;
+    border: none; border-radius: 10px;
+    cursor: pointer; font-size: 18px;
+    display: flex; align-items: center; justify-content: center;
+    transition: background .15s, transform .1s;
+  }
+  #send-btn:hover:not(:disabled) { background: var(--accent-dark); }
+  #send-btn:active:not(:disabled) { transform: scale(.94); }
+  #send-btn:disabled { opacity: .45; cursor: not-allowed; }
+
+  /* ── Disclaimer ── */
+  #disclaimer {
+    text-align: center; font-size: 11px; color: var(--text-muted);
+    padding: 6px 16px 10px;
+    background: var(--surface); flex-shrink: 0;
+  }
+
+  /* ── Spinner overlay ── */
+  .spinner-inline {
+    display: inline-block; width: 12px; height: 12px;
+    border: 2px solid var(--border); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin .6s linear infinite;
+    vertical-align: middle; margin-right: 4px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Responsive ── */
+  @media (max-width: 480px) {
+    .bubble { max-width: 88%; }
+    header  { padding: 10px 14px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <div class="header-icon">🏦</div>
+  <div class="header-text">
+    <h1>AI Banking Assistant</h1>
+    <p>Ask questions about your statements &amp; finances</p>
+  </div>
+  <div class="header-status">
+    <div class="status-dot"></div>
+    Online
+  </div>
+</header>
+
+<!-- Messages -->
+<div id="messages">
+  <div id="welcome">
+    <div class="w-icon">💬</div>
+    <h2>Hello! How can I help?</h2>
+    <p id="welcome-hint">Ask me anything about your documents.</p>
+    <div class="suggestions" id="suggestion-chips">
+      <button class="suggestion" onclick="useSuggestion(this)">What is my total spending this month?</button>
+      <button class="suggestion" onclick="useSuggestion(this)">Show my top 5 merchants by spend</button>
+      <button class="suggestion" onclick="useSuggestion(this)">Are there any unusual charges?</button>
+      <button class="suggestion" onclick="useSuggestion(this)">What is my closing balance?</button>
+    </div>
+  </div>
+</div>
+
+<!-- Input bar -->
+<div id="input-bar">
+  <textarea id="question" placeholder="Ask anything about your documents…" rows="1"></textarea>
+  <button id="send-btn" onclick="sendQuestion()" title="Send">➤</button>
+</div>
+<div id="disclaimer">
+  AI responses may contain errors. Always verify with your provider. &nbsp;·&nbsp; Powered by UniDocVerse
+</div>
+
+<script>
+// ── Config — reads URL params so each bank can brand it their own way ────────
+// Usage: /chatbot?title=Bomma&subtitle=UniDocVerse+Assistant&color=%231a56db&icon=🤖
+const _p    = new URLSearchParams(window.location.search);
+const API   = (window.CHATBOT_API_BASE || _p.get('api') || '').replace(/\/$/, '');
+const TITLE    = _p.get('title')    || window.CHATBOT_TITLE    || 'AI Assistant';
+const SUBTITLE = _p.get('subtitle') || window.CHATBOT_SUBTITLE || 'Your AI document assistant';
+const COLOR    = _p.get('color')    || window.CHATBOT_COLOR    || '#1a56db';
+const ICON     = _p.get('icon')     || window.CHATBOT_ICON     || '🏦';
+const WELCOME  = _p.get('welcome')  || window.CHATBOT_WELCOME  || 'Hello! How can I help?';
+const HINT     = _p.get('hint')     || window.CHATBOT_HINT     || 'Ask me anything about your documents.';
+
+// ── State ───────────────────────────────────────────────────────────────────
+let sessionToken = null;
+let sessionDocIds = [];
+let running = false;
+let priorQA = [];    // multi-turn history
+let currentBotBubble = null;
+let currentBotText = '';
+
+// ── Init ────────────────────────────────────────────────────────────────────
+async function init() {
+  // Apply branding
+  document.title = TITLE;
+  document.querySelector('header h1').textContent = TITLE;
+  document.querySelector('header p').textContent = SUBTITLE;
+  document.querySelector('.header-icon').textContent = ICON;
+  document.querySelector('#welcome h2').textContent = WELCOME;
+  document.querySelector('#welcome p').textContent = HINT;
+  document.querySelector('.w-icon').textContent = ICON;
+  document.querySelector('.msg.bot .avatar') && (document.querySelector('.msg.bot .avatar').textContent = ICON);
+
+  // Apply custom accent color
+  document.documentElement.style.setProperty('--accent', COLOR);
+  document.documentElement.style.setProperty('--accent-dark', _darken(COLOR));
+  document.documentElement.style.setProperty('--accent-light', _lighten(COLOR));
+  document.documentElement.style.setProperty('--user-bg', COLOR);
+
+  await createSession();
+  setupUpload();
+  setupInput();
+}
+
+function _darken(hex) {
+  const n = parseInt(hex.replace('#',''), 16);
+  const r = Math.max(0, (n >> 16) - 30);
+  const g = Math.max(0, ((n >> 8) & 0xff) - 30);
+  const b = Math.max(0, (n & 0xff) - 30);
+  return `#${((r<<16)|(g<<8)|b).toString(16).padStart(6,'0')}`;
+}
+function _lighten(hex) {
+  const n = parseInt(hex.replace('#',''), 16);
+  const r = Math.min(255, (n >> 16) + 210);
+  const g = Math.min(255, ((n >> 8) & 0xff) + 210);
+  const b = Math.min(255, (n & 0xff) + 210);
+  return `#${((r<<16)|(g<<8)|b).toString(16).padStart(6,'0')}`;
+}
+
+async function createSession() {
+  try {
+    const res = await fetch(`${API}/api/chatbot/session`, { method: 'POST' });
+    const data = await res.json();
+    sessionToken = data.token;
+  } catch (e) {
+    console.error('Session creation failed:', e);
+  }
+}
+
+// ── Upload ───────────────────────────────────────────────────────────────────
+function setupUpload() {
+  document.getElementById('file-input').addEventListener('change', async (e) => {
+    const files = [...e.target.files];
+    if (!files.length) return;
+
+    const statusEl = document.getElementById('upload-status');
+    statusEl.className = '';
+    statusEl.textContent = '';
+
+    for (const file of files) {
+      statusEl.innerHTML = `<span class="spinner-inline"></span> Processing ${file.name}…`;
+      try {
+        const fd = new FormData();
+        fd.append('file', file);
+
+        let url, res;
+        if (sessionToken) {
+          url = `${API}/api/chatbot/upload/${sessionToken}`;
+          res = await fetch(url, { method: 'POST', body: fd });
+        } else {
+          url = `${API}/api/upload`;
+          res = await fetch(url, { method: 'POST', body: fd });
+        }
+
+        let data;
+        const ct = res.headers.get('content-type') || '';
+        if (ct.includes('application/json')) {
+          data = await res.json();
+        } else {
+          const text = await res.text();
+          throw new Error(text.slice(0, 120) || 'Upload failed');
+        }
+        if (!res.ok) throw new Error(data.detail || 'Upload failed');
+
+        const docId = data.document_id || data.id;
+        if (docId && !sessionDocIds.includes(docId)) {
+          sessionDocIds.push(docId);
+          addDocPill(file.name, docId);
+
+        }
+
+        statusEl.className = 'success';
+        statusEl.textContent = `✓ ${file.name} ready`;
+        hideWelcome();
+      } catch (err) {
+        statusEl.className = 'error';
+        statusEl.textContent = `✗ ${file.name}: ${err.message}`;
+      }
+    }
+    e.target.value = '';
+  });
+}
+
+function addDocPill(filename, docId) {
+  const list = document.getElementById('docs-list');
+  const pill = document.createElement('div');
+  pill.className = 'doc-pill';
+  pill.innerHTML = `<span>📄</span> ${escHtml(filename.length > 30 ? filename.slice(0,28)+'…' : filename)}`;
+  list.appendChild(pill);
+}
+
+// ── Input ────────────────────────────────────────────────────────────────────
+function setupInput() {
+  const ta = document.getElementById('question');
+  ta.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendQuestion(); }
+  });
+  ta.addEventListener('input', () => {
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
+  });
+}
+
+function useSuggestion(btn) {
+  document.getElementById('question').value = btn.textContent.trim();
+  sendQuestion();
+}
+
+// ── Send question ─────────────────────────────────────────────────────────────
+async function sendQuestion() {
+  if (running) return;
+  const ta = document.getElementById('question');
+  const q = ta.value.trim();
+  if (!q) return;
+
+  ta.value = '';
+  ta.style.height = 'auto';
+  hideWelcome();
+  running = true;
+  document.getElementById('send-btn').disabled = true;
+
+  appendUserMsg(q);
+  const botBubble = appendBotMsg('');
+  currentBotBubble = botBubble;
+  currentBotText = '';
+  showTyping(botBubble);
+
+  try {
+    const params = new URLSearchParams({ question: q });
+    if (sessionDocIds.length) params.set('doc_ids', sessionDocIds.join(','));
+    if (priorQA.length) params.set('prior_qa', JSON.stringify(priorQA));
+
+    const es = new EventSource(`${API}/api/research/ask/stream?${params}`);
+    let answer = '';
+    let sources = [];
+    let chartData = null;
+
+    es.onmessage = (e) => {
+      if (e.data === '[DONE]') {
+        es.close();
+        finishBot(botBubble, answer, sources, chartData, q);
+        return;
+      }
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'thinking') {
+          showTyping(botBubble);
+        } else if (msg.type === 'token') {
+          hideTyping(botBubble);
+          answer += msg.text;
+          renderBotText(botBubble, answer);
+        } else if (msg.type === 'sources') {
+          sources = msg.sources || [];
+        } else if (msg.type === 'chart') {
+          chartData = msg.chart;
+        } else if (msg.type === 'done') {
+          es.close();
+          finishBot(botBubble, answer, sources, chartData, q);
+        } else if (msg.type === 'error') {
+          hideTyping(botBubble);
+          renderBotText(botBubble, '⚠️ ' + (msg.message || 'Something went wrong.'));
+          es.close();
+          done();
+        }
+      } catch (_) {}
+    };
+
+    es.onerror = () => {
+      es.close();
+      if (!answer) renderBotText(botBubble, '⚠️ Could not reach the assistant. Please try again.');
+      done();
+    };
+
+  } catch (err) {
+    renderBotText(botBubble, '⚠️ ' + err.message);
+    done();
+  }
+}
+
+function finishBot(bubble, answer, sources, chartData, question) {
+  if (answer) renderBotText(bubble, answer);
+  if (chartData) renderChart(bubble, chartData);
+  if (sources && sources.length) renderSources(bubble, sources);
+  priorQA.push({ q: question, a: answer });
+  if (priorQA.length > 10) priorQA.shift();
+  done();
+}
+
+function done() {
+  running = false;
+  document.getElementById('send-btn').disabled = false;
+  document.getElementById('question').focus();
+  scrollBottom();
+}
+
+// ── Render helpers ────────────────────────────────────────────────────────────
+function appendUserMsg(text) {
+  const msgs = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.className = 'msg user';
+  div.innerHTML = `
+    <div class="avatar">👤</div>
+    <div class="bubble">${escHtml(text).replace(/\n/g,'<br>')}</div>`;
+  msgs.appendChild(div);
+  scrollBottom();
+}
+
+function appendBotMsg(text) {
+  const msgs = document.getElementById('messages');
+  const div = document.createElement('div');
+  div.className = 'msg bot';
+  div.innerHTML = `
+    <div class="avatar">🏦</div>
+    <div class="bubble">
+      <div class="typing"><span></span><span></span><span></span></div>
+      <div class="bot-text"></div>
+    </div>`;
+  msgs.appendChild(div);
+  scrollBottom();
+  return div;
+}
+
+function showTyping(msgEl) {
+  msgEl.querySelector('.typing').style.display = 'flex';
+  msgEl.querySelector('.bot-text').textContent = '';
+}
+function hideTyping(msgEl) {
+  const t = msgEl.querySelector('.typing');
+  if (t) t.style.display = 'none';
+}
+
+function renderBotText(msgEl, text) {
+  hideTyping(msgEl);
+  msgEl.querySelector('.bot-text').innerHTML = simpleMarkdown(text);
+  scrollBottom();
+}
+
+function renderSources(msgEl, sources) {
+  const existing = msgEl.querySelector('.sources');
+  if (existing) existing.remove();
+  const div = document.createElement('div');
+  div.className = 'sources';
+  div.innerHTML = '📎 Sources: ' + sources.map(s =>
+    `<span class="source-chip">${escHtml(s)}</span>`).join('');
+  msgEl.querySelector('.bubble').appendChild(div);
+}
+
+function hideWelcome() {
+  const w = document.getElementById('welcome');
+  if (w) w.remove();
+}
+
+function scrollBottom() {
+  const msgs = document.getElementById('messages');
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+// ── Markdown renderer ─────────────────────────────────────────────────────────
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function simpleMarkdown(text) {
+  const lines = text.split('\n');
+  let html = '';
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    // Markdown table — detect | header | row |
+    if (/^\s*\|/.test(line) && i + 1 < lines.length && /^\s*\|[-:| ]+\|/.test(lines[i+1])) {
+      const headers = line.split('|').slice(1,-1).map(h => `<th>${escHtml(h.trim())}</th>`).join('');
+      i += 2; // skip separator
+      let rows = '';
+      while (i < lines.length && /^\s*\|/.test(lines[i])) {
+        const cells = lines[i].split('|').slice(1,-1).map(c => `<td>${escHtml(c.trim())}</td>`).join('');
+        rows += `<tr>${cells}</tr>`;
+        i++;
+      }
+      html += `<div style="overflow-x:auto"><table class="md-table"><thead><tr>${headers}</tr></thead><tbody>${rows}</tbody></table></div>`;
+      continue;
+    }
+
+    // Heading
+    const hm = line.match(/^(#{1,3}) (.+)/);
+    if (hm) { html += `<h3>${escHtml(hm[2])}</h3>`; i++; continue; }
+
+    // Bullet list — collect consecutive items
+    if (/^[-*] /.test(line)) {
+      let items = '';
+      while (i < lines.length && /^[-*] /.test(lines[i])) {
+        items += `<li>${inlineMarkdown(lines[i].replace(/^[-*] /,''))}</li>`;
+        i++;
+      }
+      html += `<ul>${items}</ul>`;
+      continue;
+    }
+
+    // Numbered list
+    if (/^\d+\. /.test(line)) {
+      let items = '';
+      while (i < lines.length && /^\d+\. /.test(lines[i])) {
+        items += `<li>${inlineMarkdown(lines[i].replace(/^\d+\. /,''))}</li>`;
+        i++;
+      }
+      html += `<ol>${items}</ol>`;
+      continue;
+    }
+
+    // Blank line
+    if (!line.trim()) { i++; continue; }
+
+    // Regular paragraph
+    html += `<p>${inlineMarkdown(line)}</p>`;
+    i++;
+  }
+  return html;
+}
+
+function inlineMarkdown(text) {
+  return escHtml(text)
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/`(.+?)`/g, '<code>$1</code>');
+}
+
+// ── Chart renderer ────────────────────────────────────────────────────────────
+function renderChart(msgEl, chartData) {
+  if (!chartData) return;
+  const labels = chartData.labels || [];
+  // Support both flat {values:[]} and Chart.js {datasets:[{data:[]}]} shapes
+  const values = chartData.values || chartData.data ||
+                 (chartData.datasets && chartData.datasets[0] && chartData.datasets[0].data) || [];
+  const title  = chartData.title || (chartData.datasets && chartData.datasets[0] && chartData.datasets[0].label) || '';
+  if (!labels.length || !values.length) return;
+
+  const max = Math.max(...values.filter(v => isFinite(v)));
+  const fmt = (v) => {
+    if (!isFinite(v)) return '—';
+    if (Math.abs(v) >= 1e6) return '$' + (v/1e6).toFixed(1) + 'M';
+    if (Math.abs(v) >= 1e3) return '$' + (v/1e3).toFixed(1) + 'K';
+    return '$' + Number(v).toLocaleString();
+  };
+
+  const rows = labels.slice(0, 10).map((lbl, idx) => {
+    const val = values[idx] || 0;
+    const pct = max > 0 ? Math.max(4, Math.round((val / max) * 100)) : 0;
+    return `
+      <div class="chart-bar-row">
+        <div class="chart-bar-label" title="${escHtml(String(lbl))}">${escHtml(String(lbl))}</div>
+        <div class="chart-bar-track">
+          <div class="chart-bar-fill" style="width:${pct}%">
+            <span class="chart-bar-val">${fmt(val)}</span>
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+
+  const card = document.createElement('div');
+  card.className = 'chart-card';
+  card.innerHTML = (title ? `<div class="chart-title">${escHtml(title)}</div>` : '') + rows;
+  msgEl.querySelector('.bubble').appendChild(card);
+  scrollBottom();
+}
+
+// ── Boot ─────────────────────────────────────────────────────────────────────
+init();
+</script>
+</body>
+</html>
