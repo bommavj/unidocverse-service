@@ -127,4 +127,5 @@ paddleocr==2.10.0
 paddlepaddle==3.2.2
 
 # Docling (PINNED to avoid PaddleX)
-docling==2.69.1psutil>=5.9
+docling==2.69.1
+psutil>=5.9
