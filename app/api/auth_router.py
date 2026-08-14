@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import bcrypt
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 from pydantic import BaseModel
@@ -104,7 +104,7 @@ def get_current_user(
 
 def get_current_user_or_session(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
-    session_token: Optional[str] = None,
+    session_token: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ) -> dict:
     """Accepts JWT bearer token OR a valid chatbot session token (for EventSource clients)."""
