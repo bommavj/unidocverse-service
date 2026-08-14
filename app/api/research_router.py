@@ -21,7 +21,7 @@ from app.core.database import get_db, SessionLocal
 from app.services.document_react_agent import run_research_agent, _do_execute_action, _synthesize_stream
 from app.services.supervisor_agent import run_supervisor, classify_question, classify_intent
 from app.agents.query_workflow import run_query_workflow
-from app.api.auth_router import get_current_user
+from app.api.auth_router import get_current_user, get_current_user_or_session
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +161,8 @@ def research_ask_stream(
     context_doc_ids: Optional[str] = Query(None),
     prior_qa: Optional[str] = Query(None),
     parent_session_id: Optional[str] = Query(None),
-    _: dict = Depends(get_current_user),
+    session_token: Optional[str] = Query(None),
+    _: dict = Depends(get_current_user_or_session),
 ):
     """SSE endpoint — streams step events then answer tokens."""
     if not question or not question.strip():

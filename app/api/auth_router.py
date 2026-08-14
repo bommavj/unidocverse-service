@@ -102,6 +102,30 @@ def get_current_user(
         "language":     user.language,
     }
 
+def get_current_user_or_session(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    session_token: Optional[str] = None,
+    db: Session = Depends(get_db)
+) -> dict:
+    """Accepts JWT bearer token OR a valid chatbot session token (for EventSource clients)."""
+    if credentials:
+        payload = _decode_token(credentials.credentials)
+        if payload:
+            user = db.execute(text("""
+                SELECT id, username, full_name, role, is_active
+                FROM users WHERE id = :uid AND is_active = TRUE
+            """), {"uid": int(payload["sub"])}).fetchone()
+            if user:
+                return {"id": user.id, "username": user.username, "role": user.role}
+    if session_token:
+        row = db.execute(text("""
+            SELECT token FROM chatbot_sessions
+            WHERE token = :t AND expires_at > now()
+        """), {"t": session_token}).fetchone()
+        if row:
+            return {"id": None, "username": "chatbot_session", "role": "user"}
+    raise HTTPException(status_code=401, detail="Not authenticated")
+
 def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
     if current_user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Admin required")
