@@ -391,8 +391,12 @@ from fastapi.responses import FileResponse as _FileResponse
 @app.get("/chatbot")
 async def chatbot_page():
     """Standalone banking chatbot UI — embeddable via iframe or direct link."""
+    from fastapi.responses import HTMLResponse
     chatbot_html = Path(__file__).parent / "static" / "chatbot.html"
-    return _FileResponse(str(chatbot_html))
+    return HTMLResponse(
+        content=chatbot_html.read_text(),
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"}
+    )
 
 @app.get("/chatbot-widget.js")
 async def chatbot_widget_js():
