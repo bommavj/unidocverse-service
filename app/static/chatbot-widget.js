@@ -177,6 +177,7 @@
   if (SUBTITLE) _q.set('subtitle', SUBTITLE);
   if (WELCOME)  _q.set('welcome',  WELCOME);
   if (HINT)     _q.set('hint',     HINT);
+  _q.set('v', '2');
   const chatUrl = `${API}/chatbot?${_q}`;
   const iframe  = document.createElement('iframe');
   iframe.src    = chatUrl;
