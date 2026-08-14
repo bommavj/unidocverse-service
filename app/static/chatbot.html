@@ -504,6 +504,7 @@ async function sendQuestion() {
     const params = new URLSearchParams({ question: q });
     if (sessionDocIds.length) params.set('doc_ids', sessionDocIds.join(','));
     if (priorQA.length) params.set('prior_qa', JSON.stringify(priorQA));
+    if (sessionToken) params.set('session_token', sessionToken);
 
     const es = new EventSource(`${API}/api/research/ask/stream?${params}`);
     let answer = '';
