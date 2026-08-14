@@ -28,6 +28,7 @@ from app.core import config
 from app.core.database import get_db, SessionLocal
 from app.core.guardrails import guard_input, guard_output, GuardrailViolation
 from app.core.pii_redactor import redact_text
+from app.api.auth_router import get_current_user
 from app.core.performance import response_cache, llm_queue, LLMQueueFullError
 
 logger = logging.getLogger(__name__)
@@ -1007,7 +1008,7 @@ def _make_stream(prompt: str, source_doc: dict = None, session_id: str = "",
 # =============================================================================
 
 @router.post("/ask")
-async def ask_all_documents(request: dict, raw_request: Request, db: Session = Depends(get_db)):
+async def ask_all_documents(request: dict, raw_request: Request, db: Session = Depends(get_db), _: dict = Depends(get_current_user)):
     """
     Global RAG — semantic search across all documents.
     Optionally accepts a 'context_data' dict to inject structured data
@@ -1083,7 +1084,7 @@ class ContextAskRequest(BaseModel):
 
 
 @router.post("/ask/with-context")
-async def ask_with_context(req: ContextAskRequest, raw_request: Request, db: Session = Depends(get_db)):
+async def ask_with_context(req: ContextAskRequest, raw_request: Request, db: Session = Depends(get_db), _: dict = Depends(get_current_user)):
     """
     Ask with explicit structured context — no RAG retrieval needed.
     Used when the caller already has all the data (policy detail, portfolio, etc.)
@@ -1231,7 +1232,7 @@ def _assess_confidence(answer: str) -> float:
 
 
 @router.post("/{doc_id}/ask")
-async def ask_document(doc_id: str, request: QuestionRequest, raw_request: Request, db: Session = Depends(get_db)):
+async def ask_document(doc_id: str, request: QuestionRequest, raw_request: Request, db: Session = Depends(get_db), _: dict = Depends(get_current_user)):
     """
     Per-document RAG Q&A.
 
