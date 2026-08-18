@@ -1,7 +1,15 @@
 """
-hr_agent.py — HR & People daily report (hr_mode)
-Runs daily at 07:25.
+hr_agent.py — HR & People daily intelligence report.
+
+Morning briefing for HR teams:
+  1. Workforce snapshot      — headcount by doc type, candidates in pipeline
+  2. Onboarding tasks overdue — tasks past due_date not yet completed
+  3. Immigration expiring     — work authorizations / visas expiring ≤90 days (critical)
+  4. Top candidates           — highest match_score candidates awaiting decision
+  5. Documents needing review — HR docs uploaded but not yet linked/reviewed
+  6. Approval queue           — pending HR-related approvals
 """
+
 import logging
 from datetime import date
 from typing import Any
@@ -10,13 +18,8 @@ from app.services.domain_agents.base_domain_agent import BaseDomainAgent
 
 logger = logging.getLogger(__name__)
 
-HR_TYPES = ("offer_letter", "employment_contract", "resume", "nda",
-            "i9", "w4", "performance_review", "termination_letter",
-            "payroll", "benefits_enrollment")
-
-IMMIGRATION_TYPES = ("passport", "visa_document", "i94", "h1b", "ead",
-                     "i797", "i140", "uscis_receipt", "immigration_document",
-                     "immigration_receipt")
+HR_DOC_TYPES = ('offer_letter','employment_contract','resume','nda','i9','w4',
+                'performance_review','termination_letter','payroll','benefits_enrollment')
 
 
 class HRAgent(BaseDomainAgent):
@@ -27,88 +30,139 @@ class HRAgent(BaseDomainAgent):
         db   = self.db
         data: dict[str, Any] = {}
 
-        # --- HR doc activity ---
-        try:
-            row = db.execute(text("""
-                SELECT COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '1 day')  AS last_24h,
-                       COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days') AS last_7,
-                       COUNT(*) AS total
-                FROM documents WHERE doc_type = ANY(:types)
-            """), {"types": list(HR_TYPES)}).fetchone()
-            data["activity"] = {"last_24h": row[0], "last_7_days": row[1], "total": row[2]}
-        except Exception as e:
-            logger.warning(f"⚠️ [HRAgent] activity: {e}")
-            data["activity"] = {}
-
-        # --- Breakdown ---
+        # ── 1. Workforce snapshot ─────────────────────────────────────────────
         try:
             rows = db.execute(text("""
                 SELECT doc_type, COUNT(*) AS cnt
-                FROM documents WHERE doc_type = ANY(:types) AND status = 'processed'
+                FROM documents
+                WHERE doc_type = ANY(:types) AND status = 'completed'
                 GROUP BY doc_type ORDER BY cnt DESC
-            """), {"types": list(HR_TYPES)}).fetchall()
-            data["doc_breakdown"] = [{"type": r[0], "count": r[1]} for r in rows]
+            """), {"types": list(HR_DOC_TYPES)}).fetchall()
+            total = db.execute(text("""
+                SELECT COUNT(DISTINCT client_id) FROM documents
+                WHERE doc_type = ANY(:types) AND status = 'completed' AND client_id IS NOT NULL
+            """), {"types": list(HR_DOC_TYPES)}).scalar()
+            data["workforce_snapshot"] = {
+                "employees_tracked": int(total or 0),
+                "documents_by_type": {r[0]: r[1] for r in rows},
+            }
         except Exception as e:
-            logger.warning(f"⚠️ [HRAgent] doc_breakdown: {e}")
-            data["doc_breakdown"] = []
+            logger.warning(f"⚠️ [HRAgent] workforce snapshot failed: {e}")
+            db.rollback()
+            data["workforce_snapshot"] = {}
 
-        # --- Immigration expiry alerts ---
+        # ── 2. Onboarding tasks overdue ───────────────────────────────────────
         try:
             rows = db.execute(text("""
-                SELECT alert_type, COUNT(*) AS cnt
-                FROM client_immigration
-                WHERE expiry_alert IS NOT NULL
-                GROUP BY alert_type ORDER BY cnt DESC
+                SELECT employee_name, title,
+                       due_date,
+                       CURRENT_DATE - due_date AS days_overdue
+                FROM hr_onboarding_tasks
+                WHERE is_done = FALSE AND due_date < CURRENT_DATE
+                ORDER BY due_date
             """)).fetchall()
-            data["immigration_alerts"] = [{"alert": r[0], "count": r[1]} for r in rows]
+            data["onboarding_overdue"] = [{
+                "employee":     r[0] or "—",
+                "task":         r[1],
+                "due_date":     r[2].isoformat() if r[2] else "—",
+                "days_overdue": int(r[3] or 0),
+            } for r in rows]
         except Exception as e:
-            logger.warning(f"⚠️ [HRAgent] immigration_alerts: {e}")
-            data["immigration_alerts"] = []
+            logger.warning(f"⚠️ [HRAgent] onboarding overdue failed: {e}")
+            db.rollback()
+            data["onboarding_overdue"] = []
 
-        # --- Expiring immigration docs ---
+        # ── 3. Immigration / work authorization expiring ──────────────────────
         try:
-            row = db.execute(text("""
+            rows = db.execute(text("""
                 SELECT
-                  COUNT(*) FILTER (WHERE expiry_date <= CURRENT_DATE + 30) AS exp_30,
-                  COUNT(*) FILTER (WHERE expiry_date <= CURRENT_DATE + 60) AS exp_60,
-                  COUNT(*) FILTER (WHERE expiry_date <= CURRENT_DATE + 90) AS exp_90
+                    beneficiary_name,
+                    doc_type,
+                    doc_label,
+                    COALESCE(valid_until, authorized_stay_until) AS expiry,
+                    COALESCE(valid_until, authorized_stay_until) - CURRENT_DATE AS days_left,
+                    status
                 FROM client_immigration
-                WHERE expiry_date IS NOT NULL
-            """)).fetchone()
-            data["immigration_expiry"] = {"exp_30": row[0], "exp_60": row[1], "exp_90": row[2]}
+                WHERE COALESCE(valid_until, authorized_stay_until) IS NOT NULL
+                  AND COALESCE(valid_until, authorized_stay_until) >= CURRENT_DATE
+                  AND COALESCE(valid_until, authorized_stay_until) <= CURRENT_DATE + 90
+                ORDER BY expiry
+            """)).fetchall()
+            data["immigration_expiring"] = [{
+                "person":    r[0] or "—",
+                "doc_type":  r[1],
+                "label":     r[2] or "—",
+                "expires_on": r[3].isoformat() if r[3] else "—",
+                "days_left": int(r[4] or 0),
+                "status":    r[5],
+            } for r in rows]
         except Exception as e:
-            logger.warning(f"⚠️ [HRAgent] immigration_expiry: {e}")
-            data["immigration_expiry"] = {}
+            logger.warning(f"⚠️ [HRAgent] immigration expiring failed: {e}")
+            db.rollback()
+            data["immigration_expiring"] = []
 
-        # --- Unique employees ---
+        # ── 4. Top candidates in pipeline ────────────────────────────────────
         try:
-            row = db.execute(text("""
-                SELECT COUNT(DISTINCT client_id) FROM documents
-                WHERE doc_type = ANY(:types) AND client_id IS NOT NULL
-            """), {"types": list(HR_TYPES)}).scalar()
-            data["unique_employees"] = int(row or 0)
+            rows = db.execute(text("""
+                SELECT candidate_name, role, experience_years, match_score, feedback
+                FROM hr_candidates
+                WHERE match_score IS NOT NULL
+                ORDER BY match_score DESC
+            """)).fetchall()
+            data["top_candidates"] = [{
+                "candidate":       r[0] or "—",
+                "role":            r[1] or "—",
+                "experience_yrs":  r[2],
+                "match_score":     r[3],
+                "feedback":        r[4] or "—",
+            } for r in rows]
         except Exception as e:
-            logger.warning(f"⚠️ [HRAgent] unique_employees: {e}")
-            data["unique_employees"] = 0
+            logger.warning(f"⚠️ [HRAgent] candidates failed: {e}")
+            db.rollback()
+            data["top_candidates"] = []
+
+        # ── 5. Pending HR approvals ───────────────────────────────────────────
+        try:
+            rows = db.execute(text("""
+                SELECT title, priority, due_date,
+                       CURRENT_DATE - created_at::date AS age_days
+                FROM approval_requests
+                WHERE status = 'pending'
+                ORDER BY priority DESC, created_at
+            """)).fetchall()
+            data["pending_approvals"] = [{
+                "title":    r[0],
+                "priority": r[1] or "—",
+                "due_date": r[2].isoformat() if r[2] else "—",
+                "age_days": int(r[3] or 0),
+            } for r in rows]
+        except Exception as e:
+            logger.warning(f"⚠️ [HRAgent] approvals failed: {e}")
+            db.rollback()
+            data["pending_approvals"] = []
 
         return data
 
     def build_report(self, data: dict[str, Any]) -> dict[str, Any]:
-        activity = data.get("activity", {})
-        expiry   = data.get("immigration_expiry", {})
+        today    = date.today().isoformat()
+        snap     = data.get("workforce_snapshot", {})
+        overdue  = data.get("onboarding_overdue", [])
+        immig    = data.get("immigration_expiring", [])
+        critical_immig = [i for i in immig if i["days_left"] <= 30]
+
         summary = (
-            f"{activity.get('last_24h', 0)} HR docs processed in last 24h | "
-            f"{expiry.get('exp_30', 0)} immigration docs expiring in 30 days | "
-            f"{data.get('unique_employees', 0)} employees tracked"
+            f"{snap.get('employees_tracked', 0)} employees tracked | "
+            f"{len(overdue)} onboarding tasks overdue | "
+            f"{len(critical_immig)} immigration docs expiring in 30 days"
         )
         return {
-            "title":   f"HR & People Report — {date.today().isoformat()}",
+            "title":   f"HR & People Report — {today}",
             "summary": summary,
             "sections": {
-                "activity":            activity,
-                "document_breakdown":  data.get("doc_breakdown", []),
-                "immigration_expiry":  expiry,
-                "immigration_alerts":  data.get("immigration_alerts", []),
-                "employee_coverage":   {"unique_employees": data.get("unique_employees", 0)},
+                "workforce_snapshot":             data.get("workforce_snapshot", {}),
+                "onboarding_tasks_overdue":       overdue,
+                "immigration_expiring_90_days":   immig,
+                "top_candidates_in_pipeline":     data.get("top_candidates", []),
+                "pending_approvals":              data.get("pending_approvals", []),
             },
         }

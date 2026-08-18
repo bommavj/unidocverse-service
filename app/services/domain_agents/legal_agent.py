@@ -1,7 +1,16 @@
 """
-legal_agent.py — Legal & Compliance daily report (legal_mode)
-Runs daily at 07:05. Collects contracts, NDAs, leases, obligations, matters.
+legal_agent.py — Legal & Compliance daily intelligence report.
+
+Morning briefing for legal teams:
+  1. Matters snapshot         — open matters by stage and priority
+  2. Deadline alerts          — matters with deadlines in next 14 days
+  3. Stalled matters          — open matters with no update in >30 days
+  4. Contracts expiring       — legal contracts expiring in 90 days
+  5. High-risk contracts      — contracts with risk_rating = high/critical
+  6. CLM pipeline             — contract lifecycle by stage
+  7. Pending approvals        — approvals awaiting decision
 """
+
 import logging
 from datetime import date
 from typing import Any
@@ -9,9 +18,6 @@ from sqlalchemy import text
 from app.services.domain_agents.base_domain_agent import BaseDomainAgent
 
 logger = logging.getLogger(__name__)
-
-LEGAL_TYPES = ("contract", "nda", "lease_agreement", "legal_notice",
-               "regulatory_filing", "terms_of_service", "legal_agreement")
 
 
 class LegalAgent(BaseDomainAgent):
@@ -22,80 +28,167 @@ class LegalAgent(BaseDomainAgent):
         db   = self.db
         data: dict[str, Any] = {}
 
-        # --- Document counts by type ---
+        # ── 1. Matters snapshot ───────────────────────────────────────────────
         try:
             rows = db.execute(text("""
-                SELECT doc_type, COUNT(*) AS cnt,
-                       COUNT(*) FILTER (WHERE status = 'processed') AS processed,
-                       COUNT(*) FILTER (WHERE status = 'failed')    AS failed
-                FROM documents
-                WHERE doc_type = ANY(:types)
-                GROUP BY doc_type ORDER BY cnt DESC
-            """), {"types": list(LEGAL_TYPES)}).fetchall()
-            data["doc_breakdown"] = [
-                {"type": r[0], "total": r[1], "processed": r[2], "failed": r[3]}
-                for r in rows
-            ]
+                SELECT
+                    COUNT(*)                                               AS total_open,
+                    COUNT(*) FILTER (WHERE priority = 'high')             AS high_priority,
+                    COUNT(*) FILTER (WHERE priority = 'urgent')           AS urgent,
+                    COUNT(*) FILTER (WHERE deadline < CURRENT_DATE
+                                      AND status NOT IN ('closed','resolved')) AS overdue
+                FROM matters
+                WHERE status NOT IN ('closed','resolved')
+            """)).fetchone()
+            data["matters_snapshot"] = {
+                "total_open":    int(rows[0] or 0),
+                "high_priority": int(rows[1] or 0),
+                "urgent":        int(rows[2] or 0),
+                "overdue":       int(rows[3] or 0),
+            }
         except Exception as e:
-            logger.warning(f"⚠️ [LegalAgent] doc_breakdown: {e}")
-            data["doc_breakdown"] = []
+            logger.warning(f"⚠️ [LegalAgent] matters snapshot failed: {e}")
+            db.rollback()
+            data["matters_snapshot"] = {}
 
-        # --- Recently processed legal docs (last 7 days) ---
+        # ── 2. Deadline alerts (next 14 days) ─────────────────────────────────
         try:
             rows = db.execute(text("""
-                SELECT COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days') AS last_7,
-                       COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '1 day')  AS last_24h,
-                       COUNT(*) AS total
-                FROM documents
-                WHERE doc_type = ANY(:types) AND status = 'processed'
-            """), {"types": list(LEGAL_TYPES)}).fetchone()
-            data["activity"] = {"last_24h": rows[1], "last_7_days": rows[0], "total": rows[2]}
-        except Exception as e:
-            logger.warning(f"⚠️ [LegalAgent] activity: {e}")
-            data["activity"] = {}
-
-        # --- Matters summary ---
-        try:
-            rows = db.execute(text("""
-                SELECT status, COUNT(*) AS cnt
-                FROM matters GROUP BY status ORDER BY cnt DESC
+                SELECT title, client_name, matter_type, priority,
+                       deadline, deadline - CURRENT_DATE AS days_left, stage
+                FROM matters
+                WHERE status NOT IN ('closed','resolved')
+                  AND deadline IS NOT NULL
+                  AND deadline <= CURRENT_DATE + 14
+                ORDER BY deadline
             """)).fetchall()
-            data["matters"] = [{"status": r[0], "count": r[1]} for r in rows]
+            data["deadline_alerts"] = [{
+                "matter":      r[0],
+                "client":      r[1] or "—",
+                "type":        r[2] or "—",
+                "priority":    r[3] or "—",
+                "deadline":    r[4].isoformat() if r[4] else "—",
+                "days_left":   int(r[5] or 0),
+                "stage":       r[6] or "—",
+            } for r in rows]
         except Exception as e:
-            logger.warning(f"⚠️ [LegalAgent] matters: {e}")
-            data["matters"] = []
+            logger.warning(f"⚠️ [LegalAgent] deadline alerts failed: {e}")
+            db.rollback()
+            data["deadline_alerts"] = []
 
-        # --- Docs needing review ---
+        # ── 3. Stalled matters (no update >30 days) ───────────────────────────
         try:
-            row = db.execute(text("""
-                SELECT COUNT(*) FROM documents
-                WHERE doc_type = ANY(:types)
-                  AND (doc_metadata->>'needs_manual_review')::boolean = TRUE
-            """), {"types": list(LEGAL_TYPES)}).scalar()
-            data["needs_review"] = int(row or 0)
+            rows = db.execute(text("""
+                SELECT title, client_name, matter_type, stage,
+                       CURRENT_DATE - updated_at::date AS days_stale,
+                       assigned_counsel
+                FROM matters
+                WHERE status NOT IN ('closed','resolved')
+                  AND updated_at < NOW() - INTERVAL '30 days'
+                ORDER BY days_stale DESC
+            """)).fetchall()
+            data["stalled_matters"] = [{
+                "matter":    r[0],
+                "client":    r[1] or "—",
+                "type":      r[2] or "—",
+                "stage":     r[3] or "—",
+                "days_stale": int(r[4] or 0),
+                "counsel":   r[5] or "—",
+            } for r in rows]
         except Exception as e:
-            logger.warning(f"⚠️ [LegalAgent] needs_review: {e}")
-            data["needs_review"] = 0
+            logger.warning(f"⚠️ [LegalAgent] stalled matters failed: {e}")
+            db.rollback()
+            data["stalled_matters"] = []
+
+        # ── 4. Contracts expiring ≤90 days ────────────────────────────────────
+        try:
+            rows = db.execute(text("""
+                SELECT contract_name, counterparty, risk_rating, status,
+                       expiry_date, expiry_date - CURRENT_DATE AS days_left,
+                       notice_period
+                FROM legal_contracts
+                WHERE expiry_date IS NOT NULL
+                  AND expiry_date >= CURRENT_DATE
+                  AND expiry_date <= CURRENT_DATE + 90
+                ORDER BY expiry_date
+            """)).fetchall()
+            data["contracts_expiring"] = [{
+                "contract":     r[0],
+                "counterparty": r[1] or "—",
+                "risk":         r[2] or "—",
+                "status":       r[3] or "—",
+                "expires_on":   r[4].isoformat() if r[4] else "—",
+                "days_left":    int(r[5] or 0),
+                "notice_days":  r[6],
+            } for r in rows]
+        except Exception as e:
+            logger.warning(f"⚠️ [LegalAgent] contracts expiring failed: {e}")
+            db.rollback()
+            data["contracts_expiring"] = []
+
+        # ── 5. High-risk contracts ────────────────────────────────────────────
+        try:
+            rows = db.execute(text("""
+                SELECT contract_name, counterparty, risk_rating, status,
+                       expiry_date
+                FROM legal_contracts
+                WHERE risk_rating IN ('high','critical')
+                  AND status NOT IN ('expired','terminated')
+                ORDER BY risk_rating DESC, expiry_date
+            """)).fetchall()
+            data["high_risk_contracts"] = [{
+                "contract":     r[0],
+                "counterparty": r[1] or "—",
+                "risk":         r[2],
+                "status":       r[3] or "—",
+                "expires_on":   r[4].isoformat() if r[4] else "—",
+            } for r in rows]
+        except Exception as e:
+            logger.warning(f"⚠️ [LegalAgent] high risk contracts failed: {e}")
+            db.rollback()
+            data["high_risk_contracts"] = []
+
+        # ── 6. CLM pipeline by stage ──────────────────────────────────────────
+        try:
+            rows = db.execute(text("""
+                SELECT stage, COUNT(*) AS cnt,
+                       ROUND(AVG(contract_value::numeric)) AS avg_value
+                FROM clm_entries
+                GROUP BY stage ORDER BY cnt DESC
+            """)).fetchall()
+            data["clm_pipeline"] = [{
+                "stage":     r[0],
+                "count":     int(r[1] or 0),
+                "avg_value": float(r[2] or 0),
+            } for r in rows]
+        except Exception as e:
+            logger.warning(f"⚠️ [LegalAgent] CLM pipeline failed: {e}")
+            db.rollback()
+            data["clm_pipeline"] = []
 
         return data
 
     def build_report(self, data: dict[str, Any]) -> dict[str, Any]:
-        activity = data.get("activity", {})
-        matters  = data.get("matters",  [])
-        open_matters = sum(r["count"] for r in matters if r["status"] not in ("closed", "resolved"))
+        today    = date.today().isoformat()
+        snap     = data.get("matters_snapshot", {})
+        deadlines = data.get("deadline_alerts", [])
+        contracts = data.get("contracts_expiring", [])
 
         summary = (
-            f"{activity.get('last_24h', 0)} legal docs processed in last 24h | "
-            f"{open_matters} open matters | "
-            f"{data.get('needs_review', 0)} documents need manual review"
+            f"{snap.get('total_open', 0)} open matters "
+            f"({snap.get('urgent', 0)} urgent, {snap.get('overdue', 0)} overdue) | "
+            f"{len(deadlines)} deadlines in 14 days | "
+            f"{len(contracts)} contracts expiring in 90 days"
         )
         return {
-            "title":   f"Legal & Compliance Report — {date.today().isoformat()}",
+            "title":   f"Legal & Compliance Report — {today}",
             "summary": summary,
             "sections": {
-                "activity":        activity,
-                "document_breakdown": data.get("doc_breakdown", []),
-                "matters_summary": matters,
-                "needs_review":    {"count": data.get("needs_review", 0)},
+                "matters_snapshot":          data.get("matters_snapshot", {}),
+                "deadline_alerts_14_days":   deadlines,
+                "stalled_matters_30_days":   data.get("stalled_matters", []),
+                "contracts_expiring_90_days": contracts,
+                "high_risk_contracts":       data.get("high_risk_contracts", []),
+                "clm_pipeline_by_stage":     data.get("clm_pipeline", []),
             },
         }

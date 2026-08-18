@@ -1,16 +1,15 @@
 """
 insurance_agent.py
 ──────────────────
-Scheduled domain agent for Insurance Agency Management (agency_mode).
+Daily intelligence report for insurance agency users.
 
-Runs daily at 07:00. Collects:
-  - Policy renewal pipeline (expiring in 30/60/90 days)
-  - Open claims summary
-  - COI expirations
-  - Quote conversion rates
-  - Top clients by premium volume
-
-Produces a structured daily report stored in agent_reports.
+Sections (in priority order):
+  1. Book snapshot       — active policies, lapsed count, annualized premium, premium at risk
+  2. Lapsed policies     — list with client, carrier, LOB, premium, days lapsed (urgent)
+  3. Stalled renewals    — expiring ≤90 days with renewal_status = 'not_started'
+  4. Renewal pipeline    — expiring policies with client details + renewal status
+  5. Quote follow-ups    — open quotes by stage with client names
+  6. COI expirations     — certificates expiring with client names
 """
 
 import logging
@@ -23,131 +22,261 @@ from app.services.domain_agents.base_domain_agent import BaseDomainAgent
 
 logger = logging.getLogger(__name__)
 
+FREQ_MULTIPLIER = {"annual": 1, "semi_annual": 2, "quarterly": 4, "monthly": 12}
+
+
+def _annualize(amount, freq):
+    if not amount:
+        return 0
+    try:
+        return round(float(amount) * FREQ_MULTIPLIER.get(freq or "annual", 1), 2)
+    except Exception:
+        return 0
+
 
 class InsuranceAgent(BaseDomainAgent):
     agent_type = "insurance"
     task_name  = "Insurance Agency Daily Report"
 
     def collect(self) -> dict[str, Any]:
-        db = self.db
+        db   = self.db
         data: dict[str, Any] = {}
 
-        # --- Expiring policies (30 / 60 / 90 days) ---
+        # ── 1. Book snapshot ─────────────────────────────────────────────────
         try:
             rows = db.execute(text("""
                 SELECT
-                    COUNT(*) FILTER (WHERE expiry_date <= CURRENT_DATE + 30)  AS exp_30,
-                    COUNT(*) FILTER (WHERE expiry_date <= CURRENT_DATE + 60)  AS exp_60,
-                    COUNT(*) FILTER (WHERE expiry_date <= CURRENT_DATE + 90)  AS exp_90,
-                    COUNT(*)                                                    AS total
+                    COUNT(*) FILTER (WHERE status = 'active')                          AS active_count,
+                    COUNT(*) FILTER (WHERE status IN ('lapsed','cancelled','expired'))  AS lapsed_count,
+                    COUNT(*)                                                             AS total_count,
+                    SUM(CASE WHEN status = 'active' THEN
+                        premium_amount * CASE premium_freq
+                            WHEN 'annual'      THEN 1
+                            WHEN 'semi_annual' THEN 2
+                            WHEN 'quarterly'   THEN 4
+                            WHEN 'monthly'     THEN 12
+                            ELSE 1 END
+                    ELSE 0 END)                                                         AS active_premium,
+                    SUM(CASE WHEN status IN ('lapsed','cancelled','expired') THEN
+                        premium_amount * CASE premium_freq
+                            WHEN 'annual'      THEN 1
+                            WHEN 'semi_annual' THEN 2
+                            WHEN 'quarterly'   THEN 4
+                            WHEN 'monthly'     THEN 12
+                            ELSE 1 END
+                    ELSE 0 END)                                                         AS at_risk_premium
                 FROM policies
-                WHERE status NOT IN ('cancelled', 'expired')
             """)).fetchone()
-            data["renewals"] = {"exp_30": rows[0], "exp_60": rows[1],
-                                 "exp_90": rows[2], "total": rows[3]}
+            data["book"] = {
+                "active_policies":    int(rows[0] or 0),
+                "lapsed_policies":    int(rows[1] or 0),
+                "total_policies":     int(rows[2] or 0),
+                "active_premium_yr":  round(float(rows[3] or 0), 2),
+                "at_risk_premium_yr": round(float(rows[4] or 0), 2),
+            }
+        except Exception as e:
+            logger.warning(f"⚠️ [InsuranceAgent] book snapshot failed: {e}")
+            db.rollback()
+            data["book"] = {}
+
+        # ── 2. Lapsed policies (need immediate outreach) ──────────────────────
+        try:
+            rows = db.execute(text("""
+                SELECT
+                    TRIM(c.first_name || ' ' || COALESCE(c.last_name,'')) AS client,
+                    c.client_number,
+                    COALESCE(c.phone, c.mobile, c.email, '—')             AS contact,
+                    p.policy_number,
+                    p.line_of_business,
+                    p.carrier_name,
+                    p.premium_amount,
+                    p.premium_freq,
+                    p.expiry_date,
+                    CURRENT_DATE - p.expiry_date                          AS days_lapsed
+                FROM policies p
+                JOIN clients c ON c.id = p.client_id
+                WHERE p.status IN ('lapsed','cancelled','expired')
+                ORDER BY p.expiry_date DESC
+            """)).fetchall()
+            data["lapsed"] = [{
+                "client":         r[0],
+                "client_number":  r[1],
+                "contact":        r[2],
+                "policy_number":  r[3],
+                "lob":            r[4],
+                "carrier":        r[5],
+                "annual_premium": _annualize(r[6], r[7]),
+                "expired_on":     r[8].isoformat() if r[8] else "—",
+                "days_lapsed":    int(r[9] or 0),
+            } for r in rows]
+        except Exception as e:
+            logger.warning(f"⚠️ [InsuranceAgent] lapsed query failed: {e}")
+            db.rollback()
+            data["lapsed"] = []
+
+        # ── 3. Stalled renewals (expiring ≤90d, renewal not started) ─────────
+        try:
+            rows = db.execute(text("""
+                SELECT
+                    TRIM(c.first_name || ' ' || COALESCE(c.last_name,'')) AS client,
+                    c.client_number,
+                    COALESCE(c.phone, c.mobile, c.email, '—')             AS contact,
+                    p.policy_number,
+                    p.line_of_business,
+                    p.carrier_name,
+                    p.premium_amount,
+                    p.premium_freq,
+                    p.expiry_date,
+                    p.expiry_date - CURRENT_DATE                          AS days_left,
+                    p.renewal_status
+                FROM policies p
+                JOIN clients c ON c.id = p.client_id
+                WHERE p.status = 'active'
+                  AND p.expiry_date <= CURRENT_DATE + 90
+                  AND p.renewal_status = 'not_started'
+                ORDER BY p.expiry_date
+            """)).fetchall()
+            data["stalled_renewals"] = [{
+                "client":         r[0],
+                "client_number":  r[1],
+                "contact":        r[2],
+                "policy_number":  r[3],
+                "lob":            r[4],
+                "carrier":        r[5],
+                "annual_premium": _annualize(r[6], r[7]),
+                "expires_on":     r[8].isoformat() if r[8] else "—",
+                "days_left":      int(r[9] or 0),
+            } for r in rows]
+        except Exception as e:
+            logger.warning(f"⚠️ [InsuranceAgent] stalled renewals query failed: {e}")
+            db.rollback()
+            data["stalled_renewals"] = []
+
+        # ── 4. Full renewal pipeline (active, expiring ≤90d) ─────────────────
+        try:
+            rows = db.execute(text("""
+                SELECT
+                    TRIM(c.first_name || ' ' || COALESCE(c.last_name,'')) AS client,
+                    c.client_number,
+                    p.policy_number,
+                    p.line_of_business,
+                    p.carrier_name,
+                    p.premium_amount,
+                    p.premium_freq,
+                    p.expiry_date,
+                    p.expiry_date - CURRENT_DATE                          AS days_left,
+                    p.renewal_status
+                FROM policies p
+                JOIN clients c ON c.id = p.client_id
+                WHERE p.status = 'active'
+                  AND p.expiry_date <= CURRENT_DATE + 90
+                ORDER BY p.expiry_date
+            """)).fetchall()
+            data["renewals"] = [{
+                "client":         r[0],
+                "client_number":  r[1],
+                "policy_number":  r[2],
+                "lob":            r[3],
+                "carrier":        r[4],
+                "annual_premium": _annualize(r[5], r[6]),
+                "expires_on":     r[7].isoformat() if r[7] else "—",
+                "days_left":      int(r[8] or 0),
+                "renewal_status": r[9],
+            } for r in rows]
         except Exception as e:
             logger.warning(f"⚠️ [InsuranceAgent] renewals query failed: {e}")
-            data["renewals"] = {}
+            db.rollback()
+            data["renewals"] = []
 
-        # --- Open claims ---
+        # ── 5. Quote follow-ups ───────────────────────────────────────────────
         try:
             rows = db.execute(text("""
-                SELECT status, COUNT(*) AS cnt,
-                       ROUND(AVG(EXTRACT(DAY FROM NOW() - created_at))) AS avg_age_days
-                FROM claims
-                WHERE status NOT IN ('closed', 'denied')
-                GROUP BY status
-                ORDER BY cnt DESC
+                SELECT
+                    COALESCE(q.client_name,
+                        TRIM(c.first_name || ' ' || COALESCE(c.last_name,'')),
+                        '—')                              AS client,
+                    q.quote_number,
+                    q.lob,
+                    q.stage,
+                    q.created_at::date                    AS created_date,
+                    CURRENT_DATE - q.created_at::date     AS age_days
+                FROM quotes q
+                LEFT JOIN clients c ON c.id = q.client_id
+                WHERE q.stage NOT IN ('bound','lost','declined')
+                ORDER BY q.created_at DESC
             """)).fetchall()
-            data["claims"] = [{"status": r[0], "count": r[1], "avg_age_days": r[2]}
-                               for r in rows]
-        except Exception as e:
-            logger.warning(f"⚠️ [InsuranceAgent] claims query failed: {e}")
-            data["claims"] = []
-
-        # --- COI expirations ---
-        try:
-            rows = db.execute(text("""
-                SELECT COUNT(*) FILTER (WHERE expiry_date <= CURRENT_DATE + 30) AS exp_30,
-                       COUNT(*) FILTER (WHERE expiry_date <= CURRENT_DATE + 60) AS exp_60
-                FROM documents
-                WHERE doc_type = 'coi'
-                  AND status = 'processed'
-            """)).fetchone()
-            data["coi"] = {"exp_30": rows[0], "exp_60": rows[1]}
-        except Exception as e:
-            logger.warning(f"⚠️ [InsuranceAgent] COI query failed: {e}")
-            data["coi"] = {}
-
-        # --- Quote pipeline ---
-        try:
-            rows = db.execute(text("""
-                SELECT status, COUNT(*) AS cnt
-                FROM quotes
-                GROUP BY status
-                ORDER BY cnt DESC
-            """)).fetchall()
-            data["quotes"] = [{"status": r[0], "count": r[1]} for r in rows]
+            data["quotes"] = [{
+                "client":       r[0],
+                "quote_number": r[1],
+                "lob":          r[2],
+                "stage":        r[3],
+                "created":      r[4].isoformat() if r[4] else "—",
+                "age_days":     int(r[5] or 0),
+            } for r in rows]
         except Exception as e:
             logger.warning(f"⚠️ [InsuranceAgent] quotes query failed: {e}")
+            db.rollback()
             data["quotes"] = []
 
-        # --- Top 5 clients by document count (proxy for activity) ---
+        # ── 6. COI expirations with client names ─────────────────────────────
         try:
             rows = db.execute(text("""
-                SELECT c.id, COUNT(d.id) AS doc_count
-                FROM clients c
-                JOIN documents d ON d.client_id = c.id
-                WHERE d.status = 'processed'
-                GROUP BY c.id
-                ORDER BY doc_count DESC
-                LIMIT 5
+                SELECT
+                    TRIM(c.first_name || ' ' || COALESCE(c.last_name,'')) AS client,
+                    c.client_number,
+                    cc.certificate_number,
+                    cc.valid_until,
+                    cc.valid_until - CURRENT_DATE AS days_left
+                FROM coi_certificates cc
+                JOIN clients c ON c.id = cc.client_id
+                WHERE cc.valid_until IS NOT NULL
+                  AND cc.valid_until >= CURRENT_DATE
+                  AND cc.valid_until <= CURRENT_DATE + 60
+                ORDER BY cc.valid_until
             """)).fetchall()
-            data["top_clients"] = [{"client_id": str(r[0]), "doc_count": r[1]} for r in rows]
+            data["coi_expirations"] = [{
+                "client":      r[0],
+                "client_number": r[1],
+                "cert_number": r[2],
+                "expires_on":  r[3].isoformat() if r[3] else "—",
+                "days_left":   int(r[4] or 0),
+            } for r in rows]
         except Exception as e:
-            logger.warning(f"⚠️ [InsuranceAgent] top clients query failed: {e}")
-            data["top_clients"] = []
+            logger.warning(f"⚠️ [InsuranceAgent] COI query failed: {e}")
+            db.rollback()
+            data["coi_expirations"] = []
 
         return data
 
     def build_report(self, data: dict[str, Any]) -> dict[str, Any]:
-        today = date.today().isoformat()
-        renewals = data.get("renewals", {})
-        claims   = data.get("claims",   [])
-        coi      = data.get("coi",      {})
-        quotes   = data.get("quotes",   [])
+        today         = date.today().isoformat()
+        book          = data.get("book", {})
+        lapsed        = data.get("lapsed", [])
+        stalled       = data.get("stalled_renewals", [])
+        renewals      = data.get("renewals", [])
+        quotes        = data.get("quotes", [])
+        coi           = data.get("coi_expirations", [])
 
-        open_claims = sum(r["count"] for r in claims)
-        bound = next((q["count"] for q in quotes if q["status"] == "bound"), 0)
-        total_quotes = sum(q["count"] for q in quotes)
-        conversion = round(bound / total_quotes * 100, 1) if total_quotes else 0
+        at_risk = book.get("at_risk_premium_yr", 0)
+        stalled_count = len(stalled)
+        lapsed_count  = len(lapsed)
 
         summary = (
-            f"{renewals.get('exp_30', 0)} policies expiring in 30 days | "
-            f"{open_claims} open claims | "
-            f"Quote conversion {conversion}%"
+            f"{lapsed_count} lapsed {'policy' if lapsed_count == 1 else 'policies'} "
+            f"(${at_risk:,.0f}/yr at risk) | "
+            f"{stalled_count} renewals expiring ≤90d with no action | "
+            f"{len(quotes)} open quotes"
         )
 
         return {
-            "title": f"Insurance Agency Report — {today}",
+            "title":   f"Insurance Agency Report — {today}",
             "summary": summary,
-            "report_date": today,
             "sections": {
-                "renewal_pipeline": {
-                    "expiring_30_days": renewals.get("exp_30", 0),
-                    "expiring_60_days": renewals.get("exp_60", 0),
-                    "expiring_90_days": renewals.get("exp_90", 0),
-                    "total_active":     renewals.get("total",  0),
-                },
-                "claims_summary": claims,
-                "coi_expirations": {
-                    "expiring_30_days": coi.get("exp_30", 0),
-                    "expiring_60_days": coi.get("exp_60", 0),
-                },
-                "quote_pipeline": {
-                    "breakdown":   quotes,
-                    "conversion_pct": conversion,
-                },
-                "top_clients": data.get("top_clients", []),
+                "book_of_business": book,
+                "lapsed_policies_need_outreach": lapsed,
+                "stalled_renewals_no_action_yet": stalled,
+                "renewal_pipeline_next_90_days": renewals,
+                "open_quotes": quotes,
+                "coi_expiring_60_days": coi,
             },
         }
