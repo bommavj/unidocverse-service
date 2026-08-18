@@ -59,7 +59,7 @@ class BaseDomainAgent:
                 INSERT INTO agent_reports
                     (id, run_id, agent_type, report_date, title, summary, body)
                 VALUES
-                    (:id, :run_id, :agent_type, CURRENT_DATE, :title, :summary, :body::jsonb)
+                    (:id, :run_id, :agent_type, CURRENT_DATE, :title, :summary, cast(:body AS jsonb))
             """), {
                 "id": report_id,
                 "run_id": run_id,
@@ -72,7 +72,7 @@ class BaseDomainAgent:
             self.db.execute(text("""
                 UPDATE agent_runs
                 SET status = 'completed',
-                    outcome = :outcome::jsonb,
+                    outcome = cast(:outcome AS jsonb),
                     ended_at = :now,
                     updated_at = :now
                 WHERE id = :id

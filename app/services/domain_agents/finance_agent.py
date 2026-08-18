@@ -1,7 +1,14 @@
 """
-finance_agent.py — Finance, Tax & Audit daily report (finance_mode)
-Runs daily at 07:15.
+finance_agent.py — Finance & Audit daily intelligence report.
+
+Morning briefing for finance teams:
+  1. Anomaly snapshot      — unresolved financial anomalies by type
+  2. High-value anomalies  — anomalies above threshold, needing review
+  3. Approval queue        — finance approvals pending
+  4. Three-way match gaps  — invoices not reconciled (finance_matches)
+  5. Recent docs processed — finance docs in last 24h
 """
+
 import logging
 from datetime import date
 from typing import Any
@@ -10,9 +17,9 @@ from app.services.domain_agents.base_domain_agent import BaseDomainAgent
 
 logger = logging.getLogger(__name__)
 
-FINANCE_TYPES = ("invoice", "purchase_order", "bank_statement", "tax_return",
-                 "w2", "1099", "expense_report", "financial_statement",
-                 "audit_report", "credit_memo", "wire_transfer", "receipt")
+FINANCE_DOC_TYPES = ('invoice','bank_statement','expense_report','tax_return',
+                     'audit_report','financial_statement','purchase_order','receipt',
+                     'payroll','budget')
 
 
 class FinanceAgent(BaseDomainAgent):
@@ -23,89 +30,126 @@ class FinanceAgent(BaseDomainAgent):
         db   = self.db
         data: dict[str, Any] = {}
 
-        # --- Volume ---
+        # ── 1. Anomaly snapshot ───────────────────────────────────────────────
         try:
-            row = db.execute(text("""
-                SELECT COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '1 day')  AS last_24h,
-                       COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days') AS last_7,
-                       COUNT(*) FILTER (WHERE status = 'failed')                        AS failed,
-                       COUNT(*) AS total
-                FROM documents WHERE doc_type = ANY(:types)
-            """), {"types": list(FINANCE_TYPES)}).fetchone()
-            data["activity"] = {
-                "last_24h": row[0], "last_7_days": row[1],
-                "failed": row[2], "total": row[3]
+            rows = db.execute(text("""
+                SELECT anomaly_type, COUNT(*) AS cnt,
+                       ROUND(SUM(amount::numeric)) AS total_amount
+                FROM finance_anomalies
+                GROUP BY anomaly_type ORDER BY total_amount DESC
+            """)).fetchall()
+            total = sum(r[1] for r in rows)
+            data["anomaly_snapshot"] = {
+                "total_anomalies": total,
+                "by_type": {r[0]: {"count": r[1], "total_amount": float(r[2] or 0)} for r in rows},
             }
         except Exception as e:
-            logger.warning(f"⚠️ [FinanceAgent] activity: {e}")
-            data["activity"] = {}
+            logger.warning(f"⚠️ [FinanceAgent] anomaly snapshot failed: {e}")
+            db.rollback()
+            data["anomaly_snapshot"] = {}
 
-        # --- Breakdown by type ---
+        # ── 2. Top anomalies needing review ───────────────────────────────────
+        try:
+            rows = db.execute(text("""
+                SELECT title, anomaly_type, ref_code, amount,
+                       created_at::date AS detected_on,
+                       CURRENT_DATE - created_at::date AS age_days
+                FROM finance_anomalies
+                ORDER BY amount::numeric DESC NULLS LAST
+            """)).fetchall()
+            data["top_anomalies"] = [{
+                "title":       r[0],
+                "type":        r[1],
+                "ref":         r[2] or "—",
+                "amount":      float(r[3] or 0),
+                "detected_on": r[4].isoformat() if r[4] else "—",
+                "age_days":    int(r[5] or 0),
+            } for r in rows]
+        except Exception as e:
+            logger.warning(f"⚠️ [FinanceAgent] top anomalies failed: {e}")
+            db.rollback()
+            data["top_anomalies"] = []
+
+        # ── 3. Three-way match — unreconciled items ────────────────────────────
+        try:
+            row = db.execute(text("""
+                SELECT
+                    COUNT(*) AS total,
+                    COUNT(*) FILTER (WHERE match_status = 'matched')    AS matched,
+                    COUNT(*) FILTER (WHERE match_status = 'mismatch')   AS mismatched,
+                    COUNT(*) FILTER (WHERE match_status = 'pending')    AS pending
+                FROM finance_matches
+            """)).fetchone()
+            data["three_way_match"] = {
+                "total":     int(row[0] or 0),
+                "matched":   int(row[1] or 0),
+                "mismatched": int(row[2] or 0),
+                "pending":   int(row[3] or 0),
+            }
+        except Exception as e:
+            logger.warning(f"⚠️ [FinanceAgent] three-way match failed: {e}")
+            db.rollback()
+            data["three_way_match"] = {}
+
+        # ── 4. Pending finance approvals ──────────────────────────────────────
+        try:
+            rows = db.execute(text("""
+                SELECT title, priority, due_date,
+                       CURRENT_DATE - created_at::date AS age_days
+                FROM approval_requests
+                WHERE status = 'pending'
+                ORDER BY priority DESC, created_at
+            """)).fetchall()
+            data["pending_approvals"] = [{
+                "title":    r[0],
+                "priority": r[1] or "normal",
+                "due_date": r[2].isoformat() if r[2] else "—",
+                "age_days": int(r[3] or 0),
+            } for r in rows]
+        except Exception as e:
+            logger.warning(f"⚠️ [FinanceAgent] approvals failed: {e}")
+            db.rollback()
+            data["pending_approvals"] = []
+
+        # ── 5. Finance docs processed last 24h ────────────────────────────────
         try:
             rows = db.execute(text("""
                 SELECT doc_type, COUNT(*) AS cnt
-                FROM documents WHERE doc_type = ANY(:types) AND status = 'processed'
-                GROUP BY doc_type ORDER BY cnt DESC LIMIT 10
-            """), {"types": list(FINANCE_TYPES)}).fetchall()
-            data["doc_breakdown"] = [{"type": r[0], "count": r[1]} for r in rows]
-        except Exception as e:
-            logger.warning(f"⚠️ [FinanceAgent] doc_breakdown: {e}")
-            data["doc_breakdown"] = []
-
-        # --- Anomalies flagged ---
-        try:
-            row = db.execute(text("""
-                SELECT COUNT(*) FROM documents
+                FROM documents
                 WHERE doc_type = ANY(:types)
-                  AND doc_metadata->'anomalies' IS NOT NULL
-                  AND jsonb_array_length(doc_metadata->'anomalies') > 0
-                  AND created_at >= NOW() - INTERVAL '7 days'
-            """), {"types": list(FINANCE_TYPES)}).scalar()
-            data["anomalies_flagged"] = int(row or 0)
+                  AND status = 'completed'
+                  AND created_at >= NOW() - INTERVAL '24 hours'
+                GROUP BY doc_type ORDER BY cnt DESC
+            """), {"types": list(FINANCE_DOC_TYPES)}).fetchall()
+            data["docs_last_24h"] = {r[0]: r[1] for r in rows}
+            data["docs_last_24h"]["total"] = sum(r[1] for r in rows)
         except Exception as e:
-            logger.warning(f"⚠️ [FinanceAgent] anomalies: {e}")
-            data["anomalies_flagged"] = 0
-
-        # --- Needs review ---
-        try:
-            row = db.execute(text("""
-                SELECT COUNT(*) FROM documents
-                WHERE doc_type = ANY(:types)
-                  AND (doc_metadata->>'needs_manual_review')::boolean = TRUE
-            """), {"types": list(FINANCE_TYPES)}).scalar()
-            data["needs_review"] = int(row or 0)
-        except Exception as e:
-            logger.warning(f"⚠️ [FinanceAgent] needs_review: {e}")
-            data["needs_review"] = 0
-
-        # --- Unique vendors/clients ---
-        try:
-            row = db.execute(text("""
-                SELECT COUNT(DISTINCT client_id) FROM documents
-                WHERE doc_type = ANY(:types) AND client_id IS NOT NULL
-            """), {"types": list(FINANCE_TYPES)}).scalar()
-            data["unique_clients"] = int(row or 0)
-        except Exception as e:
-            logger.warning(f"⚠️ [FinanceAgent] unique_clients: {e}")
-            data["unique_clients"] = 0
+            logger.warning(f"⚠️ [FinanceAgent] docs last 24h failed: {e}")
+            db.rollback()
+            data["docs_last_24h"] = {"total": 0}
 
         return data
 
     def build_report(self, data: dict[str, Any]) -> dict[str, Any]:
-        activity = data.get("activity", {})
+        today   = date.today().isoformat()
+        snap    = data.get("anomaly_snapshot", {})
+        match   = data.get("three_way_match", {})
+        approvals = data.get("pending_approvals", [])
+
         summary = (
-            f"{activity.get('last_24h', 0)} finance docs processed in last 24h | "
-            f"{data.get('anomalies_flagged', 0)} anomalies flagged this week | "
-            f"{data.get('needs_review', 0)} need review"
+            f"{snap.get('total_anomalies', 0)} financial anomalies flagged | "
+            f"{match.get('mismatched', 0)} three-way match failures | "
+            f"{match.get('pending', 0)} pending reconciliations | "
+            f"{len(approvals)} approvals awaiting decision"
         )
         return {
-            "title":   f"Finance & Audit Report — {date.today().isoformat()}",
+            "title":   f"Finance & Audit Report — {today}",
             "summary": summary,
             "sections": {
-                "activity":           activity,
-                "document_breakdown": data.get("doc_breakdown", []),
-                "anomalies":          {"flagged_last_7_days": data.get("anomalies_flagged", 0)},
-                "review_queue":       {"needs_review": data.get("needs_review", 0)},
-                "client_coverage":    {"unique_clients": data.get("unique_clients", 0)},
+                "anomaly_snapshot":    snap,
+                "top_anomalies":       data.get("top_anomalies", []),
+                "three_way_match":     match,
+                "pending_approvals":   approvals,
+                "documents_last_24h":  data.get("docs_last_24h", {}),
             },
         }

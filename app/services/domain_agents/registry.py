@@ -5,6 +5,9 @@ from app.services.domain_agents.finance_agent      import FinanceAgent
 from app.services.domain_agents.hr_agent           import HRAgent
 from app.services.domain_agents.real_estate_agent  import RealEstateAgent
 from app.services.domain_agents.supply_chain_agent import SupplyChainAgent
+from app.services.domain_agents.compliance_agent   import ComplianceAgent
+from app.services.domain_agents.operations_agent   import OperationsAgent
+from app.services.domain_agents.immigration_agent  import ImmigrationAgent
 
 AGENT_REGISTRY = {
     "insurance":    InsuranceAgent,
@@ -14,6 +17,9 @@ AGENT_REGISTRY = {
     "hr":           HRAgent,
     "real_estate":  RealEstateAgent,
     "supply_chain": SupplyChainAgent,
+    "compliance":   ComplianceAgent,
+    "operations":   OperationsAgent,
+    "immigration":  ImmigrationAgent,
 }
 
 

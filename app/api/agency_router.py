@@ -5,6 +5,7 @@ from sqlalchemy import text
 from datetime import date
 
 from app.core.database import get_db
+from app.api.auth_router import get_current_user
 from app.models.document import Document
 from app.models.client import Client
 from app.models.policy import Policy
@@ -17,7 +18,8 @@ router = APIRouter(prefix="/api/agency", tags=["agency"])
 @router.post("/create-from-document/{doc_id}")
 async def create_from_document(
     doc_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Extract client + policy data from a processed declarations page document
@@ -42,6 +44,7 @@ async def create_from_document(
     effective_date  = fields.get("effective_date_parsed") or fields.get("effective_date")
     expiry_date     = fields.get("expiration_date_parsed") or fields.get("expiration_date")
     total_premium   = fields.get("total_premium")
+    premium_freq    = fields.get("premium_freq", "annual")
     coverage_a      = fields.get("coverage_a_dwelling")
     coverage_e      = fields.get("coverage_e_personal_liability")
     deductible      = fields.get("deductible")
@@ -54,10 +57,19 @@ async def create_from_document(
         )
 
     # ── Parse insured name into first/last ────────────────────────────────────
-    insured_clean = (named_insured[0] if isinstance(named_insured, list) else named_insured).split("\&")[0].strip().title()
-    name_parts    = insured_clean.split()
-    first_name    = name_parts[0] if name_parts else insured_clean
-    last_name     = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
+    # named_insured may be a list, a stringified list, or a plain string
+    import re as _re
+    raw_name = named_insured[0] if isinstance(named_insured, list) else str(named_insured)
+    # Strip Python list artifacts like ['...'] or ['...',
+    raw_name = _re.sub(r"^\[?['\"]?|['\"]?\]?$", "", raw_name.strip())
+    # Take only the first person (before & or comma)
+    raw_name = _re.split(r"[&,]", raw_name)[0].strip().title()
+    # Guard against section headers / junk (no real name has > 4 words or < 2 chars)
+    name_parts = raw_name.split()
+    if len(name_parts) > 4 or len(raw_name) < 2:
+        raise HTTPException(status_code=422, detail=f"Could not parse a valid insured name from: {named_insured!r}")
+    first_name = name_parts[0] if name_parts else raw_name
+    last_name  = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
 
     # ── Generate client number ────────────────────────────────────────────────
     result = db.execute(text(
@@ -83,6 +95,8 @@ async def create_from_document(
         source         = 'document_ai',
         avatar_color   = '#6366f1',
         notes          = f"Auto-created from document: {doc.filename}",
+        tenant_id      = current_user["tenant_id"],
+        created_by     = current_user["id"],
     )
     db.add(client)
     db.flush()  # get client.id before creating policy
@@ -135,7 +149,7 @@ async def create_from_document(
         line_of_business = lob,
         carrier_name     = carrier_display,
         premium_amount   = total_premium,
-        premium_freq     = 'annual',
+        premium_freq     = premium_freq,
         effective_date   = eff,
         expiry_date      = exp,
         coverage_summary = coverage_summary,
@@ -143,6 +157,8 @@ async def create_from_document(
         renewal_status   = 'not_started',
         source           = 'document_ai',
         notes            = f"Auto-created from document: {doc.filename}",
+        tenant_id        = current_user["tenant_id"],
+        created_by       = current_user["id"],
     )
     db.add(policy)
     db.flush()

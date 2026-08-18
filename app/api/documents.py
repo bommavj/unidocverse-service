@@ -53,6 +53,7 @@ async def get_documents(
         cursor: Optional[str] = Query(None, description="Opaque pagination cursor from previous response"),
         doc_type: Optional[str] = None,
         status: Optional[str] = None,
+        client_id: Optional[str] = Query(None),
         db: Session = Depends(get_db)
 ):
     """
@@ -70,6 +71,8 @@ async def get_documents(
         query = query.filter(Document.doc_type == doc_type)
     if status:
         query = query.filter(Document.status == status)
+    if client_id:
+        query = query.filter(Document.client_id == client_id)
 
     # Keyset cursor — more efficient than OFFSET for large tables
     if cursor:
