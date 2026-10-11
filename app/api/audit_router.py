@@ -67,8 +67,8 @@ def list_events(
     db: Session = Depends(get_db)
 ):
     ensure_table(db)
-    conditions = []
-    params: dict = {"limit": limit, "offset": offset}
+    conditions = ["a.tenant_id = :tenant"]
+    params: dict = {"limit": limit, "offset": offset, "tenant": str(get_current_tenant_id() or DEFAULT_TENANT_ID)}
     if doc_id:
         conditions.append("a.doc_id = :doc_id"); params["doc_id"] = doc_id
     if action:
@@ -79,7 +79,7 @@ def list_events(
     rows = db.execute(text(f"""
         SELECT a.*, d.filename, d.doc_type
         FROM audit_log a
-        LEFT JOIN documents d ON d.id = a.doc_id
+        LEFT JOIN documents d ON d.id::text = a.doc_id::text
         {where}
         ORDER BY a.created_at DESC
         LIMIT :limit OFFSET :offset
@@ -102,25 +102,29 @@ def create_event(body: AuditEventCreate, db: Session = Depends(get_db)):
     db.commit()
     return {"ok": True, "id": eid}
 
+def _t() -> str:
+    return str(get_current_tenant_id() or DEFAULT_TENANT_ID)
+
+
 @router.get("/summary")
 def audit_summary(db: Session = Depends(get_db)):
     ensure_table(db)
     rows = db.execute(text("""
         SELECT action, COUNT(*) as cnt,
                MAX(created_at) as last_at
-        FROM audit_log
+        FROM audit_log WHERE tenant_id = :t
         GROUP BY action ORDER BY cnt DESC
-    """)).fetchall()
+    """), {"t": _t()}).fetchall()
     actors = db.execute(text("""
-        SELECT actor, COUNT(*) as cnt FROM audit_log
+        SELECT actor, COUNT(*) as cnt FROM audit_log WHERE tenant_id = :t
         GROUP BY actor ORDER BY cnt DESC LIMIT 10
-    """)).fetchall()
+    """), {"t": _t()}).fetchall()
     daily = db.execute(text("""
         SELECT DATE(created_at) as day, COUNT(*) as cnt
         FROM audit_log
-        WHERE created_at >= NOW() - INTERVAL '30 days'
+        WHERE tenant_id = :t AND created_at >= NOW() - INTERVAL '30 days'
         GROUP BY day ORDER BY day ASC
-    """)).fetchall()
+    """), {"t": _t()}).fetchall()
     return {
         "by_action": [row_to_dict(r) for r in rows],
         "top_actors": [row_to_dict(r) for r in actors],

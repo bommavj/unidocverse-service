@@ -374,7 +374,10 @@ class _BaseWorkflow:
                     ), {"pn": policy_number, "id": str(row.id)})
                 return str(row.id), "policy_updated_renewal"
 
-        # Create new
+        # Create new — skip if effective_date is required but missing
+        if not effective_date:
+            logger.warning(f"⚠️ [AMS] Skipping policy creation — effective_date is null (lob={lob})")
+            return None, "policy_skipped_no_date"
         policy_id = str(uuid.uuid4())
         pol_num   = policy_number or f"PENDING-{policy_id[:8].upper()}"
         self.db.execute(text("""
@@ -501,6 +504,10 @@ class PolicyWorkflow(_BaseWorkflow):
             client_id, policy_number, lob, carrier_name,
             premium, effective_date, expiry_date, cov_summary
         )
+        if not policy_id:
+            logger.info(f"⏭️ [AMS] Policy creation skipped ({action}) — stopping here")
+            self.db.commit()
+            return {"client_id": client_id, "policy_id": None, "action": action}
 
         # Step 3: Doc-type specific adjustments
         if doc_type == "cancellation_notice":

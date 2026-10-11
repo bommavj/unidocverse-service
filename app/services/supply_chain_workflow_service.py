@@ -41,91 +41,95 @@ class SupplyChainWorkflowService:
 
             carrier_name = scanner.find_regex(r'Carrier:\s*(.*)') or \
                            scanner.find_regex(r'Shipped\s+via:\s*(.*)') or \
-                           "Maersk Logistics"
+                           None
             carrier_name = self._clean_str(carrier_name)
+            # No carrier and no bill-of-lading number in the document: no shipment record
+            if carrier_name or not bol_number.endswith(doc_id[:8].upper()):
 
-            origin = scanner.find_regex(r'Origin:\s*(.*)') or \
-                     scanner.find_regex(r'Port\s+of\s+Loading:\s*(.*)') or \
-                     "Shanghai CN"
-            origin = self._clean_str(origin)
+                origin = scanner.find_regex(r'Origin:\s*(.*)') or \
+                         scanner.find_regex(r'Port\s+of\s+Loading:\s*(.*)') or \
+                         None
+                origin = self._clean_str(origin)
 
-            destination = scanner.find_regex(r'Destination:\s*(.*)') or \
-                          scanner.find_regex(r'Port\s+of\s+Discharge:\s*(.*)') or \
-                          "Tacoma Port WA"
-            destination = self._clean_str(destination)
+                destination = scanner.find_regex(r'Destination:\s*(.*)') or \
+                              scanner.find_regex(r'Port\s+of\s+Discharge:\s*(.*)') or \
+                              None
+                destination = self._clean_str(destination)
 
-            customs_status = "pending"
-            if "cleared" in txt.lower() or "customs passed" in txt.lower():
-                customs_status = "cleared"
-            elif "held" in txt.lower() or "delayed" in txt.lower() or "customs hold" in txt.lower():
-                customs_status = "hold"
+                customs_status = "pending"
+                if "cleared" in txt.lower() or "customs passed" in txt.lower():
+                    customs_status = "cleared"
+                elif "held" in txt.lower() or "delayed" in txt.lower() or "customs hold" in txt.lower():
+                    customs_status = "hold"
 
-            route_lag_warning = False
-            estimated_transit_days = 15
-            if "shanghai" in origin.lower() and "tacoma" in destination.lower():
-                estimated_transit_days = 18
-                if customs_status == "hold":
-                    route_lag_warning = True
+                route_lag_warning = False
+                estimated_transit_days = 15
+                if "shanghai" in origin.lower() and "tacoma" in destination.lower():
+                    estimated_transit_days = 18
+                    if customs_status == "hold":
+                        route_lag_warning = True
 
-            # Create notification for customs holds or lag warnings
-            if customs_status == "hold" or route_lag_warning:
-                self._create_notification(
-                    doc_id=doc_id,
-                    doc_type="bill_of_lading",
-                    filename=filename,
-                    severity="urgent",
-                    title=f"Customs Hold / Route Delay: {bol_number}",
-                    message=f"Shipment route via {carrier_name} from {origin} to {destination} is delayed on customs hold.",
-                    expiry_date=None,
-                    days_until=None
-                )
+                # Create notification for customs holds or lag warnings
+                if customs_status == "hold" or route_lag_warning:
+                    self._create_notification(
+                        doc_id=doc_id,
+                        doc_type="bill_of_lading",
+                        filename=filename,
+                        severity="urgent",
+                        title=f"Customs Hold / Route Delay: {bol_number}",
+                        message=f"Shipment route via {carrier_name} from {origin} to {destination} is delayed on customs hold.",
+                        expiry_date=None,
+                        days_until=None
+                    )
 
-            # Deduplicate shipment rows by BOL number
-            existing_shipment = self.db.execute(text("""
-                SELECT id FROM supply_chain_shipments 
-                WHERE document_id = :doc_id OR bol_number = :bol
-                LIMIT 1
-            """), {"doc_id": doc_id, "bol": bol_number}).fetchone()
+                # Deduplicate shipment rows by BOL number
+                existing_shipment = self.db.execute(text("""
+                    SELECT id FROM supply_chain_shipments 
+                    WHERE document_id = :doc_id OR bol_number = :bol
+                    LIMIT 1
+                """), {"doc_id": doc_id, "bol": bol_number}).fetchone()
 
-            if existing_shipment:
-                self.db.execute(text("""
-                    UPDATE supply_chain_shipments
-                    SET carrier_name = :carrier,
-                        origin = :origin,
-                        destination = :dest,
-                        customs_status = :customs,
-                        is_reconciled = TRUE,
-                        created_at = NOW()
-                    WHERE id = :id
-                """), {
-                    "id": existing_shipment.id,
-                    "carrier": carrier_name,
-                    "origin": origin,
-                    "dest": destination,
-                    "customs": customs_status
-                })
-                shipment_id = existing_shipment.id
-            else:
-                shipment_id = str(uuid.uuid4())
-                self.db.execute(text("""
-                    INSERT INTO supply_chain_shipments (id, document_id, bol_number, carrier_name, origin, destination, customs_status, is_reconciled)
-                    VALUES (:id, :doc_id, :bol, :carrier, :origin, :dest, :customs, TRUE)
-                """), {
-                    "id": shipment_id,
-                    "doc_id": doc_id,
-                    "bol": bol_number,
-                    "carrier": carrier_name,
-                    "origin": origin,
-                    "dest": destination,
-                    "customs": customs_status
-                })
+                if existing_shipment:
+                    self.db.execute(text("""
+                        UPDATE supply_chain_shipments
+                        SET carrier_name = :carrier,
+                            origin = :origin,
+                            destination = :dest,
+                            customs_status = :customs,
+                            is_reconciled = TRUE,
+                            created_at = NOW()
+                        WHERE id = :id
+                    """), {
+                        "id": existing_shipment.id,
+                        "carrier": carrier_name,
+                        "origin": origin,
+                        "dest": destination,
+                        "customs": customs_status
+                    })
+                    shipment_id = existing_shipment.id
+                else:
+                    shipment_id = str(uuid.uuid4())
+                    self.db.execute(text("""
+                        INSERT INTO supply_chain_shipments (id, document_id, bol_number, carrier_name, origin, destination, customs_status, is_reconciled)
+                        VALUES (:id, :doc_id, :bol, :carrier, :origin, :dest, :customs, TRUE)
+                    """), {
+                        "id": shipment_id,
+                        "doc_id": doc_id,
+                        "bol": bol_number,
+                        "carrier": carrier_name,
+                        "origin": origin,
+                        "dest": destination,
+                        "customs": customs_status
+                    })
 
             # 2. Extract Supplier details & Sanctions Audit
             supplier_name = scanner.find_regex(r'Supplier:\s*(.*)') or \
                             scanner.find_regex(r'Shipper:\s*(.*)') or \
                             scanner.find_regex(r'Vendor:\s*(.*)') or \
-                            "Pacific Cargo Line"
+                            None
             supplier_name = self._clean_str(supplier_name)
+            if not supplier_name:
+                return state
 
             supplier_type = "Logistics Carrier" if "carrier" in txt.lower() or "cargo" in txt.lower() else "Parts Supplier"
             

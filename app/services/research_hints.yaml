@@ -159,6 +159,10 @@ doc_types:
     keywords: [1040, tax-return, agi, adjusted-gross-income, schedule-a, schedule-b, schedule-c, schedule-d]
     description: Individual tax returns (1040 and schedules)
 
+  property_tax_bill:
+    keywords: [property-tax, tax-bill, secured-bill, unsecured-bill, parcel-number, tax-rate-area, assessor, first-installment, second-installment, delinquent, county-tax, property-tax-payment, tra]
+    description: County property tax bills, secured and unsecured tax statements
+
   government_form:
     keywords: [government, federal-form, state-form, irs-form, 941, 940, ss-4, i-9]
     description: Government and regulatory forms

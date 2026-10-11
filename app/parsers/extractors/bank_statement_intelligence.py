@@ -245,6 +245,18 @@ class BankStatementIntelligence:
             benchmarks = self._spending_benchmarks(data)
             risks      = self._risk_signals(data)
             actions    = self._action_plan(data, cashflow, budget, subs, risks)
+            problem = self._implausible(data)
+            if problem:
+                # Never give money advice built on numbers that can't be right.
+                logger.warning(f"BankStatementIntelligence: skipping advice — {problem}")
+                actions = ActionPlan(
+                    immediate=[{"priority": 1, "category": "data_quality",
+                                "title": "Advice paused — statement figures look incomplete",
+                                "detail": f"{problem}. Check that this is a bank statement and that all "
+                                          "pages were read; advice will appear once income and spending are clear.",
+                                "savings_monthly": 0}],
+                    short_term=[], long_term=[],
+                    total_monthly_savings_potential=0.0, total_annual_savings_potential=0.0)
             downstream = self._downstream_impact(data, budget)
             score, grade, label = self._wellness_score(cashflow, budget, risks, subs)
             insights   = self._key_insights(data, cashflow, budget, subs, risks, score)
@@ -267,6 +279,16 @@ class BankStatementIntelligence:
         except Exception as e:
             logger.error(f"BankStatementIntelligence.analyze failed: {e}", exc_info=True)
             return self._empty_report()
+
+    @staticmethod
+    def _implausible(data: Dict) -> Optional[str]:
+        income = float(data.get("total_credits", 0) or 0)
+        spending = float(data.get("total_debits", 0) or 0)
+        if income < 100:
+            return f"Detected income is only ${income:,.2f}"
+        if spending > income * 20:
+            return f"Spending (${spending:,.2f}) is over 20× detected income (${income:,.2f})"
+        return None
 
     # ─────────────────────────────────────────────
     # LAYER 1 — CASHFLOW HEALTH

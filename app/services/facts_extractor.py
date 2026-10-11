@@ -306,11 +306,153 @@ Document:
 """
 
 # Map doc_type → prompt template
+_INSURANCE_PROMPT = """Extract insurance policy details from this document.
+
+Return ONLY valid JSON:
+{{
+  "insurer": "<insurance company name or null>",
+  "policy_number": "<string or null>",
+  "policy_type": "<e.g. homeowners, auto, life, umbrella or null>",
+  "named_insured": "<policyholder name or null>",
+  "property_address": "<address or null>",
+  "effective_date": "<YYYY-MM-DD or null>",
+  "expiration_date": "<YYYY-MM-DD or null>",
+  "premium": <annual premium number or null>,
+  "deductible": <deductible number or null>,
+  "coverage_limit": <dwelling/liability coverage limit number or null>,
+  "coverages": [
+    {{"name": "<coverage type>", "limit": <number or null>, "deductible": <number or null>}}
+  ],
+  "agent": "<agent name or null>",
+  "agent_phone": "<phone or null>"
+}}
+
+Document:
+{text}
+"""
+
+_W2_PROMPT = """Extract W-2 tax form details from this document.
+
+Return ONLY valid JSON:
+{{
+  "employee_name": "<name or null>",
+  "employee_ssn_last4": "<last 4 digits or null>",
+  "employer": "<employer name or null>",
+  "employer_ein": "<EIN or null>",
+  "tax_year": <year number or null>,
+  "wages_tips": <box 1 wages number or null>,
+  "federal_income_tax_withheld": <box 2 number or null>,
+  "social_security_wages": <box 3 number or null>,
+  "social_security_tax_withheld": <box 4 number or null>,
+  "medicare_wages": <box 5 number or null>,
+  "medicare_tax_withheld": <box 6 number or null>,
+  "state": "<state abbreviation or null>",
+  "state_wages": <state wages number or null>,
+  "state_income_tax": <state tax number or null>
+}}
+
+Document:
+{text}
+"""
+
+_REAL_ESTATE_PROMPT = """Extract real estate or mortgage details from this document.
+
+Return ONLY valid JSON:
+{{
+  "property_address": "<address or null>",
+  "borrower_name": "<name or null>",
+  "lender": "<lender name or null>",
+  "loan_amount": <number or null>,
+  "interest_rate": <percentage number or null>,
+  "loan_type": "<e.g. 30-year fixed, ARM or null>",
+  "monthly_payment": <number or null>,
+  "closing_date": "<YYYY-MM-DD or null>",
+  "property_value": <appraisal or purchase price or null>,
+  "outstanding_balance": <remaining loan balance or null>,
+  "escrow_amount": <monthly escrow or null>,
+  "property_tax": <annual tax or null>
+}}
+
+Document:
+{text}
+"""
+
+_COMPLIANCE_PROMPT = """Extract compliance and audit details from this document.
+
+Return ONLY valid JSON:
+{{
+  "report_title": "<title or null>",
+  "auditor": "<auditor or firm name or null>",
+  "entity": "<organization being audited or null>",
+  "audit_period": "<date range or null>",
+  "audit_date": "<YYYY-MM-DD or null>",
+  "overall_risk_rating": "<e.g. High/Medium/Low or null>",
+  "findings_count": <number of findings or null>,
+  "open_items": <number of open action items or null>,
+  "critical_findings": ["<finding 1>", "<finding 2>"],
+  "compliance_deadlines": ["<deadline 1>", "<deadline 2>"],
+  "framework": "<e.g. SOC2, ISO 27001, HIPAA or null>"
+}}
+
+Document:
+{text}
+"""
+
+_SUPPLY_CHAIN_PROMPT = """Extract supply chain and logistics details from this document.
+
+Return ONLY valid JSON:
+{{
+  "document_type": "<e.g. invoice, purchase_order, bill_of_lading or null>",
+  "vendor": "<vendor or supplier name or null>",
+  "buyer": "<buyer or company name or null>",
+  "po_number": "<PO number or null>",
+  "invoice_number": "<invoice number or null>",
+  "order_date": "<YYYY-MM-DD or null>",
+  "delivery_date": "<YYYY-MM-DD or null>",
+  "total_amount": <number or null>,
+  "currency": "<USD, EUR, etc. or null>",
+  "payment_terms": "<e.g. Net 30 or null>",
+  "ship_to": "<address or null>",
+  "tracking_number": "<tracking or null>",
+  "line_items": [
+    {{"description": "<item>", "quantity": <number or null>, "unit_price": <number or null>, "amount": <number or null>}}
+  ]
+}}
+
+Document:
+{text}
+"""
+
+_EOB_PROMPT = """Extract medical Explanation of Benefits (EOB) or medical record details.
+
+Return ONLY valid JSON:
+{{
+  "patient_name": "<name or null>",
+  "provider": "<doctor or facility name or null>",
+  "insurer": "<insurance company or null>",
+  "service_date": "<YYYY-MM-DD or null>",
+  "diagnosis": "<diagnosis or null>",
+  "procedure": "<procedure or service or null>",
+  "billed_amount": <number or null>,
+  "allowed_amount": <number or null>,
+  "plan_paid": <number or null>,
+  "patient_responsibility": <number or null>,
+  "deductible_applied": <number or null>,
+  "copay": <number or null>,
+  "claim_number": "<string or null>",
+  "medications": ["<medication 1>", "<medication 2>"]
+}}
+
+Document:
+{text}
+"""
+
 _PROMPT_MAP: Dict[str, str] = {
     "credit_card_statement": _CC_TRANSACTION_PROMPT,
     "bank_statement":        _CC_TRANSACTION_PROMPT,
     "pay_stub":              _PAYROLL_PROMPT,
     "payroll_report":        _PAYROLL_PROMPT,
+    "payroll":               _PAYROLL_PROMPT,
     "invoice":               _INVOICE_PROMPT,
     "purchase_order":        _INVOICE_PROMPT,
     "annual_report":         _ANNUAL_REPORT_PROMPT,
@@ -320,6 +462,54 @@ _PROMPT_MAP: Dict[str, str] = {
     "legal":                 _CONTRACT_PROMPT,
     "medical":               _MEDICAL_PROMPT,
     "medical_record":        _MEDICAL_PROMPT,
+    # Insurance
+    "insurance":             _INSURANCE_PROMPT,
+    "insurance_policy":      _INSURANCE_PROMPT,
+    "declarations_page":     _INSURANCE_PROMPT,
+    "insurance_claim":       _INSURANCE_PROMPT,
+    "insurance_certificate": _INSURANCE_PROMPT,
+    # Tax / W2
+    "w2":                    _W2_PROMPT,
+    "tax_form":              _W2_PROMPT,
+    # Legal (reuse _CONTRACT_PROMPT)
+    "agreement":             _CONTRACT_PROMPT,
+    "nda":                   _CONTRACT_PROMPT,
+    "clm_contract":          _CONTRACT_PROMPT,
+    "service_agreement":     _CONTRACT_PROMPT,
+    "lease":                 _CONTRACT_PROMPT,
+    # Medical
+    "eob":                   _EOB_PROMPT,
+    "lab_report":            _EOB_PROMPT,
+    "prescription":          _EOB_PROMPT,
+    "radiology_report":      _EOB_PROMPT,
+    "discharge_summary":     _EOB_PROMPT,
+    # Real estate
+    "real_estate":           _REAL_ESTATE_PROMPT,
+    "mortgage_document":     _REAL_ESTATE_PROMPT,
+    "mortgage_statement":    _REAL_ESTATE_PROMPT,
+    "closing_disclosure":    _REAL_ESTATE_PROMPT,
+    "loan_document":         _REAL_ESTATE_PROMPT,
+    "payoff_statement":      _REAL_ESTATE_PROMPT,
+    "title_deed":            _REAL_ESTATE_PROMPT,
+    "appraisal_report":      _REAL_ESTATE_PROMPT,
+    # Compliance
+    "audit_report":          _COMPLIANCE_PROMPT,
+    "risk_assessment":       _COMPLIANCE_PROMPT,
+    "compliance_report":     _COMPLIANCE_PROMPT,
+    "regulatory_filing":     _COMPLIANCE_PROMPT,
+    "soc_report":            _COMPLIANCE_PROMPT,
+    "policy_document":       _COMPLIANCE_PROMPT,
+    "terms_of_service":      _COMPLIANCE_PROMPT,
+    "privacy_policy":        _COMPLIANCE_PROMPT,
+    # Supply chain
+    "bill_of_lading":        _SUPPLY_CHAIN_PROMPT,
+    "customs_manifest":      _SUPPLY_CHAIN_PROMPT,
+    "packing_list":          _SUPPLY_CHAIN_PROMPT,
+    "delivery_note":         _SUPPLY_CHAIN_PROMPT,
+    "vendor_agreement":      _SUPPLY_CHAIN_PROMPT,
+    "inventory_report":      _SUPPLY_CHAIN_PROMPT,
+    "order_history":         _SUPPLY_CHAIN_PROMPT,
+    "asset_register":        _SUPPLY_CHAIN_PROMPT,
 }
 
 

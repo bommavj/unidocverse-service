@@ -63,14 +63,25 @@ def _verify_password(p: str, h: str) -> bool:
     except Exception:
         return False
 
-def _create_token(user_id: int, username: str, role: str, expires: timedelta) -> str:
+def _create_token(user_id: int, username: str, role: str, expires: timedelta, tenant_id=None) -> str:
     return jwt.encode({
         "sub":      str(user_id),
         "username": username,
         "role":     role,
+        "tenant_id": str(tenant_id) if tenant_id else None,   # TenantMiddleware scopes every request by this
         "exp":      datetime.utcnow() + expires,
         "iat":      datetime.utcnow(),
     }, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def _user_tenant(user_id: int) -> Optional[str]:
+    from app.core.database import SessionLocal
+    db = SessionLocal()
+    try:
+        t = db.execute(text("SELECT tenant_id FROM users WHERE id = :i"), {"i": user_id}).scalar()
+        return str(t) if t else None
+    finally:
+        db.close()
+
 
 def _decode_token(token: str) -> Optional[dict]:
     try:
@@ -78,17 +89,26 @@ def _decode_token(token: str) -> Optional[dict]:
     except JWTError:
         return None
 
+def _payload_for(token: str) -> Optional[dict]:
+    """JWT payload, or an equivalent for a valid API token (udv_…)."""
+    from app.core import api_tokens
+    if api_tokens.is_api_token(token):
+        row = api_tokens.resolve(token)
+        return {"sub": str(row.user_id), "tenant_id": str(row.tenant_id), "api_token": str(row.id), "scope": row.scope} if row else None
+    return _decode_token(token)
+
+
 def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     db: Session = Depends(get_db)
 ) -> dict:
     if not credentials:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    payload = _decode_token(credentials.credentials)
+    payload = _payload_for(credentials.credentials)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     user = db.execute(text("""
-        SELECT id, username, full_name, role, is_active, avatar_color, language
+        SELECT id, username, full_name, role, is_active, avatar_color, language, tenant_id
         FROM users WHERE id = :uid AND is_active = TRUE
     """), {"uid": int(payload["sub"])}).fetchone()
     if not user:
@@ -100,16 +120,24 @@ def get_current_user(
         "role":         user.role,
         "avatar_color": user.avatar_color,
         "language":     user.language,
+        "tenant_id":    user.tenant_id,
+        "via_api_token": payload.get("api_token"),
     }
 
 def get_current_user_or_session(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
     session_token: Optional[str] = Query(None),
+    jwt: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ) -> dict:
-    """Accepts JWT bearer token OR a valid chatbot session token (for EventSource clients)."""
-    if credentials:
-        payload = _decode_token(credentials.credentials)
+    """Accepts JWT bearer token OR jwt query param OR a valid chatbot session token (for EventSource clients)."""
+    # Try Bearer header first
+    token_str = credentials.credentials if credentials else None
+    # Fall back to ?jwt= query param (EventSource can't send headers)
+    if not token_str and jwt:
+        token_str = jwt
+    if token_str:
+        payload = _payload_for(token_str)
         if payload:
             user = db.execute(text("""
                 SELECT id, username, full_name, role, is_active
@@ -133,6 +161,49 @@ def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# API tokens — managed only from a signed-in session, never by another token
+# ---------------------------------------------------------------------------
+class ApiTokenRequest(BaseModel):
+    name: str
+    scope: str = "read"
+    expires_days: Optional[int] = None
+
+
+def _session_user(current_user: dict = Depends(get_current_user)) -> dict:
+    if current_user.get("via_api_token"):
+        raise HTTPException(status_code=403, detail="Sign in to manage API tokens")
+    return current_user
+
+
+@router.get("/tokens")
+def list_api_tokens(current_user: dict = Depends(_session_user), db: Session = Depends(get_db)):
+    from app.core import api_tokens
+    # Admins see every token in their organisation; others see their own
+    uid = None if current_user["role"] == "admin" else current_user["id"]
+    return {"tokens": api_tokens.list_for(db, str(current_user["tenant_id"]), uid)}
+
+
+@router.post("/tokens")
+def create_api_token(req: ApiTokenRequest, current_user: dict = Depends(_session_user), db: Session = Depends(get_db)):
+    from app.core import api_tokens
+    if req.expires_days is not None and not (1 <= req.expires_days <= 730):
+        raise HTTPException(status_code=400, detail="Expiry must be between 1 and 730 days")
+    try:
+        return api_tokens.create(db, str(current_user["tenant_id"]), current_user["id"], req.name, req.scope, req.expires_days)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/tokens/{token_id}/revoke")
+def revoke_api_token(token_id: str, current_user: dict = Depends(_session_user), db: Session = Depends(get_db)):
+    from app.core import api_tokens
+    uid = None if current_user["role"] == "admin" else current_user["id"]
+    if not api_tokens.revoke(db, str(current_user["tenant_id"]), token_id, uid):
+        raise HTTPException(status_code=404, detail="Token not found")
+    return {"revoked": True}
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 @router.post("/login")
@@ -150,7 +221,7 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
     #     }
     # }
     user = db.execute(text("""
-        SELECT id, username, full_name, password_hash, role, is_active, avatar_color, language
+        SELECT id, username, full_name, password_hash, role, is_active, avatar_color, language, tenant_id
         FROM users WHERE username = :username
     """), {"username": req.username.lower().strip()}).fetchone()
 
@@ -164,8 +235,8 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
 
     logger.info(f"✅ Login: {user.username} ({user.role})")
     return {
-        "access_token":  _create_token(user.id, user.username, user.role, ACCESS_EXPIRE),
-        "refresh_token": _create_token(user.id, user.username, user.role, REFRESH_EXPIRE),
+        "access_token":  _create_token(user.id, user.username, user.role, ACCESS_EXPIRE, user.tenant_id),
+        "refresh_token": _create_token(user.id, user.username, user.role, REFRESH_EXPIRE, user.tenant_id),
         "token_type":    "bearer",
         "user": {
             "id":           user.id,
@@ -186,7 +257,8 @@ def refresh_token(credentials: HTTPAuthorizationCredentials = Depends(security))
         raise HTTPException(status_code=401, detail="Invalid refresh token")
     return {
         "access_token": _create_token(
-            int(payload["sub"]), payload["username"], payload["role"], ACCESS_EXPIRE
+            int(payload["sub"]), payload["username"], payload["role"], ACCESS_EXPIRE,
+            payload.get("tenant_id") or _user_tenant(int(payload["sub"]))
         ),
         "token_type": "bearer"
     }

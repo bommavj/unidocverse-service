@@ -49,11 +49,26 @@ from app.api.agent_router import router as agent_router
 from app.api.mcp_settings_router import router as mcp_settings_router
 from app.api.guardrails_router import router as guardrails_router
 from app.api.immigration_router import router as immigration_router
+from app.api.vendor_compliance_router import router as vendor_compliance_router
+from app.api.immigration_suite_router import router as immigration_suite_router, public as immigration_public_router
+# Feature routers that existed but were never registered (their pages showed "not found" → empty)
+from app.api.claims_router import router as claims_router
+from app.api.matters_router import router as matters_router
+from app.api.quote_router import router as quote_router
+from app.api.clm_router import router as clm_router
+from app.api.audit_router import router as audit_router
+from app.api.risk_router import router as risk_router
+from app.api.jurisdiction_router import router as jurisdiction_router
+from app.api.export_router import router as export_router
+from app.api.insurance_automation_router import router as insurance_automation_router
 from app.api.qa_history_router import router as qa_history_router
 from app.api.tts_router import router as tts_router
 from app.api.research_router import router as research_router
 from app.api.workflow_router import router as workflow_router
+from app.api.domain_workflow_router import router as domain_workflow_router
+from app.api.approvals_router import router as approvals_router
 from app.api.chatbot_router import router as chatbot_router
+from app.api.auth_router import get_current_user as _auth_required
 from app.core.performance import llm_queue, get_perf_stats, job_registry
 from app.mcp_server.server import mcp as mcp_server
 from app.core import config
@@ -82,6 +97,11 @@ async def lifespan(app: FastAPI):
     # Preload models
     asyncio.create_task(preload_manager.preload_all())
 
+    from app.services.classifiers import zero_shot_router
+    asyncio.get_running_loop().run_in_executor(None, zero_shot_router.warm_up)
+    from app.services import hybrid_search
+    asyncio.get_running_loop().run_in_executor(None, hybrid_search.warm_up)
+
     # Start background schedulers (renewal emails, follow-ups, etc.)
     from app.services import scheduler
     scheduler.start()
@@ -97,6 +117,24 @@ async def lifespan(app: FastAPI):
         # Initialize DB tables
         from app.core.database import init_db
         init_db()
+
+        # Background jobs die with the process; don't leave documents stuck in
+        # "processing" forever after a restart.
+        with engine.begin() as conn:
+            rec = conn.execute(text("""
+                UPDATE documents d SET status = 'completed', processing_stage = 'enrichment_failed'
+                 WHERE d.status IN ('processing', 'pending')
+                   AND EXISTS (SELECT 1 FROM document_chunks c WHERE c.document_id = d.id)
+            """)).rowcount
+            lost = conn.execute(text("""
+                UPDATE documents SET status = 'failed', processing_stage = 'interrupted',
+                       doc_metadata = COALESCE(doc_metadata, '{}'::jsonb) ||
+                                      '{"error": "Interrupted by a server restart - please reprocess"}'::jsonb
+                 WHERE status IN ('processing', 'pending')
+            """)).rowcount
+            if rec or lost:
+                logger.warning(f"♻️ Startup recovery: {rec} interrupted document(s) kept searchable, "
+                               f"{lost} marked for reprocessing")
     except Exception as e:
         logger.error(f"❌ Database connection failed/initialization failed: {e}")
         raise
@@ -156,8 +194,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Compress all responses > 1 KB
-app.add_middleware(GzipMiddleware, minimum_size=1000)
+# Compress responses > 1 KB — except SSE streams, which must flush per event
+from app.core.gzip_sse import GZipExceptEventStream
+app.add_middleware(GZipExceptEventStream, minimum_size=1000)
 
 # Tenant isolation — extracts tenant_id from JWT/header, stores in context
 from app.core.tenant import TenantMiddleware
@@ -201,46 +240,56 @@ async def rate_limit_middleware(request: Request, call_next):
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 
-app.include_router(documents.router)
-app.include_router(analytics.router)
-app.include_router(search.router)
-app.include_router(stats.router)
-app.include_router(upload.router)
-app.include_router(uni_license.router)
-app.include_router(progress_router)
-app.include_router(watch_folders.router)
-app.include_router(gmail_api.router)
-app.include_router(llm_models.router)
-app.include_router(insights.router)
-app.include_router(ask_router.router)
-app.include_router(alerts_router.router)
-app.include_router(notifications_router.router)
-app.include_router(integrations_router.router)
-app.include_router(whatsapp_qr_router)
-app.include_router(auth_router.router)
-app.include_router(clients_router.router)
-app.include_router(policies_router.router)
-app.include_router(features_router.router)
-app.include_router(agency_router.router)
-app.include_router(agent_reports_router.router)
-app.include_router(commission_router.router)
-app.include_router(gap_analysis_router.router)
-app.include_router(coi_router.router)
-app.include_router(loss_run_router.router)
-app.include_router(renewal_router.router)
-app.include_router(agency_settings_router.router)
-app.include_router(calendar_router.router)
-app.include_router(personal_router.router)
-app.include_router(domains_router.router)
-app.include_router(agent_router)
-app.include_router(mcp_settings_router)
-app.include_router(guardrails_router)
-app.include_router(immigration_router)
-app.include_router(qa_history_router)
-app.include_router(tts_router)
-app.include_router(research_router)
-app.include_router(workflow_router)
-app.include_router(chatbot_router)
+_protected = {"dependencies": [Depends(_auth_required)]}
+
+app.include_router(auth_router.router)           # public — has own auth logic
+app.include_router(chatbot_router)               # public — token-based auth per endpoint
+app.include_router(documents.router,             **_protected)
+app.include_router(analytics.router,             **_protected)
+app.include_router(search.router,                **_protected)
+app.include_router(stats.router,                 **_protected)
+app.include_router(upload.router,                **_protected)
+app.include_router(uni_license.router,           **_protected)
+app.include_router(progress_router,              **_protected)
+app.include_router(watch_folders.router,         **_protected)
+app.include_router(gmail_api.router,             **_protected)
+app.include_router(llm_models.router,            **_protected)
+app.include_router(insights.router,              **_protected)
+app.include_router(ask_router.router,            **_protected)
+app.include_router(alerts_router.router,         **_protected)
+app.include_router(notifications_router.router,  **_protected)
+app.include_router(integrations_router.router,   **_protected)
+app.include_router(whatsapp_qr_router,           **_protected)
+app.include_router(clients_router.router,        **_protected)
+app.include_router(policies_router.router,       **_protected)
+app.include_router(features_router.router,       **_protected)
+app.include_router(agency_router.router,         **_protected)
+app.include_router(agent_reports_router.router,  **_protected)
+app.include_router(commission_router.router,     **_protected)
+app.include_router(gap_analysis_router.router,   **_protected)
+app.include_router(coi_router.router,            **_protected)
+app.include_router(loss_run_router.router,       **_protected)
+app.include_router(renewal_router.router,        **_protected)
+app.include_router(agency_settings_router.router,**_protected)
+app.include_router(calendar_router.router,       **_protected)
+app.include_router(personal_router.router,       **_protected)
+app.include_router(domains_router.router,        **_protected)
+app.include_router(agent_router,                 **_protected)
+app.include_router(mcp_settings_router,          **_protected)
+app.include_router(guardrails_router,            **_protected)
+app.include_router(immigration_router,           **_protected)
+app.include_router(qa_history_router,            **_protected)
+app.include_router(tts_router,                   **_protected)
+app.include_router(research_router)              # per-endpoint auth (JWT or session token for SSE)
+app.include_router(workflow_router,              **_protected)
+app.include_router(domain_workflow_router,       **_protected)
+app.include_router(approvals_router,             **_protected)
+app.include_router(vendor_compliance_router,     **_protected)
+app.include_router(immigration_suite_router,     **_protected)
+app.include_router(immigration_public_router)    # public — client links authenticate by token
+for _r in (claims_router, matters_router, quote_router, clm_router, audit_router, risk_router, jurisdiction_router,
+           export_router, insurance_automation_router):
+    app.include_router(_r, **_protected)
 
 
 # ── Performance stats endpoint ────────────────────────────────────────────────
@@ -403,7 +452,8 @@ async def chatbot_widget_js():
     """Embeddable widget script — banks add one <script> tag to their site."""
     widget_js = Path(__file__).parent / "static" / "chatbot-widget.js"
     from fastapi.responses import Response
-    return Response(widget_js.read_text(), media_type="application/javascript")
+    return Response(widget_js.read_text(), media_type="application/javascript",
+                    headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
 
 
 # ── Serve Angular frontend — MUST BE LAST ─────────────────────────────────────

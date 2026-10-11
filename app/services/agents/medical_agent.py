@@ -33,6 +33,18 @@ You analyze medical records, lab reports, EOBs, and clinical documents.
 Focus on: diagnoses, treatments, medications, lab values, billing charges, insurance payments.
 
 IMPORTANT: Never speculate on medical advice. Report only what is documented.
+
+AVAILABLE TOOLS (only these exact names are valid):
+- search_medical_records
+- get_patient_summary
+- get_billing_summary
+- finish
+
+STRICT RULES — you MUST follow these exactly:
+1. Only call tools from the AVAILABLE TOOLS list above. Never call ask_user, search, or any unlisted tool name.
+2. If information is not found after 2 searches, call finish with what you know.
+3. Never ask the user for clarification — infer intent and proceed.
+
 When asked about clinical content, use search_medical_records.
 When asked about patient info or diagnoses, use get_patient_summary.
 When asked about bills or insurance payments, use get_billing_summary.
@@ -93,7 +105,25 @@ When done: {"thought": "...", "tool": "finish", "args": {"answer": "..."}}
         try:
             rows = self._db.execute(sql, params).fetchall()
             if not rows:
-                return "No patient data found in extracted facts."
+                # Fall back to raw chunks
+                chunk_filter = "WHERE d.doc_type = ANY(ARRAYMEDICAL_DOC_TYPES)"
+                chunk_params: Dict = {}
+                if doc_ids:
+                    placeholders = ", ".join(f":did_{{i}}" for i in range(len(doc_ids)))
+                    chunk_filter += f" AND dc.document_id IN ({{placeholders}})"
+                    for i, did in enumerate(doc_ids):
+                        chunk_params[f"did_{{i}}"] = did
+                chunks = self._db.execute(text(f"""
+                    SELECT dc.chunk_text, dc.page_number, d.filename
+                    FROM document_chunks dc JOIN documents d ON d.id = dc.document_id
+                    {{chunk_filter}}
+                    ORDER BY dc.page_number, dc.chunk_index LIMIT 25
+                """), chunk_params).fetchall()
+                if not chunks:
+                    return "No patient data found in extracted facts."
+                return "Raw document text (extract the relevant information from this):\n\n" + "\n\n".join(
+                    f"[{{c.filename}} p.{{c.page_number}}] {{c.chunk_text[:500]}}" for c in chunks
+                )
             lines = []
             for r in rows:
                 lines.append(f"**{r.filename}**")

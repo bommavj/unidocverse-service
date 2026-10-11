@@ -3,11 +3,12 @@ import json
 import re
 import uuid
 from typing import Optional
-from fastapi import APIRouter, Depends, BackgroundTasks
+from fastapi import HTTPException, APIRouter, Depends, BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.core.database import get_db
+from app.core.tenant_scope import current_tenant
 
 router = APIRouter(prefix="/api/risk", tags=["risk"])
 
@@ -163,21 +164,23 @@ def compute_risk_health(doc_id: str, raw_text: str, doc_type: str, metadata: dic
 @router.get("/{doc_id}")
 def get_risk(doc_id: str, db: Session = Depends(get_db)):
     ensure_tables(db)
+    doc = db.execute(text("SELECT * FROM documents WHERE id::text=:id AND tenant_id=:t"),
+                     {"id": doc_id, "t": str(current_tenant())}).fetchone()
+    if not doc:
+        raise HTTPException(404, "Document not found")
     row = db.execute(text("SELECT * FROM doc_risk WHERE doc_id=:id"), {"id": doc_id}).fetchone()
     if row:
         return row_to_dict(row)
     # compute on demand
-    doc = db.execute(text("SELECT * FROM documents WHERE id=:id"), {"id": doc_id}).fetchone()
-    if not doc:
-        return {"risk_score": 0, "health_score": 0, "risk_factors": [], "health_fields": [], "missing_fields": []}
     d = row_to_dict(doc)
     return compute_risk_health(doc_id, d.get("raw_text",""), d.get("doc_type",""), d.get("doc_metadata") or {}, db)
 
 @router.post("/{doc_id}/compute")
 def compute_risk(doc_id: str, db: Session = Depends(get_db)):
-    doc = db.execute(text("SELECT * FROM documents WHERE id=:id"), {"id": doc_id}).fetchone()
+    doc = db.execute(text("SELECT * FROM documents WHERE id::text=:id AND tenant_id=:t"),
+                     {"id": doc_id, "t": str(current_tenant())}).fetchone()
     if not doc:
-        return {"error": "not found"}
+        raise HTTPException(404, "Document not found")
     d = row_to_dict(doc)
     result = compute_risk_health(doc_id, d.get("raw_text",""), d.get("doc_type",""), d.get("doc_metadata") or {}, db)
     return result
@@ -189,10 +192,10 @@ def batch_compute(background_tasks: BackgroundTasks, db: Session = Depends(get_d
     docs = db.execute(text("""
         SELECT d.id, d.raw_text, d.doc_type, d.doc_metadata
         FROM documents d
-        LEFT JOIN doc_risk r ON r.doc_id = d.id
-        WHERE r.doc_id IS NULL AND d.status != 'deleted'
+        LEFT JOIN doc_risk r ON r.doc_id = d.id::text
+        WHERE r.doc_id IS NULL AND d.status != 'deleted' AND d.tenant_id = :t
         LIMIT 50
-    """)).fetchall()
+    """), {"t": str(current_tenant())}).fetchall()
 
     def run_batch():
         db2 = db
@@ -212,8 +215,9 @@ def list_risk_scores(limit: int = 100, db: Session = Depends(get_db)):
     rows = db.execute(text("""
         SELECT r.*, d.filename, d.doc_type
         FROM doc_risk r
-        LEFT JOIN documents d ON d.id = r.doc_id
+        JOIN documents d ON d.id::text = r.doc_id
+        WHERE d.tenant_id = :t
         ORDER BY r.risk_score DESC
         LIMIT :limit
-    """), {"limit": limit}).fetchall()
+    """), {"limit": limit, "t": str(current_tenant())}).fetchall()
     return [row_to_dict(r) for r in rows]

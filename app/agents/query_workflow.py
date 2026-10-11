@@ -34,6 +34,7 @@ Design notes:
 """
 
 import logging
+import os
 import operator
 import time
 from typing import Any, Annotated, Dict, List, Optional, Sequence, TypedDict
@@ -95,6 +96,8 @@ class QueryState(TypedDict):
 
 # ── Agent class registry ──────────────────────────────────────────────────────
 
+_USE_DOMAIN_AGENTS = os.getenv("USE_DOMAIN_AGENTS", "0") == "1"
+
 _AGENT_CLASSES = {
     "banking":      BankingAgent,
     "insurance":    InsuranceAgent,
@@ -128,8 +131,13 @@ def supervisor_node(state: QueryState) -> Dict[str, Any]:
 
     # Filter to enabled domains for this tenant
     enabled = get_enabled_domains()
-    domains = [d for d in matched if d in enabled]
-    if not domains:
+    # Only domains with a graph node — the classifier's domain list is broader
+    # (e.g. "financial" has no agent) and an unknown Send target crashes the graph.
+    domains = [d for d in matched if d in enabled and d in _AGENT_CLASSES]
+    if not _USE_DOMAIN_AGENTS or not domains:
+        # One research agent answers everything: it has the structured paths
+        # (transactions, pay stubs, tables, tax rules/audit) that the per-domain
+        # agents bypassed (e.g. "how many Zelle payments" got a top-merchants list).
         domains = ["general"]
 
     # Build execution plan:
@@ -165,6 +173,20 @@ def _run_domain_agent(domain: str, question: str, doc_ids: List[str], tenant_id:
     Falls back to a lightweight vector-search answer if the class is missing.
     """
     agent_cls = _AGENT_CLASSES.get(domain)
+
+    # Exact answers from structured data beat any agent's LLM reasoning.
+    from app.services.structured_answer import try_structured_answer
+    structured = try_structured_answer(question, tenant_id, doc_ids)
+    if structured:
+        return AgentResult(
+            answer=structured["answer"],
+            sources=structured["sources"],
+            steps=[{"tool": structured["tool"], "thought": "Computed from structured data",
+                    "args": structured["detail"], "observation": {"sources": structured["sources"]}}],
+            chart_data=None,
+            domain=domain,
+        )
+
     db = SessionLocal()
     try:
         apply_tenant_to_db(db, tenant_id)
@@ -288,11 +310,35 @@ def synthesizer_node(state: QueryState) -> Dict[str, Any]:
     if not results:
         return {"answer": "No results were found for your question."}
 
-    # If only one domain answered, return it directly (no extra LLM call)
+    # If only one domain answered, return it directly — but synthesize if it looks like raw chunk text
     unique_domains = {r.domain for r in results if r.answer}
     if len(unique_domains) == 1:
         best = max(results, key=lambda r: len(r.answer or ""))
-        return {"answer": best.answer or "No answer found."}
+        raw_answer = best.answer or ""
+        # Detect raw chunk dumps: starts with "[p." or "Raw document text"
+        _is_raw = raw_answer.startswith("[p.") or raw_answer.startswith("Raw document text")
+        if not _is_raw:
+            return {"answer": raw_answer or "No answer found."}
+        # Synthesize with the LLM
+        prompt = (
+            f"You are a document intelligence assistant. Use ONLY the document text below to answer the question. "
+            f"Be specific and cite numbers, dates, and coverage types you find. "
+            f"If something is not in the text, say so.\n\n"
+            f"Question: {question}\n\n"
+            f"Document text:\n{raw_answer[:6000]}\n\n"
+            f"Answer:"
+        )
+        try:
+            model = getattr(app_config, "OLLAMA_MODEL", "mistral")
+            resp = ollama.chat(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.1, "num_predict": 800},
+            )
+            return {"answer": resp["message"]["content"].strip()}
+        except Exception as synth_err:
+            logger.warning(f"[synthesizer] single-domain synthesis failed: {synth_err}")
+            return {"answer": raw_answer}
 
     # Multi-domain: synthesize
     sections = []

@@ -324,16 +324,9 @@ def extract_pdf_fields(text: str) -> dict:
     return fields
 
 
-import pytesseract
-from pdf2image import convert_from_path
-
-
 def ocr_pdf_to_text(file_path: str) -> str:
-    pages = convert_from_path(file_path)
-    text = []
-    for img in pages:
-        text.append(pytesseract.image_to_string(img))
-    return "\n".join(text)
+    from app.services.ocr.ocr_utils import ocr_pdf_best_effort
+    return ocr_pdf_best_effort(file_path)
 
 # import logging
 # from typing import List, Dict, Any

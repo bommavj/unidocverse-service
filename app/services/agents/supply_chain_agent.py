@@ -35,6 +35,19 @@ You analyze purchase orders, invoices, shipping documents, and vendor agreements
 Focus on: PO numbers, vendor names, amounts, delivery dates, shipment status,
 invoice discrepancies, customs details, payment terms.
 
+
+AVAILABLE TOOLS (only these exact names are valid):
+- search_supply_docs
+- get_po_summary
+- get_invoice_status
+- get_shipment_details
+- finish
+
+STRICT RULES — you MUST follow these exactly:
+1. Only call tools from the AVAILABLE TOOLS list above. Never call ask_user, search, or any unlisted tool name.
+2. If information is not found after 2 searches, call finish with what you know.
+3. Never ask the user for clarification — infer intent and proceed.
+
 When asked about orders or vendors, use get_po_summary.
 When asked about invoices or payments, use get_invoice_status.
 When asked about shipping or delivery, use get_shipment_details.
@@ -103,7 +116,25 @@ When done: {"thought": "...", "tool": "finish", "args": {"answer": "..."}}
         try:
             rows = self._db.execute(sql, params).fetchall()
             if not rows:
-                return "No purchase order data found."
+                # Fall back to raw chunks
+                chunk_filter = "WHERE d.doc_type = ANY(ARRAYSUPPLY_CHAIN_DOC_TYPES)"
+                chunk_params: Dict = {}
+                if doc_ids:
+                    placeholders = ", ".join(f":did_{{i}}" for i in range(len(doc_ids)))
+                    chunk_filter += f" AND dc.document_id IN ({{placeholders}})"
+                    for i, did in enumerate(doc_ids):
+                        chunk_params[f"did_{{i}}"] = did
+                chunks = self._db.execute(text(f"""
+                    SELECT dc.chunk_text, dc.page_number, d.filename
+                    FROM document_chunks dc JOIN documents d ON d.id = dc.document_id
+                    {{chunk_filter}}
+                    ORDER BY dc.page_number, dc.chunk_index LIMIT 25
+                """), chunk_params).fetchall()
+                if not chunks:
+                    return "No purchase order data found."
+                return "Raw document text (extract the relevant information from this):\n\n" + "\n\n".join(
+                    f"[{{c.filename}} p.{{c.page_number}}] {{c.chunk_text[:500]}}" for c in chunks
+                )
             lines = ["| PO # | Vendor | Amount | PO Date | Delivery | Status | Source |",
                      "|------|--------|--------|---------|----------|--------|--------|"]
             for r in rows:

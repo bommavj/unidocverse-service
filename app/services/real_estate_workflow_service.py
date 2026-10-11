@@ -34,22 +34,23 @@ class RealEstateWorkflowService:
             address = scanner.find_regex(r'located\s+at:\s*\n?\s*(.*?)\s*(?:\(|between|\n)') or \
                       scanner.find_regex(r'Premises:\s*\n?\s*(.*?)\s*\n') or \
                       scanner.find_regex(r'Property Address:\s*(.*)') or \
-                      "4408 Stone Way N, Apartment 3B, Seattle, WA 98103"
+                      None
             address = self._clean_str(address)
+            # Required field not in the document: write nothing rather than a placeholder
+            if not address:
+                return state
 
             # 2. Extract Price / Rent
             price = self._parse_number(scanner.find_regex(r'Purchase Price:\s*\$?([\d,.]+)')) or \
                     self._parse_number(scanner.find_regex(r'Price:\s*\$?([\d,.]+)')) or \
                     (self._parse_number(scanner.find_regex(r'Rent:\s*\$?([\d,.]+)')) * 12.0)
             
-            if price <= 0:
-                price = 685000.0 # Default fallback comp
 
             # 3. Extract Buyer / Tenant name
             buyer = scanner.find_regex(r'Buyer:\s*(.*)') or \
                     scanner.find_regex(r'Purchaser:\s*(.*)') or \
                     scanner.find_regex(r'Tenant:\s*(.*)') or \
-                    "Michael S. Reynolds"
+                    None
             buyer = self._clean_str(buyer)
 
             # 4. Check Status (Appraisal, Clear Title, Escrow Funding)

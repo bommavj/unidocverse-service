@@ -98,11 +98,12 @@ class PDFParser:
                     import pytesseract
                     from pdf2image import convert_from_path
 
-                    pages = convert_from_path(file_path, dpi=200)
+                    from app.services.ocr.ocr_utils import tesseract_ocr_page
+                    pages = convert_from_path(file_path, dpi=300)
                     ocr_text = []
                     for i, page_img in enumerate(pages):
                         try:
-                            page_text = pytesseract.image_to_string(page_img)
+                            page_text, _ = tesseract_ocr_page(page_img)
                             ocr_text.append(page_text)
                         except Exception as e:
                             logger.warning(f"OCR failed on page {i+1}: {e}")

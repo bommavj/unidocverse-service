@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.tenant import get_current_tenant_id, DEFAULT_TENANT_ID
+from app.core.tenant_scope import scope_sql, tenant_params
 
 router = APIRouter(prefix="/api/quotes", tags=["quotes"])
 
@@ -150,6 +151,8 @@ def _enrich(q: dict, db: Session) -> dict:
     return q
 
 def _load_jurisdiction(state: str, country: str, lob: str, db: Session) -> dict:
+    from app.api.jurisdiction_router import ensure_tables as _ensure_jurisdictions
+    _ensure_jurisdictions(db)          # created lazily by the Jurisdiction page; a fresh install may not have them
     """Pull min limits + required coverages from jurisdiction engine."""
     j = db.execute(text("""
         SELECT jp.min_limits, jp.required_coverages
@@ -165,25 +168,32 @@ def _load_jurisdiction(state: str, country: str, lob: str, db: Session) -> dict:
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
+def _own_quote(qid: str, db: Session):
+    """The current tenant's quote, or 404 — another tenant's id looks the same as a missing one."""
+    if not db.execute(text("SELECT 1 FROM quotes WHERE id=:id AND tenant_id::text=:t"),
+                      {"id": qid, "t": str(get_current_tenant_id() or DEFAULT_TENANT_ID)}).fetchone():
+        raise HTTPException(404, "Quote not found")
+
+
 @router.get("/stages")
 def get_stages(): return {"stages": STAGES, "loss_reasons": LOSS_REASONS}
 
 @router.get("/stats")
 def get_stats(db: Session = Depends(get_db)):
     ensure_tables(db)
-    by_stage = db.execute(text("""
+    by_stage = db.execute(text(scope_sql("""
         SELECT stage, COUNT(*) as cnt,
                AVG(bound_premium) FILTER (WHERE stage='bound') as avg_bound_premium
         FROM quotes GROUP BY stage
-    """)).fetchall()
-    by_lob = db.execute(text("SELECT lob, COUNT(*) as cnt FROM quotes GROUP BY lob ORDER BY cnt DESC")).fetchall()
-    win_rate = db.execute(text("""
+    """)), tenant_params()).fetchall()
+    by_lob = db.execute(text(scope_sql("SELECT lob, COUNT(*) as cnt FROM quotes GROUP BY lob ORDER BY cnt DESC")), tenant_params()).fetchall()
+    win_rate = db.execute(text(scope_sql("""
         SELECT
           COUNT(*) FILTER (WHERE stage='bound') as won,
           COUNT(*) FILTER (WHERE stage='lost')  as lost,
           COUNT(*) as total
         FROM quotes WHERE stage IN ('bound','lost')
-    """)).fetchone()
+    """)), tenant_params()).fetchone()
     return {
         "by_stage": [r2d(r) for r in by_stage],
         "by_lob":   [r2d(r) for r in by_lob],
@@ -201,7 +211,7 @@ def list_quotes(stage: Optional[str] = None, lob: Optional[str] = None,
     if lob:   q += " AND lob=:lob";     p["lob"]   = lob
     if state: q += " AND state=:state"; p["state"] = state
     q += " ORDER BY updated_at DESC LIMIT :limit"; p["limit"] = limit
-    rows = db.execute(text(q), p).fetchall()
+    rows = db.execute(text(scope_sql(q)), tenant_params(p)).fetchall()
     quotes = [r2d(r) for r in rows]
     for qt in quotes:
         cc = db.execute(text("SELECT COUNT(*) FROM quote_carriers WHERE quote_id=:id"),
@@ -243,13 +253,14 @@ def create_quote(body: QuoteCreate, db: Session = Depends(get_db)):
     })
     log_activity(qid, "created", f"Quote {qnum} created for {body.lob.upper()} in {body.state}", db)
     db.commit()
-    row = db.execute(text("SELECT * FROM quotes WHERE id=:id"), {"id": qid}).fetchone()
+    row = db.execute(text(scope_sql("SELECT * FROM quotes WHERE id=:id")), tenant_params({"id": qid})).fetchone()
     return _enrich(r2d(row), db)
 
 @router.get("/{qid}")
 def get_quote(qid: str, db: Session = Depends(get_db)):
+    _own_quote(qid, db)
     ensure_tables(db)
-    row = db.execute(text("SELECT * FROM quotes WHERE id=:id"), {"id": qid}).fetchone()
+    row = db.execute(text(scope_sql("SELECT * FROM quotes WHERE id=:id")), tenant_params({"id": qid})).fetchone()
     if not row: raise HTTPException(404, "Not found")
     q = _enrich(r2d(row), db)
     q["activity"] = [r2d(r) for r in db.execute(text(
@@ -259,6 +270,7 @@ def get_quote(qid: str, db: Session = Depends(get_db)):
 
 @router.patch("/{qid}")
 def update_quote(qid: str, body: QuoteUpdate, db: Session = Depends(get_db)):
+    _own_quote(qid, db)
     ensure_tables(db)
     updates = {k: v for k, v in body.dict().items() if v is not None}
     if not updates: return {"ok": True}
@@ -278,6 +290,7 @@ def update_quote(qid: str, body: QuoteUpdate, db: Session = Depends(get_db)):
 
 @router.post("/{qid}/carriers")
 def add_carrier(qid: str, body: CarrierQuote, db: Session = Depends(get_db)):
+    _own_quote(qid, db)
     ensure_tables(db)
     cid = str(uuid.uuid4())
     db.execute(text("""
@@ -303,6 +316,7 @@ def add_carrier(qid: str, body: CarrierQuote, db: Session = Depends(get_db)):
 
 @router.patch("/{qid}/carriers/{cid}")
 def update_carrier(qid: str, cid: str, body: CarrierUpdate, db: Session = Depends(get_db)):
+    _own_quote(qid, db)
     ensure_tables(db)
     updates: dict = {}
     for k, v in body.dict().items():
@@ -334,6 +348,7 @@ def update_carrier(qid: str, cid: str, body: CarrierUpdate, db: Session = Depend
 
 @router.post("/{qid}/bind")
 def bind_quote(qid: str, body: BindRequest, db: Session = Depends(get_db)):
+    _own_quote(qid, db)
     """Bind: mark winner, create a policy record, move stage to bound."""
     ensure_tables(db)
     cq = db.execute(text("SELECT * FROM quote_carriers WHERE id=:id AND quote_id=:qid"),
@@ -341,7 +356,7 @@ def bind_quote(qid: str, body: BindRequest, db: Session = Depends(get_db)):
     if not cq: raise HTTPException(404, "Carrier quote not found")
     c = r2d(cq)
 
-    q = r2d(db.execute(text("SELECT * FROM quotes WHERE id=:id"), {"id": qid}).fetchone())
+    q = r2d(db.execute(text(scope_sql("SELECT * FROM quotes WHERE id=:id")), tenant_params({"id": qid})).fetchone())
     if not q: raise HTTPException(404, "Quote not found")
 
     # Create policy record
@@ -381,6 +396,7 @@ def bind_quote(qid: str, body: BindRequest, db: Session = Depends(get_db)):
 
 @router.post("/{qid}/lose")
 def lose_quote(qid: str, body: LossRequest, db: Session = Depends(get_db)):
+    _own_quote(qid, db)
     ensure_tables(db)
     db.execute(text("""
         UPDATE quotes SET stage='lost', loss_reason=:reason, loss_notes=:notes, updated_at=NOW()
@@ -392,6 +408,7 @@ def lose_quote(qid: str, body: LossRequest, db: Session = Depends(get_db)):
 
 @router.delete("/{qid}")
 def delete_quote(qid: str, db: Session = Depends(get_db)):
+    _own_quote(qid, db)
     ensure_tables(db)
     for t in ["quote_activity", "quote_carriers", "quotes"]:
         col = "quote_id" if t != "quotes" else "id"

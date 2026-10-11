@@ -43,13 +43,15 @@ class HealthcareWorkflowService:
             # 1. Extract Patient details
             patient_name = scanner.find_regex(r'Patient Name:\s*(.*)') or \
                            scanner.find_regex(r'Patient:\s*(.*)') or \
-                           scanner.find_regex(r'Name:\s*(.*)') or \
-                           "Robert Henderson"
+                           scanner.find_regex(r'Name:\s*(.*)')
             patient_name = self._clean_str(patient_name)
+            # Required field not in the document: write nothing rather than a placeholder
+            if not patient_name:
+                return state
 
             dob_str = scanner.find_regex(r'DOB:\s*([\d\-\/]{6,12})') or \
                       scanner.find_regex(r'Date of Birth:\s*([\d\-\/]{6,12})') or \
-                      "04/18/1976"
+                      None
             patient_dob = self._parse_date(dob_str)
 
             # Audit chart completeness
@@ -107,8 +109,7 @@ class HealthcareWorkflowService:
             # 2. Extract Biomarkers & Map Diagnoses to ICD-10
             physician = scanner.find_regex(r'Ordering Physician:\s*(.*)') or \
                         scanner.find_regex(r'Physician:\s*(.*)') or \
-                        scanner.find_regex(r'Dr\.\s*([A-Za-z\s]+)') or \
-                        "Dr. Evelyn Vance, MD"
+                        scanner.find_regex(r'Dr\.\s*([A-Za-z\s]+)')
             physician = self._clean_str(physician)
 
             # Clear old biomarkers for this document to prevent duplicates

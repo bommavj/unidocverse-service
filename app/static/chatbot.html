@@ -348,6 +348,7 @@ const HINT     = _p.get('hint')     || window.CHATBOT_HINT     || 'Ask me anythi
 
 // ── State ───────────────────────────────────────────────────────────────────
 let sessionToken = null;
+let _jwtToken = null;
 let sessionDocIds = [];
 let running = false;
 let priorQA = [];    // multi-turn history
@@ -394,17 +395,31 @@ function _lighten(hex) {
 
 async function createSession() {
   try {
-    const res = await fetch(`${API}/api/chatbot/session`, { method: 'POST' });
+    const _urlJwt = new URLSearchParams(location.search).get('jwt') || '';
+    let jwt = _urlJwt || localStorage.getItem('udv_access_token') || '';
+    if (!jwt && window.parent !== window) {
+      try { jwt = window.parent.localStorage.getItem('udv_access_token') || ''; } catch (_) {}
+    }
+    if (jwt) _jwtToken = jwt;
+    console.log('[chatbot] jwt present:', !!jwt, '| API:', API);
+    const headers = { 'Content-Type': 'application/json' };
+    if (jwt) headers['Authorization'] = `Bearer ${jwt}`;
+    const res = await fetch(`${API}/api/chatbot/session`, { method: 'POST', headers });
+    console.log('[chatbot] session status:', res.status);
+    if (!res.ok) { console.error('Session creation failed:', res.status); return; }
     const data = await res.json();
     sessionToken = data.token;
+    console.log('[chatbot] session token set:', !!sessionToken);
   } catch (e) {
-    console.error('Session creation failed:', e);
+    console.error('[chatbot] session creation failed:', e);
   }
 }
 
 // ── Upload ───────────────────────────────────────────────────────────────────
 function setupUpload() {
-  document.getElementById('file-input').addEventListener('change', async (e) => {
+  const fileInput = document.getElementById('file-input');
+  if (!fileInput) return;
+  fileInput.addEventListener('change', async (e) => {
     const files = [...e.target.files];
     if (!files.length) return;
 
@@ -505,6 +520,7 @@ async function sendQuestion() {
     if (sessionDocIds.length) params.set('doc_ids', sessionDocIds.join(','));
     if (priorQA.length) params.set('prior_qa', JSON.stringify(priorQA));
     if (sessionToken) params.set('session_token', sessionToken);
+    else if (_jwtToken) params.set('jwt', _jwtToken);
 
     const es = new EventSource(`${API}/api/research/ask/stream?${params}`);
     let answer = '';

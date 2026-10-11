@@ -12,6 +12,8 @@ import json
 import logging
 import os
 import re
+
+from app.utils.text_match import has_term, any_term
 import time
 import urllib.request
 import urllib.parse
@@ -25,6 +27,8 @@ import yaml
 from app.core.database import SessionLocal
 from app.config.model_factory import EmbeddingModelFactory
 from app.core import config as app_config
+from app.core.config import NUM_CTX
+from app.core.tenant import get_current_tenant_id, DEFAULT_TENANT_ID
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +46,7 @@ def _load_hints() -> Dict:
 _HINTS: Dict = _load_hints()
 
 def _doc_type_keywords() -> Dict[str, List[str]]:
-    return {k: v.get("keywords", []) for k, v in _HINTS.get("doc_types", {}).items()}
+    return {k: [str(kw) for kw in v.get("keywords", [])] for k, v in _HINTS.get("doc_types", {}).items()}
 
 def _scoring() -> Dict[str, int]:
     defaults = {"date_month_and_year": 3, "date_partial": 2, "doc_type_match": 2,
@@ -121,9 +125,18 @@ def _active_model() -> str:
     return app_config.model
 
 
+_CITATION_NOISE_RE = re.compile(
+    r'\s*##[^|\n]*\|\s*Document\s+[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+    re.IGNORECASE,
+)
+
 def _decode_llm_text(text: str) -> str:
-    """Decode literal \\uXXXX escape sequences that some LLM outputs emit as plain text."""
-    if not text or '\\u' not in text:
+    """Decode literal \\uXXXX escape sequences and strip internal chunk-header noise."""
+    if not text:
+        return text
+    # Strip internal "## Document | Document <uuid>" markers the LLM echoes back
+    text = _CITATION_NOISE_RE.sub('', text)
+    if '\\u' not in text:
         return text
     try:
         return re.sub(
@@ -193,7 +206,7 @@ Return ONLY valid JSON, no markdown, no explanation:
   "intent": "<one of the intents above>",
   "field": "<the specific field or concept being asked about, or null>",
   "field_synonyms": ["<alternative names for the field in documents>"],
-  "doc_type_hint": "<pay_stub|payroll_report|bank_statement|credit_card_statement|invoice|purchase_order|expense_report|receipt|financial_statement|credit_memo|sales_report|contract|annual_report|quarterly_report|proxy|tax_form|w2|tax_return|government_form|insurance|declarations_page|insurance_policy|insurance_claim|medical|medical_record|real_estate|mortgage_document|mortgage_statement|closing_disclosure|loan_document|payoff_statement|legal|hr_document|immigration|uscis_receipt|utility_bill|investment|inventory_report|employee_roster|order_history|transaction_log|asset_register|customer_list|product_catalog|forecast_report|dataset|movie_dataset|music_dataset|book_dataset|product_dataset|ratings_dataset|location_dataset|weather_dataset|sports_dataset|health_dataset|education_dataset|real_estate_dataset|stock_dataset|census_dataset|scientific_dataset|survey_dataset|event_dataset|spreadsheet|image|general>",
+  "doc_type_hint": "<pay_stub|payroll_report|bank_statement|credit_card_statement|invoice|purchase_order|expense_report|receipt|financial_statement|credit_memo|sales_report|contract|annual_report|quarterly_report|proxy|tax_form|w2|tax_return|property_tax_bill|government_form|insurance|declarations_page|insurance_policy|insurance_claim|medical|medical_record|real_estate|mortgage_document|mortgage_statement|closing_disclosure|loan_document|payoff_statement|legal|hr_document|immigration|uscis_receipt|utility_bill|investment|inventory_report|employee_roster|order_history|transaction_log|asset_register|customer_list|product_catalog|forecast_report|dataset|movie_dataset|music_dataset|book_dataset|product_dataset|ratings_dataset|location_dataset|weather_dataset|sports_dataset|health_dataset|education_dataset|real_estate_dataset|stock_dataset|census_dataset|scientific_dataset|survey_dataset|event_dataset|spreadsheet|image|birth_certificate|passport|drivers_license|social_security_card|marriage_certificate|death_certificate|vaccination_record|naturalization_certificate|general>",
   "date_hint": {
     "type": "<none|specific_month|date_range|year|relative>",
     "months": ["<month names like May, January>"],
@@ -329,12 +342,31 @@ _DOC_TYPE_KEYWORD_OVERRIDES: List[tuple] = [
       "complaint", "affidavit", "subpoena", "deposition"}, "legal"),
 
     # ── Tax ──────────────────────────────────────────────────────────────────
+    ({"property tax", "property tax bill", "property tax payment", "secured tax bill",
+      "unsecured tax bill", "county tax bill", "parcel tax", "tax installment",
+      "first installment", "second installment", "property tax due"}, "property_tax_bill"),
     ({"w2", "w-2", "w 2"}, "w2"),
     ({"tax return", "1040", "1040ez", "tax filing"}, "tax_return"),
     ({"tax form", "1099", "1099-misc", "1099-nec", "k-1",
       "tax document", "tax statement"}, "tax_form"),
     ({"government form", "government document", "federal form",
       "state form", "ssa", "social security"}, "government_form"),
+    ({"birth certificate", "certificate of birth", "date of birth", "born on",
+      "birthday", "dob", "birth record", "vital record",
+      "born", "place of birth", "birth place", "birthplace"}, "birth_certificate"),
+    ({"passport", "travel document", "passport number", "us passport",
+      "passport expiry", "passport valid"}, "passport"),
+    ({"driver license", "drivers license", "driver's license", "dl number",
+      "license number", "dmv", "motor vehicle"}, "drivers_license"),
+    ({"social security card", "social security number", "ssn card"}, "social_security_card"),
+    ({"marriage certificate", "marriage license", "wedding certificate",
+      "marriage record", "married on", "date of marriage"}, "marriage_certificate"),
+    ({"death certificate", "death record", "date of death", "cause of death",
+      "decedent"}, "death_certificate"),
+    ({"vaccination record", "vaccination card", "immunization record",
+      "covid vaccine", "vaccine card", "cdc card", "shot record"}, "vaccination_record"),
+    ({"naturalization certificate", "citizenship certificate",
+      "naturalized citizen"}, "naturalization_certificate"),
 
     # ── Medical / Health ─────────────────────────────────────────────────────
     ({"medical record", "patient record", "clinical note",
@@ -384,6 +416,45 @@ _DOC_TYPE_KEYWORD_OVERRIDES: List[tuple] = [
     ({"survey dataset", "survey data", "questionnaire data"}, "survey_dataset"),
     ({"event dataset", "event log", "clickstream", "analytics data"}, "event_dataset"),
     ({"spreadsheet", "excel file", "xlsx", "google sheet"}, "spreadsheet"),
+
+    # ── Education ────────────────────────────────────────────────────────────
+    ({"transcript", "academic transcript", "grade report", "gpa",
+      "college transcript", "university transcript", "school record"}, "transcript"),
+    ({"diploma", "degree", "certificate of completion", "graduation",
+      "education certificate", "academic certificate"}, "education_certificate"),
+    ({"student record", "enrollment record", "student file"}, "student_record"),
+    ({"recommendation letter", "letter of recommendation", "reference letter"}, "recommendation_letter"),
+
+    # ── Logistics / Supply Chain ─────────────────────────────────────────────
+    ({"packing slip", "packing list", "shipment packing"}, "packing_slip"),
+    ({"bill of lading", "bol", "shipping bill", "freight bill of lading"}, "bill_of_lading"),
+    ({"shipping label", "shipping tag", "package label"}, "shipping_label"),
+    ({"delivery note", "delivery receipt", "proof of delivery", "pod"}, "delivery_note"),
+    ({"freight invoice", "freight bill", "shipping invoice",
+      "carrier invoice", "shipping charge"}, "freight_invoice"),
+    ({"shipping", "shipment", "tracking number", "carrier",
+      "dispatch", "logistics"}, "packing_slip"),
+
+    # ── Operations / Manufacturing ───────────────────────────────────────────
+    ({"work order", "work-order", "job order", "service order",
+      "maintenance order", "repair order"}, "work_order"),
+    ({"maintenance log", "maintenance record", "service log",
+      "maintenance report"}, "maintenance_log"),
+    ({"safety data sheet", "sds", "msds", "material safety",
+      "hazmat", "chemical safety"}, "safety_document"),
+    ({"quality report", "qc report", "qa report", "inspection report",
+      "nonconformance", "defect report"}, "quality_report"),
+    ({"manufacturing spec", "bill of materials", "bom",
+      "assembly instructions", "production spec"}, "manufacturing_spec"),
+
+    # ── Corporate / Compliance ───────────────────────────────────────────────
+    ({"audit report", "audit finding", "internal audit",
+      "external audit", "sox audit"}, "audit_report"),
+    ({"compliance report", "compliance document", "regulatory report"}, "compliance_report"),
+    ({"risk assessment", "risk report", "risk register"}, "risk_assessment"),
+    ({"policy document", "company policy", "hr policy",
+      "it policy", "security policy"}, "policy_document"),
+    ({"sec filing", "10-k", "10-q", "8-k", "securities filing"}, "sec_filing"),
 ]
 
 # ── Domain groups — every doc_type tagged with its group ─────────────────────
@@ -416,9 +487,21 @@ _DOMAIN_GROUPS: Dict[str, str] = {
     "investment":             "corporate",
     # Tax
     "tax_form":               "tax",
+    "resale_certificate":     "tax",
+    "sales_tax_return":       "tax",
+    "sales_ledger":           "tax",
     "w2":                     "tax",
     "tax_return":             "tax",
     "government_form":        "tax",
+    "birth_certificate":          "personal_id",
+    "passport":                   "personal_id",
+    "drivers_license":            "personal_id",
+    "social_security_card":       "personal_id",
+    "marriage_certificate":       "personal_id",
+    "death_certificate":          "personal_id",
+    "naturalization_certificate": "personal_id",
+    "vaccination_record":         "personal_id",
+    "property_tax_bill":          "tax",
     # HR
     "hr_document":            "hr",
     "employee_roster":        "hr",
@@ -470,6 +553,113 @@ _DOMAIN_GROUPS: Dict[str, str] = {
     "spreadsheet":            "spreadsheet",
     "data_table":             "dataset",     # CSV/Excel files ingested as data_table
     "image":                  "image",
+    # Communications / misc
+    "transcript":             "communication",
+    "email":                  "communication",
+    "letter":                 "communication",
+    "newsletter":             "communication",
+    "report":                 "communication",
+    "memo":                   "communication",
+    "meeting_minutes":        "communication",
+    "recommendation_letter":  "communication",
+    "public_notice":          "communication",
+    "project_plan":           "communication",
+    "business_proposal":      "communication",
+    "service_report":         "communication",
+    "timesheet":              "communication",
+
+    # Finance (additional)
+    "credit_card_statement":  "finance",
+    "bank_statement":         "finance",
+    "financial_statement":    "finance",
+    "credit_memo":            "finance",
+    "expense_report":         "finance",
+    "invoice":                "finance",
+    "purchase_order":         "finance",
+    "receipt":                "finance",
+    "payment_confirmation":   "finance",
+    "transaction_record":     "finance",
+    "payoff_quote":           "finance",
+
+    # Payroll (additional)
+    "payroll":                "payroll",
+    "pay_stub":               "payroll",
+    "offer_letter":           "payroll",
+    "performance_review":     "payroll",
+    "employment_contract":    "payroll",
+    "resume":                 "payroll",
+
+    # Insurance (additional)
+    "auto_insurance_claim":   "insurance",
+    "health_insurance_claim": "insurance",
+    "insurance_eob":          "insurance",
+    "eob_medical":            "insurance",
+    "explanation_of_benefits":"insurance",
+    "renewal_notice":         "insurance",
+    "nonrenewal_notice":      "insurance",
+    "cancellation_notice":    "insurance",
+    "loss_run":               "insurance",
+
+    # Legal (additional)
+    "legal_filing":           "legal",
+    "affidavit":              "legal",
+    "court_order":            "legal",
+    "subpoena":               "legal",
+    "nda":                    "legal",
+    "msa":                    "legal",
+    "sow":                    "legal",
+    "statement_of_work":      "legal",
+
+    # Medical (additional)
+    "medical_bill":           "medical",
+    "lab_report":             "medical",
+    "prescription":           "medical",
+
+    # Real Estate (additional)
+    "lease_agreement":        "realestate",
+    "property_deed":          "realestate",
+    "rent_statement":         "realestate",
+    "hoa_statement":          "realestate",
+    "mortgage_payoff":        "realestate",
+
+    # Tax (additional)
+    "visa_document":          "immigration",
+    "passport_document":      "personal_id",
+
+    # Utility (additional)
+    "telecom_bill":           "utility",
+    "internet_bill":          "utility",
+    "water_bill":             "utility",
+    "gas_bill":               "utility",
+    "electric_bill":          "utility",
+
+    # Education
+    "education_certificate":  "education",
+    "student_record":         "education",
+
+    # Corporate / SEC (additional)
+    "proxy_statement":        "corporate",
+    "sec_filing":             "corporate",
+    "audit_report":           "corporate",
+    "compliance_report":      "corporate",
+    "risk_assessment":        "corporate",
+    "sox_report":             "corporate",
+    "policy_document":        "corporate",
+
+    # Operations / Manufacturing
+    "manufacturing_spec":     "operations",
+    "quality_report":         "operations",
+    "safety_document":        "operations",
+    "bom":                    "operations",
+    "work_order":             "operations",
+    "maintenance_log":        "operations",
+
+    # Logistics / Supply Chain
+    "packing_slip":           "logistics",
+    "bill_of_lading":         "logistics",
+    "shipping_label":         "logistics",
+    "delivery_note":          "logistics",
+    "freight_invoice":        "logistics",
 }
 
 # ── Filename keyword → group (fallback when db_type is null/general) ──────────
@@ -494,6 +684,16 @@ _FILENAME_GROUP_KEYWORDS: List[tuple] = [
     ({"visa", "uscis", "i94", "i-94", "i20", "i-20", "immigration", "h1b", "greencard", "opt"}, "immigration"),
     ({"utility", "electric", "gas", "water", "internet", "cable", "phone_bill"}, "utility"),
     ({"dataset", "data_", "_data", "movies", "songs", "books", "ratings", "census", "stock", "weather"}, "dataset"),
+    ({"birthcert", "birth-cert", "birth_cert", "birth-certificate", "birth_certificate",
+      "certificate-of-birth", "certificate_of_birth", "birth-record"}, "personal_id"),
+    ({"passport"}, "personal_id"),
+    ({"drivers-license", "driver-license", "drivers_license", "driver_license",
+      "dl_", "_dl", "dmv"}, "personal_id"),
+    ({"social-security", "social_security", "ssn_card", "ss_card"}, "personal_id"),
+    ({"marriage-certificate", "marriage_certificate", "marriage-license"}, "personal_id"),
+    ({"death-certificate", "death_certificate"}, "personal_id"),
+    ({"vaccination", "immunization", "vaccine-card", "cdc-card"}, "personal_id"),
+    ({"property-tax", "property_tax", "secured-bill", "unsecured-bill", "tax-bill"}, "tax"),
 ]
 
 
@@ -543,7 +743,7 @@ def _predetect_action_intent(question: str) -> Optional[str]:
     """Return an action intent if keywords unambiguously match, else None."""
     q = question.lower()
     for intent, verbs, objects in _INTENT_KEYWORD_RULES:
-        if any(v in q for v in verbs) and any(o in q for o in objects):
+        if any_term(q, verbs) and any_term(q, objects):
             return intent
     return None
 
@@ -555,21 +755,99 @@ def _apply_doc_type_overrides(plan: Dict, question: str) -> Dict:
     Also injects the right search_queries for that doc type.
     """
     q_lower = question.lower()
-    for trigger_words, forced_type in _DOC_TYPE_KEYWORD_OVERRIDES:
-        if any(tw in q_lower for tw in trigger_words):
-            if plan.get("doc_type_hint", "general") != forced_type:
-                logger.info(f"DocTypeOverride: '{plan.get('doc_type_hint')}' → '{forced_type}' (keyword match)")
-            plan["doc_type_hint"] = forced_type
-            # Inject domain seeds as extra search queries so the vector search is anchored
-            seeds = _DOMAIN_QUERY_SEEDS.get(forced_type, [])
-            named = (plan.get("named_subject") or "").strip()
-            existing = set(plan.get("search_queries", []))
-            for seed in seeds[:3]:
-                q = f"{named} {seed}".strip() if named else seed
-                if q not in existing:
-                    plan.setdefault("search_queries", []).append(q)
+    forced_type, method = None, None
+    for trigger_words, doc_type in _DOC_TYPE_KEYWORD_OVERRIDES:
+        if any_term(q_lower, trigger_words):
+            forced_type, method = doc_type, "keyword match"
             break
+
+    if not forced_type and plan.get("intent", "info_retrieve") == "info_retrieve":
+        # No keyword hit ("how long is my travel document valid?") → zero-shot.
+        from app.services.classifiers import zero_shot_router as zsr
+        forced_type, method = _zero_shot_doc_type(question)
+
+    if forced_type:
+        if plan.get("doc_type_hint", "general") != forced_type:
+            logger.info(f"DocTypeOverride: '{plan.get('doc_type_hint')}' → '{forced_type}' ({method})")
+        plan["doc_type_hint"] = forced_type
+        # Inject domain seeds as extra search queries so the vector search is anchored
+        seeds = _DOMAIN_QUERY_SEEDS.get(forced_type, [])
+        named = (plan.get("named_subject") or "").strip()
+        existing = set(plan.get("search_queries", []))
+        for seed in seeds[:3]:
+            q = f"{named} {seed}".strip() if named else seed
+            if q not in existing:
+                plan.setdefault("search_queries", []).append(q)
     return plan
+
+
+# Short natural descriptions per _DOMAIN_GROUPS group — the model reads these.
+# ~15 labels keeps GLiClass accurate; 90+ flat doc types saturates every score.
+_GROUP_ZS_LABELS: Dict[str, str] = {
+    "personal_id":   "passport, birth certificate, driver's license or ID card",
+    "immigration":   "green card, visa, USCIS case or immigration interview",
+    "payroll":       "pay stub, salary or payroll",
+    "finance":       "bank statement, credit card or invoice",
+    "tax":           "tax return or W-2",
+    "insurance":     "insurance policy or claim",
+    "medical":       "medical record, doctor visit or prescription",
+    "realestate":    "mortgage, home loan or property",
+    "legal":         "contract, lease or legal agreement",
+    "utility":       "utility bill like electricity, water or phone",
+    "hr":            "resume or employee records",
+    "education":     "school transcript or certificate",
+    "logistics":     "shipping or delivery documents",
+    "corporate":     "company annual or quarterly report",
+    "operations":    "work order, maintenance or quality report",
+    "general":       "greeting or general question",
+}
+
+
+_SUPERVISOR_TO_GROUPS: Dict[str, set] = {
+    "banking":      {"finance"},
+    "insurance":    {"insurance"},
+    "payroll":      {"payroll", "hr", "tax"},
+    "legal":        {"legal", "immigration"},
+    "medical":      {"medical"},
+    "financial":    {"corporate", "finance", "tax"},
+    "real_estate":  {"realestate", "utility", "tax"},
+    "supply_chain": {"logistics", "finance", "operations"},
+    "compliance":   {"legal", "corporate", "operations"},
+    "operations":   {"operations", "logistics"},
+}
+
+
+def _zero_shot_doc_type(question: str):
+    """
+    Two-stage: pick the document group (filtering is group-level via
+    _DOMAIN_GROUPS), then the closest doc type inside it for query seeds.
+    Returns (doc_type, method) or (None, None) when not confident.
+    """
+    from app.services.classifiers import zero_shot_router as zsr
+
+    groups = {g: d for g, d in _GROUP_ZS_LABELS.items()
+              if g == "general" or any(grp == g for grp in _DOMAIN_GROUPS.values())}
+    ranked = zsr.score(question, groups, decision="doc_group")
+    group = zsr.pick(ranked)
+    if not group or group == "general":
+        return None, None
+
+    # Keywords are precise when they fire; the zero-shot guess may only refine
+    # them, never contradict them ("patient discharged" is medical, not personal_id).
+    from app.services.supervisor_agent import _classify_fast
+    kw_domains = [d for d in _classify_fast(question) if d != "general"]
+    if kw_domains:
+        allowed = set().union(*(_SUPERVISOR_TO_GROUPS.get(d, set()) for d in kw_domains))
+        if group not in allowed:
+            logger.info(f"DocType zero-shot '{group}' disagrees with keyword domains {kw_domains} — ignored")
+            return None, None
+
+    members = {dt: dt.replace("_", " ") for dt, g in _DOMAIN_GROUPS.items() if g == group}
+    if len(members) == 1:
+        return next(iter(members)), f"zero-shot group={group} {ranked[0][1]:.2f}"
+    inner = zsr.score(question, members, decision="doc_type")
+    doc_type = inner[0][0] if inner else next(iter(members))
+    return doc_type, f"zero-shot group={group} {ranked[0][1]:.2f}"
 
 
 _DECOMPOSE_PROMPT = """Break this question into focused sub-questions for document retrieval.
@@ -596,7 +874,7 @@ def _decompose_query(question: str) -> List[str]:
         resp = ollama.chat(
             model=_active_model(),
             messages=[{"role": "user", "content": _DECOMPOSE_PROMPT.replace("{question}", question)}],
-            options={"num_predict": 200, "temperature": 0.0},
+            options={"num_ctx": NUM_CTX, "num_predict": 200, "temperature": 0.0},
             timeout=15,
         )
         raw = resp["message"]["content"].strip()
@@ -634,8 +912,124 @@ def _extract_named_subject_from_question(question: str) -> Optional[str]:
             candidate = m.group(1).strip()
             # Reject common non-entity words
             skip = {"THE", "A", "AN", "MY", "OUR", "THE", "THIS", "THAT", "WHAT", "WHICH", "WHO"}
-            if candidate.upper() not in skip and len(candidate) > 2:
-                return candidate
+            if candidate.upper() in skip or len(candidate) <= 2:
+                continue
+            # "from Oct 2025 to May 2026", "for March", "to Dec 31" are dates, not names
+            if _DATE_PHRASE_RE.match(candidate):
+                continue
+            return candidate
+    return None
+
+
+_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+_DATE_PHRASE_RE = re.compile(
+    r"^(?:(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?|q[1-4]|fy\s*\d{2,4}|\d{1,4}"
+    r"|last|this|next|past|previous|today|yesterday|tomorrow|week|month|year|quarter)\b",
+    re.IGNORECASE,
+)
+
+
+def _month_num(name: str) -> Optional[int]:
+    return _MONTHS.get(str(name).strip().lower()[:3])
+
+
+def _date_range_from_hint(date_hint: Dict) -> Optional[tuple]:
+    """
+    Turn the planner's date_hint into an inclusive (from, to) ISO date pair.
+    Handles ranges that cross a year boundary ("Oct 2025 to May 2026") and
+    uses the real last day of the month.
+    """
+    import calendar
+    from datetime import date
+
+    if not isinstance(date_hint, dict):
+        return None
+    hint_type = date_hint.get("type", "none")
+    years = [int(y) for y in (date_hint.get("years") or []) if str(y).isdigit()]
+    months = [m for m in (_month_num(x) for x in (date_hint.get("months") or [])) if m]
+
+    if hint_type == "relative":
+        m = re.search(r"(?:last|past|previous)\s+(\d+)\s+(day|week|month|year)s?",
+                      date_hint.get("range_description") or "", re.IGNORECASE)
+        if not m:
+            return None
+        n, unit = int(m.group(1)), m.group(2).lower()
+        days = {"day": 1, "week": 7, "month": 31, "year": 366}[unit] * n
+        today = date.today()
+        return (date.fromordinal(today.toordinal() - days).isoformat(), today.isoformat())
+
+    if not years:
+        return None
+    if not months:
+        return (f"{min(years)}-01-01", f"{max(years)}-12-31")
+
+    # months arrive in the user's order: first = start, last = end
+    start_y, start_m = years[0], months[0]
+    end_y, end_m = years[-1], months[-1]
+    if (end_y, end_m) < (start_y, start_m):
+        end_y = start_y + 1 if end_m < start_m else start_y
+    last_day = calendar.monthrange(end_y, end_m)[1]
+    return (f"{start_y}-{start_m:02d}-01", f"{end_y}-{end_m:02d}-{last_day:02d}")
+
+
+_TXN_GENERIC_WORDS = {
+    "payment", "payments", "transaction", "transactions", "transfer", "transfers",
+    "spending", "spend", "spent", "total", "totals", "charge", "charges", "amount",
+    "amounts", "purchase", "purchases", "made", "count", "number", "sum", "all",
+    "my", "the", "of", "at", "on", "to", "from", "in", "for", "i", "debit", "debits",
+    "credit", "credits", "expense", "expenses", "money", "bill", "bills", "fee", "fees",
+}
+
+
+def _transaction_term(plan: Dict, question: str) -> Optional[str]:
+    """
+    The specific merchant/channel the user asked about ("Zelle payments" → "zelle").
+    None when the question is about all transactions ("total spending").
+    """
+    subject = (plan.get("named_subject") or "").strip()
+    if subject and not _DATE_PHRASE_RE.match(subject):
+        return subject
+    field = plan.get("field") or ""
+    words = [w for w in re.findall(r"[A-Za-z0-9&']+", field) if w.lower() not in _TXN_GENERIC_WORDS]
+    return " ".join(words) if words else None
+
+
+def _best_txn_term(term: str, tenant_id: str, doc_ids=None) -> Optional[str]:
+    """The phrase if it occurs in transaction merchants, else its most specific word that does."""
+    from sqlalchemy import text as _t
+    candidates = [term] + sorted({w for w in term.split() if len(w) > 2}, key=len, reverse=True)
+    db = SessionLocal()
+    try:
+        for cand in candidates:
+            hit = db.execute(_t(
+                "SELECT 1 FROM documents d, jsonb_array_elements(d.extracted_facts->'transactions') t "
+                "WHERE d.tenant_id = :tid AND d.extracted_facts IS NOT NULL "
+                "AND (t->>'merchant' ILIKE :c OR t->>'category' ILIKE :c) LIMIT 1"),
+                {"tid": tenant_id, "c": f"%{cand}%"}).first()
+            if hit:
+                return cand
+    finally:
+        db.close()
+    return None
+
+
+def _transaction_direction(question: str) -> Optional[str]:
+    """'debit' for money the user paid out, 'credit' for money received, else None."""
+    q = question.lower()
+    # "who received / who got / recipient" asks about the payee → money sent out
+    if re.search(r"\bwho (received|got)\b|\bto whom\b|\brecipients?\b|\bpayees?\b|\bsent to\b", q):
+        return "debit"
+    outgoing = re.search(r"\b(i|we)\s+(made|paid|sent|spent|spend|pay|send|transferred)\b"
+                         r"|\bpaid to\b|\bsent to\b|\bpayments? (made|to)\b|\bspending\b|\bspent\b", q)
+    incoming = re.search(r"\b(received|receive|got paid|deposits?|deposited|credited|incoming|refunds?)\b"
+                         r"|\bpayments? from\b", q)
+    if outgoing and not incoming:
+        return "debit"
+    if incoming and not outgoing:
+        return "credit"
     return None
 
 
@@ -732,7 +1126,7 @@ def reason_question(question: str) -> Dict:
         resp = ollama.chat(
             model=_active_model(),
             messages=[{"role": "user", "content": prompt}],
-            options={"num_predict": 800, "temperature": 0.0},
+            options={"num_ctx": NUM_CTX, "num_predict": 800, "temperature": 0.0},
         )
         raw = resp["message"]["content"].strip()
         raw = re.sub(r"```[a-z]*\s*", "", raw).strip("`").strip()
@@ -754,7 +1148,7 @@ def reason_question(question: str) -> Dict:
             }
             if plan.get("intent") in _WRITE_INTENTS:
                 q_lower = question.lower()
-                if any(sig in q_lower for sig in _RETRIEVAL_SIGNALS):
+                if any_term(q_lower, _RETRIEVAL_SIGNALS):
                     logger.info(
                         f"QuestionReasoner: downgrading write intent "
                         f"'{plan['intent']}' → info_retrieve (retrieval signals detected)"
@@ -809,10 +1203,13 @@ def _score_doc(filename: str, db_doc_type: str, doc_metadata: Dict, plan: Dict) 
     """
     weights   = _scoring()
     doc_types = _doc_type_keywords()
-    score     = 0
     fn        = (filename or "").lower()
     db_type   = (db_doc_type or "").lower()
     meta      = doc_metadata or {}
+    # Generic containers (CSV/Excel) can hold any kind of data — always include
+    # them in search scope with a baseline score so vector search can decide.
+    _generic_container_db_types = {"data_table", "spreadsheet", "dataset"}
+    score     = 1 if db_type in _generic_container_db_types else 0
 
     # ── Signal 1: Date hints ──────────────────────────────────────────────────
     # Check doc_metadata first (extracted at ingest — most reliable),
@@ -907,59 +1304,126 @@ def _score_doc(filename: str, db_doc_type: str, doc_metadata: Dict, plan: Dict) 
     # DIFFERENT domain group, hard-exclude it (score 0).
     # This prevents pay stubs from appearing in resume searches, contracts from
     # appearing in medical searches, etc.
+    # Exception: data_table/spreadsheet/dataset docs are generic containers (CSV,
+    # Excel) that can hold any kind of data — never hard-exclude them based on
+    # doc_type conflict alone; let vector search decide their relevance.
     doc_type_hint = plan.get("doc_type_hint", "general")
+    _GENERIC_CONTAINER_GROUPS = {"dataset", "spreadsheet"}
     if doc_type_hint and doc_type_hint != "general":
         target_group = _DOMAIN_GROUPS.get(doc_type_hint)
-        if target_group:
-            # 1. Try the database doc_type field (most reliable)
-            doc_group = _DOMAIN_GROUPS.get(db_type)
-            # 2. Fallback: infer group from filename keyword patterns
-            if doc_group is None:
-                for kw_set, grp in _FILENAME_GROUP_KEYWORDS:
-                    if any(kw in fn for kw in kw_set):
-                        doc_group = grp
-                        break
-            # 3. If we identified a group and it conflicts → exclude
-            if doc_group is not None and doc_group != target_group:
-                return 0  # Hard exclude — wrong domain
+        doc_group = _DOMAIN_GROUPS.get(db_type)
+        # Generic containers (CSV, spreadsheet) only pass through if the TARGET is
+        # also a data domain. A tax/finance/medical query must not pull in CSV files.
+        if doc_group in _GENERIC_CONTAINER_GROUPS and target_group not in _GENERIC_CONTAINER_GROUPS:
+            return 0  # Hard exclude — data container irrelevant to non-data query
+        if doc_group not in _GENERIC_CONTAINER_GROUPS:
+            if target_group:
+                # 1. Try the database doc_type field (most reliable)
+                # 2. Fallback: infer group from filename keyword patterns
+                if doc_group is None:
+                    for kw_set, grp in _FILENAME_GROUP_KEYWORDS:
+                        if any(kw in fn for kw in kw_set):
+                            doc_group = grp
+                            break
+                # 3. If we identified a group and it conflicts → exclude
+                if doc_group is not None and doc_group != target_group:
+                    return 0  # Hard exclude — wrong domain
 
     return score
 
 
+
+
+
+
+def _domain_doc_types(target_group: str) -> List[str]:
+    """Return all doc_type strings that belong to a given domain group."""
+    return [dt for dt, grp in _DOMAIN_GROUPS.items() if grp == target_group]
+
+
 def _filter_docs_by_plan(plan: Dict, user_doc_ids: List[str]) -> List[str]:
     """
-    Score every document against all plan hints (date, doc_type, field synonyms).
-    Returns doc_ids sorted by score descending. Falls back to all docs if nothing scores.
+    Score documents against the plan's hints — fully SQL-side for scale.
+
+    Strategy (avoids full table scan at million-doc scale):
+      1. If doc_type_hint is set → SQL WHERE doc_type = ANY(domain_types) to fetch
+         only candidates in the right domain. O(index_scan) not O(table_scan).
+      2. Date and named_subject signals applied in Python only over the candidate set,
+         which is already small (same domain).
+      3. Falls back to filename-keyword candidates when domain match returns nothing.
+      4. generic containers (spreadsheet/dataset) always included when query is data-domain.
     """
-    date_hint   = plan.get("date_hint", {})
-    date_type   = date_hint.get("type", "none")
-    doc_type    = plan.get("doc_type_hint", "general")
+    from sqlalchemy import text
+    date_hint     = plan.get("date_hint", {})
+    date_type     = date_hint.get("type", "none")
+    doc_type      = plan.get("doc_type_hint", "general")
     named_subject = (plan.get("named_subject") or "").strip()
-    has_signals = (
+    has_signals   = (
         date_type != "none"
         or (doc_type and doc_type != "general")
         or plan.get("field")
         or bool(named_subject)
     )
-    # When the only signal is a specific doc_type, don't fall back to all docs
-    # if domain exclusion removes everything — that would defeat domain filtering.
     domain_specific = doc_type and doc_type != "general"
 
-    # Nothing to filter on — return as-is
     if not has_signals:
         return list(user_doc_ids)
 
+    tenant_id = get_current_tenant_id() or DEFAULT_TENANT_ID
     db = SessionLocal()
     try:
-        from sqlalchemy import text
-        rows = db.execute(text(
-            "SELECT id, filename, doc_type, doc_metadata FROM documents WHERE status='completed'"
-        )).fetchall()
+        # ── Build user_doc_ids filter fragment ────────────────────────────────
+        uid_filter = ""
+        uid_params: Dict[str, Any] = {"tenant_id": tenant_id}
+        if user_doc_ids:
+            placeholders = ", ".join(f":uid_{i}" for i in range(len(user_doc_ids)))
+            uid_filter = f"AND id::text IN ({placeholders})"
+            for i, uid in enumerate(user_doc_ids):
+                uid_params[f"uid_{i}"] = uid
 
+        # ── Pass 1: SQL-side domain filter (no Python table scan) ─────────────
+        candidate_rows = []
+        if domain_specific:
+            target_group = _DOMAIN_GROUPS.get(doc_type)
+            if target_group:
+                # Collect all doc_types in this domain group + generic containers when relevant
+                domain_types = _domain_doc_types(target_group)
+                _generic_container_groups = {"dataset", "spreadsheet"}
+                if target_group in _generic_container_groups:
+                    domain_types += list(_domain_doc_types("dataset")) + list(_domain_doc_types("spreadsheet"))
+                    domain_types = list(set(domain_types))
+
+                if domain_types:
+                    type_placeholders = ", ".join(f":dt_{i}" for i in range(len(domain_types)))
+                    dt_params = {f"dt_{i}": t for i, t in enumerate(domain_types)}
+                    sql = text(f"""
+                        SELECT id, filename, doc_type, doc_metadata
+                        FROM documents
+                        WHERE status = 'completed'
+                          AND tenant_id = :tenant_id
+                          AND doc_type IN ({type_placeholders})
+                          {uid_filter}
+                        LIMIT 2000
+                    """)
+                    candidate_rows = db.execute(sql, {**dt_params, **uid_params}).fetchall()
+                    logger.info(f"DocFilter[SQL]: tenant={tenant_id} domain={target_group} types={len(domain_types)} → {len(candidate_rows)} candidates")
+
+        # ── Pass 2: Fallback — scan all docs for this tenant ─────────────────
+        if not candidate_rows:
+            sql = text(f"""
+                SELECT id, filename, doc_type, doc_metadata
+                FROM documents
+                WHERE status = 'completed'
+                  AND tenant_id = :tenant_id
+                  {uid_filter}
+                LIMIT 5000
+            """)
+            candidate_rows = db.execute(sql, uid_params).fetchall()
+            logger.info(f"DocFilter[fallback]: tenant={tenant_id} scanning {len(candidate_rows)} docs")
+
+        # ── Pass 3: Python scoring over the (now small) candidate set ─────────
         scored: List[tuple] = []
-        for row in rows:
-            if user_doc_ids and str(row.id) not in user_doc_ids:
-                continue
+        for row in candidate_rows:
             s = _score_doc(row.filename, row.doc_type, row.doc_metadata or {}, plan)
             if s > 0:
                 scored.append((str(row.id), s, row.filename))
@@ -973,10 +1437,6 @@ def _filter_docs_by_plan(plan: Dict, user_doc_ids: List[str]) -> List[str]:
             f"DocFilter: date_type={date_type} doc_type={doc_type} min_score={min_score} → "
             f"{len(result_ids)} docs: {[(fn, sc) for _, sc, fn in scored[:5]]}"
         )
-        # When domain filtering is active and nothing passed, return empty — do NOT
-        # open up to all docs. An empty list tells run_research_agent there are no
-        # matching documents in this domain (better to say "not found" than to return
-        # results from the wrong domain).
         if not result_ids and domain_specific:
             return []
         return result_ids if result_ids else list(user_doc_ids)
@@ -986,21 +1446,31 @@ def _filter_docs_by_plan(plan: Dict, user_doc_ids: List[str]) -> List[str]:
 
 # ── Search ────────────────────────────────────────────────────────────────────
 
+_MIN_CHUNK_SIMILARITY = 0.10   # global default floor — retrieve broadly, let LLM judge
+_MIN_CHUNK_TEXT_LEN   = 20     # skip chunks that are basically empty after OCR
+
+
+
 def _search(query: str, doc_ids: List[str] = None, top_k: int = 8,
-            required_text: str = None) -> List[Dict]:
+            required_text: str = None, min_similarity: float = None) -> List[Dict]:
     """
     Vector similarity search over document_chunks.
     required_text: if set, only return chunks that literally contain this string (case-insensitive).
                    Use for named entities — embedding alone can't distinguish "FINECUTS SALON"
                    from other dollar-amount text.
+    min_similarity: override the floor (default: _MIN_CHUNK_SIMILARITY).
     """
     from sqlalchemy import text
+    tenant_id = get_current_tenant_id() or DEFAULT_TENANT_ID
     db = SessionLocal()
+    # Use the passed floor when it was explicitly set; otherwise use the global floor.
+    # Explicit overrides (e.g. for personal ID docs) can go below the global minimum.
+    floor = min_similarity if min_similarity is not None else _MIN_CHUNK_SIMILARITY
     try:
         vec = _get_embedding_model().encode(query).tolist()
         doc_filter   = ""
         keyword_filter = ""
-        params: Dict[str, Any] = {"vec": str(vec), "threshold": 0.25, "limit": top_k}
+        params: Dict[str, Any] = {"vec": str(vec), "threshold": floor, "limit": top_k, "tenant_id": tenant_id}
         if doc_ids:
             placeholders = ", ".join(f":doc_{i}" for i in range(len(doc_ids)))
             doc_filter = f"AND d.id::text IN ({placeholders})"
@@ -1021,6 +1491,7 @@ def _search(query: str, doc_ids: List[str] = None, top_k: int = 8,
             JOIN documents d ON d.id = c.document_id
             WHERE c.embedding IS NOT NULL
               AND d.status = 'completed'
+              AND d.tenant_id = :tenant_id
               AND vector_dims(c.embedding) = 768
               AND 1 - (c.embedding <=> CAST(:vec AS vector(768))) >= :threshold
               {doc_filter}
@@ -1029,15 +1500,18 @@ def _search(query: str, doc_ids: List[str] = None, top_k: int = 8,
             LIMIT :limit
         """)
         rows = db.execute(sql, params).fetchall()
-        return [
-            {
+        results = []
+        for r in rows:
+            txt = (r.chunk_text or "").strip()
+            if len(txt) < _MIN_CHUNK_TEXT_LEN:
+                continue  # drop near-empty OCR artefacts
+            results.append({
                 "doc_id":   str(r.document_id),
                 "filename": r.filename,
-                "text":     (r.chunk_text or "")[:600],
+                "text":     txt[:600],
                 "similarity": round(float(r.similarity), 3),
-            }
-            for r in rows
-        ]
+            })
+        return results
     except Exception as e:
         logger.error(f"search error: {e}")
         return []
@@ -1080,16 +1554,175 @@ _DOMAIN_QUERY_SEEDS: Dict[str, List[str]] = {
     "annual_report":    ["revenue net income earnings per share", "total assets liabilities equity growth"],
     "quarterly_report": ["quarterly revenue income expenses", "EPS guidance outlook segment"],
     # Tax
+    "property_tax_bill": ["total amount due first installment second installment", "taxable value parcel number bill number", "property tax annual secured"],
     "tax_form":         ["taxable income tax withheld refund", "filing status wages deductions credits"],
     "w2":               ["wages tips federal income tax withheld", "employer EIN social security medicare"],
+    # Personal Identity
+    "birth_certificate": ["date of birth place of birth full name", "state registrar vital records certificate number"],
+    "passport":          ["passport number nationality date of expiry", "issuing authority country of citizenship place of birth"],
+    "drivers_license":   ["license number class restrictions expiration", "date of birth address department of motor vehicles"],
+    "social_security_card": ["social security number name card", "ssa employment eligibility"],
+    "marriage_certificate": ["date of marriage parties names officiant", "county clerk certificate number place of marriage"],
+    "death_certificate": ["date of death cause of death decedent", "certifying physician place of death certificate number"],
+    "vaccination_record": ["vaccine name date administered dose lot number", "provider clinic covid immunization"],
+    "naturalization_certificate": ["date of naturalization certificate number", "former nationality date of birth court"],
+    # Education
+    "transcript":        ["course name grade credits GPA semester", "academic record student ID registrar"],
+    "education_certificate": ["certificate diploma degree awarded date", "institution program completion"],
+    "student_record":    ["student name enrollment status academic standing", "program degree graduation date"],
+    "recommendation_letter": ["recommender name candidate qualifications", "relationship skills assessment"],
+    # Logistics
+    "packing_slip":      ["items shipped quantity weight package", "ship to ship from tracking carrier"],
+    "bill_of_lading":    ["shipper consignee freight carrier", "weight dimensions commodity freight charges"],
+    "shipping_label":    ["tracking number carrier address ship to", "weight dimensions barcode"],
+    "delivery_note":     ["items delivered quantity recipient signature", "delivery date proof of delivery"],
+    "freight_invoice":   ["freight charges weight miles carrier", "shipper consignee invoice number"],
+    # Operations
+    "work_order":        ["work order number task description technician", "priority status completion date"],
+    "maintenance_log":   ["maintenance date service performed equipment", "technician next service due"],
+    "safety_document":   ["hazard identification ppe required procedure", "chemical name risk level emergency"],
+    "quality_report":    ["defect rate inspection result pass fail", "nonconformance corrective action"],
+    "manufacturing_spec": ["specification tolerance material revision", "bill of materials assembly dimensions"],
+    # Corporate / Compliance
+    "audit_report":      ["audit finding noncompliance risk control", "recommendation corrective action management response"],
+    "compliance_report": ["regulatory requirement compliance status", "risk violation remediation deadline"],
+    "risk_assessment":   ["risk likelihood impact severity", "mitigation controls residual risk"],
+    "policy_document":   ["policy scope purpose definitions", "responsibilities procedures exceptions"],
+    "sec_filing":        ["form 10-k 10-q 8-k revenue income", "securities exchange commission filing period"],
     # General
     "general":          [],
 }
 
 _SIMILARITY_CONFIDENCE_THRESHOLD = 0.45  # below this → warn about low confidence
 
+# Maps query keywords → doc_type values in the DB.
+# When the query explicitly names a document type, we do a direct doc_type SQL
+# lookup to pull those docs' chunks first, bypassing cosine-sim ranking entirely.
+# This fixes the "birth certificate OCR chunks have low sim to 'birth certificate'"
+# problem — the chunk text has names/dates but not the document type label itself.
+_QUERY_DOCTYPE_KEYWORDS: List[tuple] = [
+    # personal identity
+    (["birth certificate", "birth cert"],               "birth_certificate"),
+    (["passport"],                                       "passport"),
+    (["driver", "driving license", "driver's license"], "drivers_license"),
+    (["social security card", "ssn card"],              "social_security_card"),
+    (["marriage certificate", "marriage cert"],          "marriage_certificate"),
+    (["death certificate", "death cert"],               "death_certificate"),
+    (["vaccination record", "immunization record", "vaccine record"], "vaccination_record"),
+    (["naturalization certificate", "naturalization"],  "naturalization_certificate"),
+    # immigration
+    (["visa document", "visa letter"],                  "visa_document"),
+    (["uscis receipt", "i-797", "receipt notice"],      "uscis_receipt"),
+    (["green card", "permanent resident"],              "immigration"),
+    (["h-1b", "h1b"],                                   "immigration"),
+    # financial
+    (["pay stub", "paystub", "pay slip"],               "pay_stub"),
+    (["bank statement", "bank stmt"],                   "bank_statement"),
+    (["credit card statement"],                         "credit_card_statement"),
+    (["w-2", "w2 form", "wage statement"],              "w2"),
+    (["1099"],                                          "tax_form"),
+    (["tax return", "tax form"],                        "tax_form"),
+    (["property tax", "tax bill"],                      "property_tax_bill"),
+    (["invoice"],                                       "invoice"),
+    (["expense report"],                                "expense_report"),
+    # insurance
+    (["insurance policy", "policy document"],           "insurance_policy"),
+    (["declarations page", "dec page", "dec sheet"],    "declarations_page"),
+    (["explanation of benefits", "eob"],                "explanation_of_benefits"),
+    (["insurance claim", "claim form"],                 "insurance_claim"),
+    # real estate / mortgage
+    (["mortgage statement", "mortgage document"],       "mortgage_document"),
+    (["closing disclosure", "closing statement"],       "closing_disclosure"),
+    (["property deed", "deed of trust"],                "property_deed"),
+    (["lease agreement", "rental agreement"],           "lease_agreement"),
+    # medical
+    (["medical record", "medical report"],              "medical_record"),
+    (["medical bill", "hospital bill"],                 "medical_bill"),
+    (["lab report", "lab result"],                      "lab_report"),
+    (["prescription"],                                  "prescription"),
+    # employment / HR
+    (["offer letter"],                                  "offer_letter"),
+    (["employment contract", "employment agreement"],   "employment_contract"),
+    (["resume", "cv ", "curriculum vitae"],             "resume"),
+    # corporate
+    (["annual report"],                                 "annual_report"),
+    (["quarterly report"],                              "quarterly_report"),
+    (["utility bill", "electricity bill", "gas bill", "water bill"], "utility_bill"),
+    # education
+    (["transcript", "grade report"],                    "transcript"),
+]
 
-def _multi_search(plan: Dict, doc_ids: List[str]) -> List[Dict]:
+
+def _doctype_from_query(question: str) -> Optional[str]:
+    """Extract an explicit doc_type from query text using keyword matching."""
+    q = question.lower()
+    for phrases, doc_type in _QUERY_DOCTYPE_KEYWORDS:
+        if any(p in q for p in phrases):
+            return doc_type
+    return None
+
+
+def _fetch_chunks_by_doctype(doc_type: str, doc_ids: List[str], top_k: int = 20) -> List[Dict]:
+    """Pull chunks from docs classified as doc_type, bypassing cosine-sim floor."""
+    from sqlalchemy import text
+    tenant_id = get_current_tenant_id() or DEFAULT_TENANT_ID
+    db = SessionLocal()
+    try:
+        doc_filter = ""
+        params: Dict[str, Any] = {"doc_type": doc_type, "tenant_id": tenant_id, "limit": top_k}
+        if doc_ids:
+            placeholders = ", ".join(f":doc_{i}" for i in range(len(doc_ids)))
+            doc_filter = f"AND d.id::text IN ({placeholders})"
+            for i, did in enumerate(doc_ids):
+                params[f"doc_{i}"] = did
+        sql = text(f"""
+            SELECT
+                dc.chunk_text           AS text,
+                d.id::text              AS doc_id,
+                d.filename              AS filename,
+                d.doc_type              AS doc_type,
+                0.99::float             AS similarity
+            FROM document_chunks dc
+            JOIN documents d ON dc.document_id = d.id
+            WHERE d.doc_type = :doc_type
+              AND d.status = 'completed'
+              AND d.tenant_id = :tenant_id
+              {doc_filter}
+            ORDER BY dc.chunk_index ASC
+            LIMIT :limit
+        """)
+        rows = db.execute(sql, params).fetchall()
+        return [{"text": r.text, "doc_id": r.doc_id, "filename": r.filename,
+                 "doc_type": r.doc_type, "similarity": r.similarity} for r in rows]
+    except Exception as e:
+        logger.warning(f"_fetch_chunks_by_doctype failed: {e}")
+        return []
+    finally:
+        db.close()
+
+
+_NAME_STOP = {"what", "when", "where", "which", "who", "how", "can", "could", "please", "show", "tell", "give",
+              "provide", "california", "department", "annual", "report", "document", "details", "summary", "about"}
+
+
+def _question_names(question: str) -> List[str]:
+    words = (re.sub(r"['’]s$", "", w) for w in re.findall(r"\b[A-Z][A-Za-z0-9&'’-]{3,}\b", question or ""))
+    return [w for w in dict.fromkeys(words) if len(w) > 3 and w.lower() not in _NAME_STOP]
+
+
+def _mentions(text: str, names: List[str]) -> bool:
+    return any(re.search(r"\b" + re.escape(n) + r"\b", text or "", re.I) for n in names)
+
+
+def _doctype_family(doc_type: str) -> List[str]:
+    """A generic type covers the specific ones the classifier now stores (tax_form → form_1099_int, …)."""
+    if doc_type == "tax_form":
+        from app.services.tax.irs_forms import FORM_DOC_TYPES
+        return ["tax_form"] + sorted({t for t in FORM_DOC_TYPES.values() if t != "w2"})
+    return [doc_type]
+
+
+def _multi_search(plan: Dict, doc_ids: List[str], prefer_doc_ids: Optional[List[str]] = None) -> List[Dict]:
     """
     Domain-aware multi-query search.
     1. Anchors queries to named_subject when present.
@@ -1126,27 +1759,49 @@ def _multi_search(plan: Dict, doc_ids: List[str]) -> List[Dict]:
     seen_texts: set = set()
     merged: List[Dict] = []
 
-    for i, q in enumerate(queries):
-        top_k = 20 if i == 0 else 12
-        # For queries that include a named subject, first try a keyword-filtered search
-        # so only chunks that LITERALLY contain the entity name are returned.
-        # If that yields nothing (e.g. name not in chunks), fall back to pure vector search.
-        if named_subject and named_subject.lower() in q.lower():
-            results = _search(q, doc_ids=doc_ids or None, top_k=top_k, required_text=named_subject)
-            if not results:
-                # Fallback: no keyword filter — maybe entity spelled differently
-                results = _search(q, doc_ids=doc_ids or None, top_k=top_k)
-        else:
-            results = _search(q, doc_ids=doc_ids or None, top_k=top_k)
+    # Pass 0: doc-type keyword bridge.
+    # When the query explicitly names a document type ("birth certificate", "passport",
+    # "pay stub", etc.), fetch ALL chunks from docs of that type directly via SQL.
+    # This bypasses cosine-sim entirely — OCR chunks contain data (names, dates) but
+    # NOT the document-type label, so semantic search systematically misses them.
+    question_text = plan.get("_question", queries[0] if queries else "")
+    # Hard type limit only when the user named the type ("passport", "pay stub");
+    # the planner's guess is a preference — it guessed "annual_report" for the
+    # CDTFA report (stored as government_form) and hid the right document.
+    explicit_doctype = _doctype_from_query(question_text)
+    if not explicit_doctype and doc_type not in ("general", ""):
+        explicit_doctype = doc_type if doc_type in {dt for _, dt in _QUERY_DOCTYPE_KEYWORDS} else None
+    # Hybrid retrieval: vector + keyword candidates → RRF → cross-encoder rerank.
+    # A named doc type narrows the pool; ranking still picks the passages
+    # (the old shortcut returned the first 30 chunks — useless for a 10-K).
+    from app.services.hybrid_search import hybrid_search
+    q = question_text or queries[0]
+    # Documents the user (or the conversation) chose are the scope — a type guess
+    # on top of that only hides them (CDTFA report is government_form, not tax_form).
+    doc_types = _doctype_family(explicit_doctype) if explicit_doctype and not doc_ids else None
+    scope = list(doc_ids or []) or list(prefer_doc_ids or [])
+    results = hybrid_search(q, queries, doc_ids=scope or None, doc_types=doc_types, top_n=8)
+    if not results and doc_types:
+        results = hybrid_search(q, queries, doc_ids=scope or None, top_n=8)
+    if not results and scope and not doc_ids:
+        results = hybrid_search(q, queries, top_n=8)   # filter's guess was wrong; never drop a chosen scope
+    elif doc_types and results:
+        plan["_doctype_bridged"] = True  # tells _synthesize to skip name/relevance filters
 
-        for r in results:
-            key = (r["doc_id"], r["text"][:120])
-            if key not in seen_texts:
-                seen_texts.add(key)
-                merged.append(r)
-
-    merged.sort(key=lambda x: x["similarity"], reverse=True)
-    return merged
+    # Misfiled documents: the scoped passages don't mention a specific name from
+    # the question ("City of Trinidad") — e.g. the CDTFA report is stored as
+    # government_form, not annual_report. Search everything once; switch only if
+    # that finds the name.
+    names = _question_names(q)
+    if names and (doc_types or scope) and not any(_mentions(r["text"], names) for r in results) and not doc_ids:
+        wide = hybrid_search(q, queries, top_n=8)
+        if any(_mentions(r["text"], names) for r in wide):
+            logger.info(f"Scoped results lacked {names}; using unscoped search that mentions them")
+            results = wide
+            plan["_doctype_bridged"] = False
+    logger.info(f"Hybrid search: {len(results)} passages (doc_types={doc_types}) "
+                f"top={[(r['filename'][:30], r['similarity']) for r in results[:3]]}")
+    return results
 
 
 # ── Ask single document ───────────────────────────────────────────────────────
@@ -1241,7 +1896,7 @@ Answer:"""
         resp = ollama.chat(
             model=_active_model(),
             messages=[{"role": "user", "content": prompt}],
-            options={"num_predict": 2400 if is_traversal else 500, "temperature": 0.1},
+            options={"num_ctx": NUM_CTX, "num_predict": 2400 if is_traversal else 500, "temperature": 0.1},
         )
         return resp["message"]["content"].strip()
     except Exception as e:
@@ -1400,6 +2055,38 @@ _DOMAIN_EXTRACT_HINTS: Dict[str, str] = {
         "beneficiary, petitioner, filing date, expected processing time, case status."
     ),
     # ── Tax ──────────────────────────────────────────────────────────────────
+    "birth_certificate": (
+        "This is a birth certificate or vital record. Extract:\n"
+        "  • Full name of the person\n"
+        "  • Date of birth (exact date)\n"
+        "  • Place of birth (city, county, state, country)\n"
+        "  • Father's name, Mother's name (maiden name)\n"
+        "  • Certificate/registration number\n"
+        "  • Issuing authority and date issued\n"
+        "State the date of birth exactly as it appears in the document."
+    ),
+    "passport": (
+        "This is a passport. Extract: full name, date of birth, nationality, "
+        "passport number, issue date, expiry date, place of birth, issuing country."
+    ),
+    "drivers_license": (
+        "This is a driver's license. Extract: full name, date of birth, address, "
+        "license number, issue date, expiry date, class/restrictions."
+    ),
+    "property_tax_bill": (
+        "This is a county property tax bill. Extract:\n"
+        "  • Parcel number, tax rate area, bill number\n"
+        "  • Property address (situs)\n"
+        "  • Taxable value (land + improvements)\n"
+        "  • First installment: amount and due/delinquent date\n"
+        "  • Second installment: amount and due/delinquent date\n"
+        "  • Total amount due\n"
+        "  • Fiscal year covered\n"
+        "NOTE: A property tax bill shows the amount BILLED/DUE for that tax year. "
+        "When the user asks about 'last paid property tax' or 'property tax payment', "
+        "report the total amount due on the bill as the property tax amount. "
+        "The bill amount IS the property tax — state it directly."
+    ),
     "tax_form": (
         "This is a tax form. Extract: taxpayer name, tax year, filing status, "
         "total income, adjustments, taxable income, total tax, withholding, "
@@ -1409,6 +2096,35 @@ _DOMAIN_EXTRACT_HINTS: Dict[str, str] = {
         "This is a W-2. Extract: employee name, SSN (last 4), employer name, EIN, "
         "wages/tips/other compensation, federal income tax withheld, "
         "social security wages, Medicare wages, state wages and tax withheld."
+    ),
+    "social_security_card": (
+        "This is a Social Security card. Extract: full name on card, "
+        "Social Security Number (if visible — may be masked), "
+        "any employment eligibility restrictions (e.g. 'not valid for employment')."
+    ),
+    "marriage_certificate": (
+        "This is a marriage certificate or license. Extract: "
+        "full names of both parties (groom/bride/spouses), date of marriage, "
+        "place of marriage (city, county, state), officiant name, witness names, "
+        "certificate/license number, issuing authority."
+    ),
+    "death_certificate": (
+        "This is a death certificate. Extract: decedent's full name, date of death, "
+        "place of death (city, county, state), cause of death (if present), "
+        "manner of death, certifying physician, "
+        "certificate number, issuing authority and date issued."
+    ),
+    "vaccination_record": (
+        "This is a vaccination or immunization record. Extract: "
+        "patient name, date of birth, each vaccine name and type, "
+        "date(s) administered, dose number, lot number, "
+        "administering provider/clinic, and any notes about upcoming doses."
+    ),
+    "naturalization_certificate": (
+        "This is a naturalization or citizenship certificate. Extract: "
+        "full name, date of naturalization, certificate number, "
+        "former nationality, date and place of birth, "
+        "issuing court and USCIS district."
     ),
     # ── General fallback ─────────────────────────────────────────────────────
     "general": "",
@@ -1495,8 +2211,10 @@ def _format_instruction(question: str) -> tuple:
             "FORMAT: Write a structured report: ## Summary → ## Details (one sub-section per "
             "document) → ## Key Findings → ## Recommendations. Use headers and bullets.", 1400
         )
-    if any(w in q for w in ("bullet", "bullet point", "list", "enumerate")):
-        return ("FORMAT: Use a bullet-point list. One item per document or finding.", 900)
+    if any(w in q for w in ("bullet", "bullet point", "list", "enumerate", "all the", "every ")):
+        return ("FORMAT: Use a bullet-point list with one item per row/entry in the excerpts. "
+                "Include EVERY entry from the relevant table or list, in order — do not stop early, "
+                "skip rows, or summarize them. Keep each item short: name and value.", 3000)
     if any(w in q for w in ("compare", "comparison", "side by side", "vs", "versus")):
         return (
             "FORMAT: Present a side-by-side markdown comparison table, one column per document "
@@ -1514,6 +2232,98 @@ def _format_instruction(question: str) -> tuple:
             token_budget
         )
     return ("", 900)
+
+
+def _key_lines(question: str, parts: List[str], window: int = 160, limit: int = 6) -> str:
+    """
+    Snippets around capitalised names from the question ("Trinidad") found in the
+    passages. Small models miss a name buried in pages of table text; a short
+    highlighted block up front fixes that without changing what is cited.
+    """
+    names = [w for w in dict.fromkeys(re.sub(r"'s\b", "", m) for m in re.findall(r"\b[A-Z][A-Za-z0-9&'-]{3,}\b", question))
+             if w.lower() not in {"what", "when", "where", "which", "who", "how", "can", "could", "please",
+                                  "show", "tell", "give", "provide", "california", "department", "annual",
+                                  "report", "document", "details", "summary", "about"}]
+    snippets: List[str] = []
+    ranking = _rank_table_pairs(question, parts)
+    if ranking:
+        snippets.append(ranking)
+    for part in parts:
+        src = re.match(r"\[([^\]]+)\]:", part)
+        for name in names:
+            for m in re.finditer(r"\b" + re.escape(name) + r"\b", part, re.I):
+                a, b = max(0, m.start() - window), min(len(part), m.end() + window)
+                snip = " ".join(part[a:b].split())
+                if all(snip[:60] not in x for x in snippets):
+                    snippets.append(f"- …{snip}… [{src.group(1) if src else 'excerpt'}]")
+                if len(snippets) >= limit:
+                    return "\n".join(snippets)
+
+    # Term windows: the spot where most of the question's words meet a figure
+    # ("Of the 7.25% uniform statewide rate…") — otherwise the model grabs a
+    # nearby number from a table row (3.9375% General Fund share).
+    terms = [w for w in dict.fromkeys(re.findall(r"[a-z][a-z0-9'-]{2,}", question.lower()))
+             if w not in _KEY_STOP and w.rstrip("'s") not in _KEY_STOP]
+    if len(terms) >= 2 and len(snippets) < limit:
+        scored = []
+        for part in parts:
+            src = re.match(r"\[([^\]]+)\]:", part)
+            low = part.lower()
+            for t in terms:
+                for m in re.finditer(r"\b" + re.escape(t), low):
+                    a, b = max(0, m.start() - 90), min(len(part), m.end() + 90)
+                    win = low[a:b]
+                    hits = sum(1 for x in terms if re.search(r"\b" + re.escape(x), win))
+                    near = low[max(0, m.start() - 40):m.end() + 40]
+                    fig = 2 if re.search(r"\d[\d,.]*\s?%|\$\s?\d", near) else 0
+                    if hits >= 2:
+                        scored.append((hits + fig, " ".join(part[a:b].split()), src.group(1) if src else "excerpt"))
+        for _, snip, fn in sorted(scored, key=lambda x: -x[0]):
+            if len(snippets) >= limit:
+                break
+            if all(snip[30:90] not in x for x in snippets):
+                snippets.append(f"- …{snip}… [{fn}]")
+    return "\n".join(snippets)
+
+
+_SUPERLATIVE_RE = re.compile(r"\b(most|highest|largest|biggest|greatest|top|maximum|max|least|lowest|"
+                             r"smallest|fewest|minimum|min|bottom|rank|ranking|ranked)\b", re.I)
+_LOW_RE = re.compile(r"\b(least|lowest|smallest|fewest|minimum|min|bottom)\b", re.I)
+_PAIR_RE = re.compile(r"\b([A-Z][A-Za-z.'&-]+(?: [A-Z][A-Za-z.'&-]+){0,3})\s+\$\s?(\d[\d,]*(?:\.\d+)?)")
+
+
+def _rank_table_pairs(question: str, parts: List[str]) -> str:
+    """
+    "Which county received the most…": a 7B model can't scan 58 table rows for
+    the maximum (it answered Mendocino). Rank the name → $amount rows of the
+    passage with the most such rows in code and hand the model the result.
+    """
+    if not _SUPERLATIVE_RE.search(question):
+        return ""
+    best, best_fn = [], ""
+    for part in parts:
+        pairs = []
+        for name, amt in _PAIR_RE.findall(part):
+            try:
+                pairs.append((name.strip(), float(amt.replace(",", ""))))
+            except ValueError:
+                pass
+        if len(pairs) > len(best):
+            src = re.match(r"\[([^\]]+)\]", part)
+            best, best_fn = pairs, src.group(1) if src else "excerpt"
+    if len(best) < 5:
+        return ""
+    rows = sorted(dict(best).items(), key=lambda x: x[1], reverse=not _LOW_RE.search(question))[:5]
+    order = "lowest" if _LOW_RE.search(question) else "highest"
+    listed = "; ".join(f"{n} ${v:,.0f}" for n, v in rows)
+    return f"- RANKED ({order} first, computed from all {len(dict(best))} rows of the table): {listed} [{best_fn}]"
+
+
+_KEY_STOP = {"what", "when", "where", "which", "who", "whom", "how", "can", "could", "would", "should",
+             "please", "show", "tell", "give", "provide", "list", "down", "the", "and", "for", "are",
+             "was", "were", "is", "does", "did", "has", "have", "with", "from", "this", "that", "about",
+             "into", "of", "in", "on", "my", "our", "your", "you", "me", "much", "many", "any", "all",
+             "california", "document", "report", "annual", "details", "summary", "according"}
 
 
 def _synthesize(question: str, plan: Dict, steps: List[Dict], page: int = 0) -> Dict:
@@ -1590,21 +2400,17 @@ def _synthesize(question: str, plan: Dict, steps: List[Dict], page: int = 0) -> 
         hits = sum(1 for tok in name_tokens if tok in all_text)
         return hits >= required
 
-    admitted_docs: set = set()
-    if name_tokens and not specific_domain:
-        # Unscoped search — filter to docs that mention the subject
-        for fn, chunks in by_doc.items():
-            if _doc_mentions_subject(chunks):
-                admitted_docs.add(fn)
-    else:
-        # Specific domain already filtered upstream — admit all docs
-        admitted_docs = set(by_doc.keys())
-        # But still exclude documents from a completely different person
-        # when named_subject is set (e.g. two resumes in the system)
-        if name_tokens:
-            for fn, chunks in by_doc.items():
-                if not _doc_mentions_subject(chunks):
-                    admitted_docs.discard(fn)
+    # Admit all docs by default. Only filter by name when the search is completely
+    # unscoped (no doc_type, not bridged) to avoid excluding the right document.
+    doctype_bridged = plan.get("_doctype_bridged", False)
+    admitted_docs: set = set(by_doc.keys())
+
+    if name_tokens and not specific_domain and not doctype_bridged:
+        # Unscoped: keep only docs where at least one chunk mentions the subject
+        admitted_docs = {fn for fn, chunks in by_doc.items() if _doc_mentions_subject(chunks)}
+        # If filter removed everything, admit all (better to answer than to refuse)
+        if not admitted_docs:
+            admitted_docs = set(by_doc.keys())
 
     context_parts: List[str] = []
     sources: set = set()
@@ -1614,7 +2420,8 @@ def _synthesize(question: str, plan: Dict, steps: List[Dict], page: int = 0) -> 
         fn, txt, sim = item["fn"], item["txt"], item["sim"]
         if fn and fn not in admitted_docs:
             continue
-        context_parts.append(f"[{fn}]: {txt[:1600]}" if fn else txt[:2000])
+        clean_txt = _CITATION_NOISE_RE.sub('', txt)
+        context_parts.append(f"[{fn}]: {clean_txt[:5000]}" if fn else clean_txt[:5000])  # search already budgets
         if fn:
             sources.add(fn)
         all_similarities.append(sim)
@@ -1678,9 +2485,10 @@ def _synthesize(question: str, plan: Dict, steps: List[Dict], page: int = 0) -> 
         }
 
     # ── 3. Confidence signal ────────────────────────────────────────────────
-    avg_sim = sum(all_similarities) / len(all_similarities) if all_similarities else 0
+    # Reranked passages: the best one decides confidence (weaker extras are expected).
+    best_sim = max(all_similarities) if all_similarities else 0
     confidence_note = ""
-    if all_similarities and avg_sim < _SIMILARITY_CONFIDENCE_THRESHOLD:
+    if all_similarities and best_sim < _SIMILARITY_CONFIDENCE_THRESHOLD:
         confidence_note = (
             "\n\n---\n⚠️ *Low confidence — the retrieved passages have weak relevance scores. "
             "The answer may be incomplete. Consider uploading more specific documents.*"
@@ -1696,7 +2504,9 @@ def _synthesize(question: str, plan: Dict, steps: List[Dict], page: int = 0) -> 
         "3. If a fact is not explicitly stated in the excerpts, write [NOT FOUND] — never guess.\n"
         "4. Do NOT infer relationships. If a document does not mention the person or entity "
         "being asked about, do not use it.\n"
-        "5. Numbers must be copied exactly as they appear. Do not round or estimate."
+        "5. Numbers must be copied exactly as they appear. Do not round or estimate.\n"
+        "6. NEVER include URLs, hyperlinks, or citations to external websites. "
+        "NEVER reference YouTube, Wikipedia, government sites, or any source not in the excerpts."
     )
 
     # 4b. Subject constraint
@@ -1710,8 +2520,16 @@ def _synthesize(question: str, plan: Dict, steps: List[Dict], page: int = 0) -> 
         )
 
     # 4c. Domain extraction template
-    domain_hint = _domain_extract_hint(doc_type_hint)
+    # Direct lookups ("what was my ending balance") must answer the question, not
+    # follow a generic per-document checklist — a 7B model obeys the checklist.
+    is_lookup = intent == "field_extract" or bool(re.match(
+        r"\s*(what|when|where|who|whose|which|how much|how many)\b", question, re.I)) and intent not in (
+        "aggregate", "summarize", "compare", "list", "trend", "rank", "multi_period")
+    domain_hint = "" if is_lookup else _domain_extract_hint(doc_type_hint)
     domain_block = f"\nDOMAIN EXTRACTION GUIDE:\n{domain_hint}" if domain_hint else ""
+    lookup_block = ("\nTHIS IS A DIRECT LOOKUP: answer ONLY the question asked, in 1-3 sentences. "
+                    "Quote the exact value (number, date, name) as written in the excerpt and cite it. "
+                    "Do not summarize the document or list unrelated items.") if is_lookup else ""
 
     # 4d. Intent instruction
     intent_block = f"\n{_intent_instruction(intent, field, aggregation)}"
@@ -1722,6 +2540,9 @@ def _synthesize(question: str, plan: Dict, steps: List[Dict], page: int = 0) -> 
 
     # ── 5. Assemble and call LLM ────────────────────────────────────────────
     context = "\n\n".join(context_parts[:18])
+    key_lines = _key_lines(question, context_parts[:18])
+    if key_lines:
+        context = "KEY LINES (exact matches for names in the question — read these first):\n" + key_lines + "\n\n" + context
 
     page_instruction = (
         f"\nCONTINUATION (page {page + 1}): These are ADDITIONAL document excerpts not shown "
@@ -1731,23 +2552,26 @@ def _synthesize(question: str, plan: Dict, steps: List[Dict], page: int = 0) -> 
         "clause details, and line-item data found in these deeper sections.\n"
     ) if page > 0 else ""
 
-    prompt = f"""{grounding}{subject_block}{domain_block}{intent_block}{page_instruction}{format_block}
+    prompt = f"""{grounding}{subject_block}{domain_block}{intent_block}{lookup_block}{page_instruction}{format_block}
 
 Question: {question}
 Research intent: {reasoning}
 
---- DOCUMENT EXCERPTS ---
+--- DOCUMENT EXCERPTS (most relevant first) ---
 {context}
 --- END EXCERPTS ---
 
-Answer (cite [filename] for every fact, write [NOT FOUND] for missing data):"""
+Question (answer this exactly): {question}
+Answer ({"cite [filename] once after the list" if "EVERY entry" in format_str else "cite [filename] for every fact"}, write [NOT FOUND] for missing data):"""
 
     try:
         resp = ollama.chat(
             model=_active_model(),
             messages=[{"role": "user", "content": prompt}],
-            options={"num_predict": num_predict, "temperature": 0.10},
+            options={"num_ctx": NUM_CTX, "num_predict": num_predict, "temperature": 0.10},
         )
+        logger.info(f"Synthesis: prompt={resp.get('prompt_eval_count')} tok, "
+                    f"answer={resp.get('eval_count')} tok, stop={resp.get('done_reason')}")
         answer = _decode_llm_text(resp["message"]["content"].strip()) + confidence_note
     except Exception as e:
         answer = f"Error generating answer: {e}"
@@ -1979,7 +2803,7 @@ def _llm_resolve_columns(question: str, header: List[str], sample_row: Dict) -> 
         resp = ollama.chat(
             model=_active_model(),
             messages=[{"role": "user", "content": prompt}],
-            options={"num_predict": 120, "temperature": 0.0},
+            options={"num_ctx": NUM_CTX, "num_predict": 120, "temperature": 0.0},
             timeout=12,
         )
         raw = resp["message"]["content"].strip()
@@ -2432,10 +3256,6 @@ def _extract_kv_from_chunks(chunks: List[Dict], question: str) -> Optional[Dict]
 
 def _synthesize_stream(question: str, plan: Dict, steps: List[Dict], page: int = 0, prior_qa: List[Dict] = None):
     """Streaming version of _synthesize — yields token strings then a final sources dict."""
-    # Reuse all the same prompt-building logic from _synthesize
-    result = _synthesize(question, plan, steps, page)
-    # We already have the full answer; yield it word-by-word to simulate streaming
-    # For true token streaming, call ollama with stream=True below
     named_subject   = (plan.get("named_subject") or "").strip()
     doc_type_hint   = (plan.get("doc_type_hint") or "general").lower()
     intent          = plan.get("intent", "info_retrieve")
@@ -2462,9 +3282,20 @@ def _synthesize_stream(question: str, plan: Dict, steps: List[Dict], page: int =
         fn = ch.get("filename", "unknown")
         if fn not in sources:
             sources.append(fn)
-        context_parts.append(f"[{fn}]\n{ch.get('chunk_text') or ch.get('text','')}")
+        raw_txt = ch.get('chunk_text') or ch.get('text', '')
+        context_parts.append(f"[{fn}]\n{_CITATION_NOISE_RE.sub('', raw_txt)}")
 
     context = "\n\n".join(context_parts[:20]) or "No relevant document excerpts found."
+    key_lines = _key_lines(question, [p.replace("]\n", "]: ", 1) for p in context_parts[:20]])
+    if key_lines:
+        context = "KEY LINES (exact matches for names in the question — read these first):\n" + key_lines + "\n\n" + context
+    _intent = plan.get("intent", "")
+    is_lookup = _intent == "field_extract" or (bool(re.match(
+        r"\s*(what|when|where|who|whose|which|how much|how many)\b", question, re.I)) and _intent not in (
+        "aggregate", "summarize", "compare", "list", "trend", "rank", "multi_period"))
+    lookup_block = ("5. THIS IS A DIRECT LOOKUP: answer ONLY the question asked, in 1-3 sentences. Quote the "
+                    "exact value (number, date, name) as written and cite it. Do not summarize unrelated items.\n"
+                    ) if is_lookup else ""
 
     prior_qa_block = ""
     if prior_qa:
@@ -2473,23 +3304,31 @@ def _synthesize_stream(question: str, plan: Dict, steps: List[Dict], page: int =
             lines.append(f"Q: {item.get('q', '')}\nA: {item.get('a', '')}")
         prior_qa_block = "\n\n--- PRIOR CONVERSATION ---\n" + "\n\n".join(lines) + "\n--- END PRIOR CONVERSATION ---\n"
 
-    prompt = f"""Answer the following question using only the document excerpts below.
-Be thorough. Cite [filename] for every fact. Write [NOT FOUND] for missing data.
-{format_str}
+    cite_rule = ("Cite [filename] once after the list, not on every row. Write [NOT FOUND] for missing data."
+                 if "EVERY entry" in format_str else
+                 "Cite [filename] for every fact. Write [NOT FOUND] for missing data.")
+    prompt = f"""Answer the following question using ONLY the document excerpts below.
+RULES (non-negotiable):
+1. Use ONLY the excerpts provided. Do not use outside knowledge.
+2. {cite_rule}
+3. NEVER include URLs, hyperlinks, or citations to external websites.
+4. NEVER reference YouTube, Wikipedia, government sites, or any source not in the excerpts.
+{lookup_block}{format_str}
 {prior_qa_block}
 Question: {question}
 
---- DOCUMENT EXCERPTS ---
+--- DOCUMENT EXCERPTS (most relevant first) ---
 {context}
 --- END EXCERPTS ---
 
+Question (answer this exactly): {question}
 Answer:"""
 
     try:
         stream = ollama.chat(
             model=_active_model(),
             messages=[{"role": "user", "content": prompt}],
-            options={"num_predict": num_predict, "temperature": 0.10},
+            options={"num_ctx": NUM_CTX, "num_predict": num_predict, "temperature": 0.10},
             stream=True,
         )
         for chunk in stream:
@@ -2599,7 +3438,7 @@ def _http_post(path: str, payload: Dict) -> Dict:
         raise RuntimeError(f"HTTP {e.code} from {path}: {body}")
 
 
-def _do_execute_action(intent: str, entities: Dict) -> Dict:
+def _do_execute_action(intent: str, entities: Dict, db=None) -> Dict:
     """
     Dispatch an action intent to the appropriate backend endpoint.
     Returns {"success": bool, "result": dict, "message": str}
@@ -3180,7 +4019,7 @@ def run_research_agent(
         resp = ollama.chat(
             model=_active_model(),
             messages=[{"role": "user", "content": prompt}],
-            options={"num_predict": 2400, "temperature": 0.05},
+            options={"num_ctx": NUM_CTX, "num_predict": 2400, "temperature": 0.05},
         )
         answer = resp["message"]["content"].strip()
 
@@ -3194,6 +4033,28 @@ def run_research_agent(
             "matched_doc_ids": [doc_id],
             "has_more":        has_more,
             "page":            page,
+        }
+
+    # ── Structured data first: pay-stub facts, spreadsheets/CSVs ──────────────
+    # Code computes the answer; runs before the LLM planner (saves 30-40s).
+    from app.services.structured_answer import try_structured_answer
+    t0 = time.time()
+    structured = try_structured_answer(question, get_current_tenant_id() or DEFAULT_TENANT_ID, doc_ids)
+    if structured:
+        steps.append(make_step(
+            thought=f"Computing the answer from structured data ({structured['tool']})",
+            tool=structured["tool"],
+            args=structured["detail"],
+            observation={"sources": structured["sources"]},
+            latency_ms=int((time.time() - t0) * 1000),
+        ))
+        return {
+            "question":   question,
+            "plan":       {"intent": structured["tool"]},
+            "steps":      steps,
+            "answer":     structured["answer"],
+            "sources":    structured["sources"],
+            "iterations": len(steps),
         }
 
     # ── New query: full ReAct loop ────────────────────────────────────────────
@@ -3255,7 +4116,7 @@ def run_research_agent(
     # Also trigger SQL path when question has clear spending/transaction keywords
     _spending_kws = {"spending", "spend", "expense", "transaction", "merchant", "charge",
                      "debit", "credit", "category", "payment", "statement"}
-    if any(kw in question.lower() for kw in _spending_kws):
+    if any_term(question, _spending_kws):
         intent = intent if intent in _TRANSACTION_INTENTS else "aggregate"
     _TRANSACTION_DOC_TYPES = {"credit_card_statement", "bank_statement"}
     doc_type_hint = plan.get("doc_type_hint", "general")
@@ -3269,8 +4130,8 @@ def run_research_agent(
         "gap", "audit", "compliance",
     }
     _effective_doc_type = doc_type_hint
-    _has_spending_kws = any(kw in question.lower() for kw in _spending_kws)
-    _has_non_txn_kws  = any(kw in question.lower() for kw in _NON_TRANSACTION_KWS)
+    _has_spending_kws = any_term(question, _spending_kws)
+    _has_non_txn_kws  = any_term(question, _NON_TRANSACTION_KWS)
     if doc_type_hint == "general" and intent in _TRANSACTION_INTENTS and _has_spending_kws and not _has_non_txn_kws:
         _effective_doc_type = "credit_card_statement"  # allow SQL path; query spans all types
 
@@ -3281,45 +4142,31 @@ def run_research_agent(
             from sqlalchemy import text as sql_text
             import json as _json
 
-            date_hint_type = date_hint.get("type", "none")
-            years = date_hint.get("years", [])
-            months_raw = date_hint.get("months", [])
-            range_desc = date_hint.get("range_description", "")
+            date_range = _date_range_from_hint(date_hint)
+            term = _transaction_term(plan, question)
+            direction = _transaction_direction(question)
 
-            # Build date filter
-            _MONTH_MAP = {"january":1,"february":2,"march":3,"april":4,"may":5,"june":6,
-                         "july":7,"august":8,"september":9,"october":10,"november":11,"december":12}
-            date_filter = ""
-            if date_hint_type == "year" and years:
-                date_filter = f"AND (t->>'date')::date BETWEEN '{years[0]}-01-01' AND '{years[0]}-12-31'"
-            elif date_hint_type in ("date_range", "specific_month") and years:
-                yr = years[0]
-                if months_raw:
-                    mo_nums = sorted([_MONTH_MAP.get(m.lower(), 1) for m in months_raw])
-                    date_filter = f"AND (t->>'date')::date BETWEEN '{yr}-{mo_nums[0]:02d}-01' AND '{yr}-{mo_nums[-1]:02d}-28'"
-                else:
-                    date_filter = f"AND (t->>'date')::date BETWEEN '{yr}-01-01' AND '{yr}-12-31'"
-
-            # Build merchant filter from question keywords
-            merchant_filter = ""
-            merchant_keywords = ["whole foods", "wholefds", "amazon", "starbucks", "walmart",
-                                 "target", "costco", "uber", "lyft", "netflix", "apple",
-                                 "google", "spotify", "doordash"]
-            q_lower = question.lower()
-            for kw in merchant_keywords:
-                if kw in q_lower:
-                    merchant_filter = f"AND t->>'merchant' ILIKE '%{kw}%'"
-                    break
-
-            logger.info(f"query_transactions SQL: date_filter={date_filter!r} merchant_filter={merchant_filter!r} doc_ids={doc_ids!r}")
-            # Build doc_ids filter — always scope to the requested docs when provided
-            doc_id_filter = ""
-            doc_id_params: dict = {}
+            filters = ["d.extracted_facts IS NOT NULL", "d.tenant_id = :tenant_id"]
+            params: dict = {"tenant_id": get_current_tenant_id() or DEFAULT_TENANT_ID}
+            if date_range:
+                filters.append("(t->>'date')::date BETWEEN :date_from AND :date_to")
+                params["date_from"], params["date_to"] = date_range
+            if term:
+                # "zelle recipient" won't match a merchant; fall back to the single
+                # term that actually occurs in the data ("zelle").
+                term = _best_txn_term(term, params["tenant_id"], doc_ids) or term
+                filters.append("(t->>'merchant' ILIKE :term OR t->>'category' ILIKE :term)")
+                params["term"] = f"%{term}%"
+            if direction:
+                filters.append("t->>'type' = :direction")
+                params["direction"] = direction
             if doc_ids:
-                placeholders = ", ".join(f":txdoc_{i}" for i in range(len(doc_ids)))
-                doc_id_filter = f"AND d.id IN ({placeholders})"
-                doc_id_params = {f"txdoc_{i}": did for i, did in enumerate(doc_ids)}
+                filters.append("d.id::text = ANY(:doc_ids)")
+                params["doc_ids"] = list(doc_ids)
+            date_filter = f"{date_range[0]}..{date_range[1]}" if date_range else ""
+            merchant_filter = term or ""
 
+            logger.info(f"query_transactions SQL: range={date_range} term={term!r} direction={direction} doc_ids={doc_ids!r}")
             db = SessionLocal()
             rows = db.execute(sql_text(f"""
                 SELECT
@@ -3331,13 +4178,30 @@ def run_research_agent(
                   (t->>'amount')::numeric AS amount
                 FROM documents d,
                      jsonb_array_elements(d.extracted_facts->'transactions') t
-                WHERE d.extracted_facts IS NOT NULL
-                  {doc_id_filter}
-                  {date_filter}
-                  {merchant_filter}
+                WHERE {" AND ".join(filters)}
                 ORDER BY (t->>'date')::date
-            """), doc_id_params).fetchall()
-            db.close()
+            """), params).fetchall()
+            coverage = db.execute(sql_text(f"""
+                SELECT MIN((t->>'date')::date), MAX((t->>'date')::date), COUNT(DISTINCT d.id)
+                FROM documents d,
+                     jsonb_array_elements(d.extracted_facts->'transactions') t
+                WHERE d.extracted_facts IS NOT NULL AND d.tenant_id = :tenant_id
+                  {"AND d.id::text = ANY(:doc_ids)" if doc_ids else ""}
+            """), {k: v for k, v in params.items() if k in ("tenant_id", "doc_ids")}).first()
+            if not rows and direction:
+                # Direction is inferred from wording and can be wrong — retry without it.
+                db = SessionLocal()
+                _f = [f for f in filters if "t->>'type'" not in f]
+                _p = {k: v for k, v in params.items() if k != "direction"}
+                rows = db.execute(sql_text(f"""
+                    SELECT d.filename, t->>'date' AS date, t->>'merchant' AS merchant, t->>'type' AS type,
+                           COALESCE(t->>'category', t->>'type', 'Other') AS category,
+                           (t->>'amount')::numeric AS amount
+                    FROM documents d, jsonb_array_elements(d.extracted_facts->'transactions') t
+                    WHERE {" AND ".join(_f)}
+                    ORDER BY (t->>'date')::date
+                """), _p).fetchall()
+                db.close()
             logger.info(f"query_transactions: {len(rows)} rows returned")
 
             if rows:
@@ -3360,6 +4224,19 @@ def run_research_agent(
                 if len(rows) > 100:
                     summary += f" (showing first 100 of {len(rows)})"
 
+                if coverage and coverage[0]:
+                    summary += (
+                        f"\n\n_Data available: {coverage[0]:%b %d, %Y} – {coverage[1]:%b %d, %Y} "
+                        f"({coverage[2]} statement(s)). Periods outside this range aren't counted._"
+                    )
+
+                _q = question.lower()
+                _want_max = bool(re.search(r"\b(largest|biggest|highest|max(imum)?|most expensive|top)\b", _q))
+                _want_min = bool(re.search(r"\b(smallest|lowest|min(imum)?|cheapest|least)\b", _q))
+                if (_want_max or _want_min) and rows:
+                    pick = (max if _want_max else min)(rows, key=lambda r: r.amount or 0)
+                    summary = (f"The {'largest' if _want_max else 'smallest'} is **${pick.amount:,.2f}** — "
+                               f"{pick.merchant} on {pick.date} ([{pick.filename}]).\n\n" + summary)
                 answer = f"{summary}\n\n{table}"
 
                 # Chart detection — build Chart.js data when user asks for visual
@@ -3551,6 +4428,13 @@ def run_research_agent(
             "form number instructions fields required",
             "agency department federal state",
             "signature date applicant information",
+        ],
+        "property_tax_bill": [
+            "parcel number APN total tax amount due date",
+            "first installment second installment delinquent date",
+            "assessed value land value improvement value",
+            "tax rate area general tax levy special assessments",
+            "property address owner name exemptions",
         ],
         # ── Medical ──────────────────────────────────────────────────────────
         "medical": [
@@ -3801,6 +4685,141 @@ def run_research_agent(
         if not plan.get("field_synonyms"):
             plan["field_synonyms"] = _fallback[0].split()
 
+    # ── Step 0b: Pandas numeric filter shortcut for data_table docs ─────────────
+    # For queries like "how many rows where col > N", vector search gives wrong
+    # counts (only sees sampled chunks). Run pandas directly on the CSV file.
+    # Match patterns like:
+    #   "greater than 3000"  → op immediately before number
+    #   "greater than sqft_lot 3000"  → column name between op and number
+    #   "sqft_lot > 3000"  → symbolic operator
+    _CMP_WORDS = r'(?:greater\s+than|more\s+than|larger\s+than|above|over|less\s+than|smaller\s+than|below|under|equal\s+to|equals?|at\s+least|at\s+most)'
+    _numeric_pat = re.compile(
+        r'(' + _CMP_WORDS + r')(?:\s+\S+)?\s+(\d[\d,]*(?:\.\d+)?)'   # word op, optional col, number
+        r'|(\S+)\s*([><=!]+)\s*(\d[\d,]*(?:\.\d+)?)',                  # col op_symbol number
+        re.IGNORECASE,
+    )
+    _nm = _numeric_pat.search(question)
+    if _nm and not is_followup:
+        if _nm.group(1):   # word-form match
+            _op_word = _nm.group(1).lower()
+            _num_val_str = _nm.group(2).replace(',', '')
+        else:              # symbol-form match
+            _op_word = _nm.group(4)
+            _num_val_str = _nm.group(5).replace(',', '')
+        _num_val = float(_num_val_str)
+        _op_word_l = _op_word.lower()
+        if any(w in _op_word_l for w in ('greater', 'more', 'larger', 'above', 'over', '>')):
+            _pandas_op = '>'
+        elif any(w in _op_word_l for w in ('less', 'smaller', 'below', 'under', '<')):
+            _pandas_op = '<'
+        elif '>=' in _op_word_l or 'at least' in _op_word_l:
+            _pandas_op = '>='
+        elif '<=' in _op_word_l or 'at most' in _op_word_l:
+            _pandas_op = '<='
+        else:
+            _pandas_op = '=='
+
+        # Find all data_table docs in scope
+        _db_dt = SessionLocal()
+        try:
+            _dt_rows = _db_dt.execute(__import__('sqlalchemy').text(
+                "SELECT id, filename, file_path FROM documents WHERE status='completed' AND doc_type IN ('data_table','spreadsheet','dataset')"
+            )).fetchall()
+        except Exception:
+            _dt_rows = []
+        finally:
+            _db_dt.close()
+
+        _scope_ids = set(doc_ids or [])
+        _pandas_answers = []
+        for _dtr in _dt_rows:
+            if _scope_ids and str(_dtr.id) not in _scope_ids:
+                continue
+            _fp = _dtr.file_path
+            if not _fp or not __import__('os').path.exists(_fp):
+                continue
+            try:
+                import pandas as _pd
+                _ext = __import__('os').path.splitext(_fp)[1].lower()
+                if _ext in ('.csv', '.tsv', '.txt'):
+                    _df = _pd.read_csv(_fp, low_memory=False)
+                elif _ext in ('.xlsx', '.xls'):
+                    _df = _pd.read_excel(_fp)
+                else:
+                    continue
+
+                # Find column matching words in question (best-effort)
+                _q_words = set(re.sub(r'[^a-z0-9_]', ' ', question.lower()).split())
+                _best_col = None
+                _best_score = 0
+                for _col in _df.columns:
+                    _col_words = set(re.sub(r'[^a-z0-9_]', '_', _col.lower()).replace('_', ' ').split())
+                    _score = len(_q_words & _col_words)
+                    if _score > _best_score:
+                        _best_score = _score
+                        _best_col = _col
+
+                if _best_col is None or _best_score == 0:
+                    continue
+
+                # Coerce column to numeric; skip if can't
+                _series = _pd.to_numeric(_df[_best_col], errors='coerce')
+                if _series.isna().all():
+                    continue
+
+                if _pandas_op == '>':
+                    _filtered = _df[_series > _num_val]
+                elif _pandas_op == '<':
+                    _filtered = _df[_series < _num_val]
+                elif _pandas_op == '>=':
+                    _filtered = _df[_series >= _num_val]
+                elif _pandas_op == '<=':
+                    _filtered = _df[_series <= _num_val]
+                else:
+                    _filtered = _df[_series == _num_val]
+
+                _count = len(_filtered)
+                _pandas_answers.append({
+                    "filename": _dtr.filename,
+                    "column": _best_col,
+                    "op": _pandas_op,
+                    "threshold": _num_val,
+                    "count": _count,
+                    "total": len(_df),
+                })
+            except Exception as _pe:
+                logger.warning(f"Pandas numeric filter failed for {_dtr.filename}: {_pe}")
+
+        if _pandas_answers:
+            _ans_lines = []
+            _src_names = []
+            _chart_labels = []
+            _chart_values = []
+            for _pa in _pandas_answers:
+                _op_label = {'>' : 'greater than', '<': 'less than', '>=': 'at least', '<=': 'at most', '==': 'equal to'}.get(_pa['op'], _pa['op'])
+                _ans_lines.append(
+                    f"**{_pa['filename']}**: {_pa['count']} out of {_pa['total']} rows have `{_pa['column']}` {_op_label} {_pa['threshold']:g}"
+                )
+                _src_names.append(_pa['filename'])
+                _chart_labels.append(_pa['filename'])
+                _chart_values.append(_pa['count'])
+            _ans_text = "\n".join(_ans_lines)
+            _chart_data = {
+                "type": "bar",
+                "labels": _chart_labels,
+                "datasets": [{"label": f"Count ({_pandas_op} {_num_val:g})", "data": _chart_values}],
+            } if _chart_labels else None
+            logger.info(f"PandasShortcut: answered numeric filter query directly ({len(_pandas_answers)} docs)")
+            return {
+                "answer": _ans_text,
+                "sources": _src_names,
+                "steps": steps,
+                "plan": plan,
+                "has_more": False,
+                "context_doc_ids": [],
+                "chart_data": _chart_data,
+            }
+
     # ── Step 1: Filter documents by date/type/domain hints ───────────────────
     # Run ANY time we have a meaningful signal — date, doc_type, or field.
     # Previously this only ran on date hints, which meant domain exclusion
@@ -3830,6 +4849,7 @@ def run_research_agent(
         has_filter_signal = bool(date_hint.get("months") or date_hint.get("years"))
 
     if has_filter_signal:
+        plan["_question"] = question   # consumed by _filter_docs_by_plan for personal-Q detection
         t0 = time.time()
         filtered = _filter_docs_by_plan(plan, effective_doc_ids)
         if filtered:
@@ -3872,13 +4892,52 @@ def run_research_agent(
             "iterations": iteration,
         }
 
-    search_results = _multi_search(plan, effective_doc_ids)
+    # Only the user's own selection is a hard scope; documents narrowed by the
+    # date/type filter (or a follow-up's prior docs) are a preference.
+    search_results = _multi_search(plan, list(doc_ids or []),
+                                   prefer_doc_ids=effective_doc_ids if effective_doc_ids != list(doc_ids or []) else None)
 
     # Fallback A: unscoped — only when the domain filter found zero candidates.
     # Keeping scoped prevents cross-domain bleed (lexicon-annual in a resume query).
     if not search_results and not effective_doc_ids:
         logger.info("No doc scope and no results — retrying unscoped")
         search_results = _multi_search(plan, [])
+
+    # Fallback A2: filtered docs returned no semantic hits — fetch chunks directly
+    # from the filtered set (e.g. W2 with heavily redacted chunk_text).
+    if not search_results and effective_doc_ids:
+        logger.info(f"Filtered docs {effective_doc_ids} returned no semantic hits — falling back to direct chunk fetch")
+        _fa2_db = SessionLocal()
+        try:
+            from sqlalchemy import text as _sa_text_a2
+            _fa2_vec = _get_embedding_model().encode(question).tolist()
+            _fa2_phs = ", ".join(f":fa2doc_{i}" for i in range(len(effective_doc_ids)))
+            _fa2_params: Dict[str, Any] = {"vec": str(_fa2_vec), "limit": 14}
+            for i, did in enumerate(effective_doc_ids):
+                _fa2_params[f"fa2doc_{i}"] = did
+            _fa2_rows = _fa2_db.execute(_sa_text_a2(f"""
+                SELECT c.document_id, c.chunk_text, d.filename, d.doc_type,
+                       1 - (c.embedding <=> CAST(:vec AS vector(768))) AS similarity
+                FROM document_chunks c
+                JOIN documents d ON d.id = c.document_id
+                WHERE c.embedding IS NOT NULL
+                  AND d.status = 'completed'
+                  AND vector_dims(c.embedding) = 768
+                  AND d.id::text IN ({_fa2_phs})
+                ORDER BY similarity DESC
+                LIMIT :limit
+            """), _fa2_params).fetchall()
+            search_results = [
+                {"doc_id": str(r.document_id), "filename": r.filename,
+                 "text": (r.chunk_text or "")[:600],
+                 "similarity": round(float(r.similarity), 3)}
+                for r in _fa2_rows
+            ]
+            logger.info(f"Fallback A2 direct fetch returned {len(search_results)} chunks from filtered docs")
+        except Exception as _fa2_err:
+            logger.warning(f"Fallback A2 failed: {_fa2_err}")
+        finally:
+            _fa2_db.close()
 
     # Fallback B: low-threshold direct chunk fetch — fires when:
     #   • The user explicitly selected one or more documents (doc_ids non-empty), AND

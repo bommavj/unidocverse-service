@@ -1,0 +1,127 @@
+# Starter task lists per case type. Applied from the case page ("Apply template").
+# role: who does it — attorney | paralegal | client | petitioner
+# due:  days after the template is applied (staff can change any date afterwards)
+# Firms can edit this file to match their own process.
+
+_common_start: &common_start
+  - { title: "Send engagement letter and fee agreement for signature", role: paralegal, due: 1 }
+  - { title: "Send intake questionnaire to the client", role: paralegal, due: 1 }
+  - { title: "Run conflict check", role: attorney, due: 2 }
+
+templates:
+  h1b_extension:
+    - *common_start
+    - { title: "Collect passport, current I-94 and prior I-797 approvals", role: client, due: 7 }
+    - { title: "Collect three most recent pay stubs", role: client, due: 7 }
+    - { title: "Request employer support letter and job description", role: petitioner, due: 10 }
+    - { title: "File and certify the LCA (ETA-9035)", role: paralegal, due: 14 }
+    - { title: "Review auto-filled Form I-129 and complete blank fields", role: paralegal, due: 18 }
+    - { title: "Attorney review of petition and evidence", role: attorney, due: 21 }
+    - { title: "Collect petitioner signature on I-129 and G-28", role: petitioner, due: 23 }
+    - { title: "Assemble filing packet and pay filing fees", role: paralegal, due: 25 }
+    - { title: "File petition and record receipt number", role: paralegal, due: 28 }
+
+  h1b_transfer:
+    - *common_start
+    - { title: "Collect passport, I-94, prior I-797s and last three pay stubs", role: client, due: 5 }
+    - { title: "Collect new offer letter and job description", role: petitioner, due: 7 }
+    - { title: "File and certify the LCA (ETA-9035) for the new employer", role: paralegal, due: 10 }
+    - { title: "Review auto-filled Form I-129 and complete blank fields", role: paralegal, due: 14 }
+    - { title: "Attorney review of petition and evidence", role: attorney, due: 17 }
+    - { title: "Collect petitioner signature on I-129 and G-28", role: petitioner, due: 19 }
+    - { title: "Assemble filing packet and pay filing fees", role: paralegal, due: 20 }
+    - { title: "File petition and give client the receipt to start work (portability)", role: paralegal, due: 21 }
+
+  h4_extension:
+    - *common_start
+    - { title: "Collect passport, I-94 and current I-797", role: client, due: 7 }
+    - { title: "Collect marriage or birth certificate", role: client, due: 7 }
+    - { title: "Get principal's H-1B receipt or approval notice", role: client, due: 10 }
+    - { title: "Review auto-filled Form I-539", role: paralegal, due: 14 }
+    - { title: "Attorney review", role: attorney, due: 16 }
+    - { title: "Collect applicant signature on I-539", role: client, due: 18 }
+    - { title: "File with the principal's petition or separately", role: paralegal, due: 21 }
+
+  h4_ead:
+    - *common_start
+    - { title: "Collect passport, H-4 I-797 and I-94", role: client, due: 7 }
+    - { title: "Collect principal's approved I-140 or AC21 extension evidence", role: client, due: 7 }
+    - { title: "Collect two passport-style photos", role: client, due: 10 }
+    - { title: "Review auto-filled Form I-765 — category (c)(26)", role: paralegal, due: 12 }
+    - { title: "Attorney review", role: attorney, due: 14 }
+    - { title: "Collect applicant signature on I-765", role: client, due: 16 }
+    - { title: "File I-765 and record receipt number", role: paralegal, due: 18 }
+
+  ead_renewal:
+    - *common_start
+    - { title: "Collect front and back of current EAD", role: client, due: 5 }
+    - { title: "Confirm eligibility category and underlying evidence", role: attorney, due: 7 }
+    - { title: "Review auto-filled Form I-765", role: paralegal, due: 10 }
+    - { title: "Collect applicant signature on I-765", role: client, due: 12 }
+    - { title: "File renewal (up to 180 days before expiry)", role: paralegal, due: 14 }
+
+  i140:
+    - *common_start
+    - { title: "Confirm PERM approval and priority date", role: attorney, due: 3 }
+    - { title: "Collect degrees, transcripts and credential evaluation", role: client, due: 10 }
+    - { title: "Collect experience letters from prior employers", role: client, due: 14 }
+    - { title: "Collect ability-to-pay evidence (tax returns or audited financials)", role: petitioner, due: 14 }
+    - { title: "Review auto-filled Form I-140", role: paralegal, due: 18 }
+    - { title: "Attorney review", role: attorney, due: 21 }
+    - { title: "Collect petitioner signature", role: petitioner, due: 23 }
+    - { title: "File I-140 and record receipt number", role: paralegal, due: 25 }
+
+  i485:
+    - *common_start
+    - { title: "Confirm priority date is current in the visa bulletin", role: attorney, due: 2 }
+    - { title: "Collect birth certificate with certified translation", role: client, due: 10 }
+    - { title: "Collect passport, visas and most recent I-94", role: client, due: 10 }
+    - { title: "Schedule civil surgeon medical exam (I-693)", role: client, due: 14 }
+    - { title: "Collect employment verification letter", role: petitioner, due: 14 }
+    - { title: "Review auto-filled Form I-485 and complete Parts 8–9 with the client", role: paralegal, due: 18 }
+    - { title: "Prepare companion I-765 and I-131 if requested", role: paralegal, due: 18 }
+    - { title: "Attorney review", role: attorney, due: 21 }
+    - { title: "Collect applicant signatures", role: client, due: 23 }
+    - { title: "File package and record receipt numbers", role: paralegal, due: 25 }
+
+  i130:
+    - *common_start
+    - { title: "Collect petitioner's proof of citizenship or permanent residence", role: client, due: 7 }
+    - { title: "Collect marriage or birth certificate proving the relationship", role: client, due: 7 }
+    - { title: "Collect proof prior marriages ended", role: client, due: 10 }
+    - { title: "Collect bona fide marriage evidence", role: client, due: 14 }
+    - { title: "Review auto-filled Form I-130", role: paralegal, due: 16 }
+    - { title: "Attorney review", role: attorney, due: 18 }
+    - { title: "Collect petitioner signature", role: client, due: 20 }
+    - { title: "File I-130 and record receipt number", role: paralegal, due: 21 }
+
+  i90:
+    - *common_start
+    - { title: "Collect copy of current green card and photo ID", role: client, due: 5 }
+    - { title: "Review auto-filled Form I-90", role: paralegal, due: 7 }
+    - { title: "Collect applicant signature", role: client, due: 9 }
+    - { title: "File I-90 and record receipt number", role: paralegal, due: 10 }
+
+  n400:
+    - *common_start
+    - { title: "Confirm residence and physical presence eligibility dates", role: attorney, due: 3 }
+    - { title: "Collect travel history for the statutory period", role: client, due: 10 }
+    - { title: "Collect tax transcripts for the statutory period", role: client, due: 10 }
+    - { title: "Check criminal and immigration history for issues", role: attorney, due: 12 }
+    - { title: "Prepare Form N-400", role: paralegal, due: 16 }
+    - { title: "Attorney review", role: attorney, due: 18 }
+    - { title: "File N-400 and record receipt number", role: paralegal, due: 21 }
+    - { title: "Send civics and English test preparation material", role: paralegal, due: 30 }
+
+  passport_renewal:
+    - { title: "Confirm consulate and appointment requirements", role: paralegal, due: 2 }
+    - { title: "Collect current passport and photos", role: client, due: 7 }
+    - { title: "Prepare application form", role: paralegal, due: 10 }
+    - { title: "Book consulate appointment", role: client, due: 14 }
+
+  _default:
+    - *common_start
+    - { title: "Collect supporting documents", role: client, due: 7 }
+    - { title: "Prepare forms", role: paralegal, due: 14 }
+    - { title: "Attorney review", role: attorney, due: 18 }
+    - { title: "File and record receipt number", role: paralegal, due: 21 }

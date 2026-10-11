@@ -3,6 +3,21 @@ import operator
 from datetime import datetime
 
 
+def _last(a, b):
+    """Last-write-wins reducer: used for keys written sequentially in a single branch
+    where LangGraph may schedule the writes in the same super-step due to parallel fan-in timing."""
+    return b if b is not None else a
+
+
+def _merge_dicts(a: dict, b: dict) -> dict:
+    """Merge two dicts; later write adds/overwrites keys."""
+    if not a:
+        return b or {}
+    if not b:
+        return a
+    return {**a, **b}
+
+
 class DocumentState(TypedDict):
     """
     Shared state for the LangGraph workflow
@@ -28,8 +43,8 @@ class DocumentState(TypedDict):
     # AI Analysis
     classification: Optional[Dict[str, Any]]
     analyzed_data: Optional[Dict[str, Any]]  # ✅ THIS MUST BE HERE
-    summary: Optional[str]
-    key_points: List[str]
+    summary: Annotated[Optional[str], _last]
+    key_points: Annotated[List[str], _last]
     keywords: List[str]
 
     # Embeddings
@@ -41,8 +56,8 @@ class DocumentState(TypedDict):
     quality_issues: Annotated[List[str], operator.add]
 
     # Metrics & Insights
-    metrics: Dict[str, Any]
-    insights: List[Dict[str, Any]]
+    metrics: Annotated[Dict[str, Any], _merge_dicts]
+    insights: Annotated[List[Dict[str, Any]], _last]
     visualizations: List[Dict[str, Any]]
 
     # Processing control
@@ -54,7 +69,7 @@ class DocumentState(TypedDict):
     password_required: Optional[bool]
 
     # Metadata
-    doc_metadata: Dict[str, Any]
+    doc_metadata: Annotated[Dict[str, Any], _merge_dicts]
     errors: Annotated[List[Dict[str, Any]], operator.add]
 
     # Timestamps

@@ -30,6 +30,7 @@ from app.core.guardrails import guard_input, guard_output, GuardrailViolation
 from app.core.pii_redactor import redact_text
 from app.api.auth_router import get_current_user
 from app.core.performance import response_cache, llm_queue, LLMQueueFullError
+from app.core.tenant import get_current_tenant_id, DEFAULT_TENANT_ID
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,164 @@ router = APIRouter(prefix="/api/documents", tags=["ask"])
 
 _RAW_TEXT_LIMIT       = 2500
 _TOP_K                = 3
-_SIMILARITY_THRESHOLD = 0.40
+_SIMILARITY_THRESHOLD = 0.40   # global default
+
+# Personal pronouns that signal the user is asking about their own documents,
+# not seeking general educational information.
+_PERSONAL_PRONOUNS = re.compile(
+    r'\b(my|mine|i have|i had|do i|am i|i need|i want|our|we have|we had|'
+    r'i uploaded|i attached|i sent|show me|what\'?s? my|how much (do i|am i|is my))\b',
+    re.IGNORECASE,
+)
+
+# doc_types that represent personal/transactional records (not reference material).
+# When a question is personal, prefer these over educational/communication content.
+_PERSONAL_DOC_TYPES = frozenset({
+    "insurance_policy", "declarations_page", "insurance_claim", "insurance",
+    "explanation_of_benefits", "loss_run", "renewal_notice", "cancellation_notice",
+    "pay_stub", "payroll_report", "w2", "tax_form", "tax_return", "property_tax_bill",
+    "bank_statement", "credit_card_statement", "invoice", "receipt", "expense_report",
+    "financial_statement", "purchase_order",
+    "medical_record", "medical_bill", "lab_report", "prescription", "medical",
+    "contract", "legal", "nda", "lease_agreement",
+    "mortgage_document", "mortgage_statement", "closing_disclosure", "loan_document",
+    "real_estate", "property_deed", "rent_statement", "hoa_statement",
+    "immigration", "uscis_receipt", "visa_document",
+    "birth_certificate", "passport", "drivers_license", "social_security_card",
+    "marriage_certificate", "death_certificate", "vaccination_record",
+    "hr_document", "resume", "offer_letter", "employment_contract",
+    "annual_report", "quarterly_report", "utility_bill", "telecom_bill",
+    "auto_insurance_claim", "health_insurance_claim",
+})
+
+# doc_types that are reference/educational material — deprioritize for personal questions.
+_REFERENCE_DOC_TYPES = frozenset({
+    # "document" excluded — catch-all fallback; may be a user's actual personal doc.
+    # "email", "letter", "transcript" excluded — may be claim correspondence/legal letters.
+    "report", "newsletter", "public_notice", "business_proposal",
+    "memo", "meeting_minutes", "project_plan",
+})
+
+# Maps query keyword phrases → doc_type values.
+# Used to detect when the user explicitly names a document type in their query,
+# so we can do a direct doc_type SQL lookup (Pass 0) before cosine-sim retrieval.
+_QUERY_DOCTYPE_KEYWORDS_ROUTER: list = [
+    (["birth certificate", "birth cert"],               "birth_certificate"),
+    (["passport"],                                       "passport"),
+    (["driver", "driving license", "driver's license"], "drivers_license"),
+    (["social security card", "ssn card"],              "social_security_card"),
+    (["marriage certificate"],                          "marriage_certificate"),
+    (["death certificate"],                             "death_certificate"),
+    (["vaccination record", "immunization", "vaccine record"], "vaccination_record"),
+    (["naturalization certificate", "naturalization"],  "naturalization_certificate"),
+    (["uscis receipt", "i-797", "receipt notice"],      "uscis_receipt"),
+    (["green card", "permanent resident", "h-1b", "h1b"], "immigration"),
+    (["pay stub", "paystub", "pay slip"],               "pay_stub"),
+    (["bank statement", "bank stmt"],                   "bank_statement"),
+    (["credit card statement"],                         "credit_card_statement"),
+    (["w-2", "w2 form", "wage statement"],              "w2"),
+    (["1099"],                                          "tax_form"),
+    (["tax return", "tax form"],                        "tax_form"),
+    (["property tax", "tax bill"],                      "property_tax_bill"),
+    (["insurance policy", "policy document"],           "insurance_policy"),
+    (["declarations page", "dec page"],                 "declarations_page"),
+    (["explanation of benefits", "eob"],                "explanation_of_benefits"),
+    (["insurance claim", "claim form"],                 "insurance_claim"),
+    (["mortgage statement", "mortgage document"],       "mortgage_document"),
+    (["closing disclosure"],                            "closing_disclosure"),
+    (["medical record", "medical report"],              "medical_record"),
+    (["medical bill", "hospital bill"],                 "medical_bill"),
+    (["lab report", "lab result"],                      "lab_report"),
+    (["offer letter"],                                  "offer_letter"),
+    (["utility bill", "electricity bill", "gas bill"],  "utility_bill"),
+    (["annual report"],                                 "annual_report"),
+    (["transcript", "grade report"],                    "transcript"),
+]
+
+
+def _doctype_from_query_router(question: str) -> Optional[str]:
+    q = question.lower()
+    for phrases, doc_type in _QUERY_DOCTYPE_KEYWORDS_ROUTER:
+        if any(p in q for p in phrases):
+            return doc_type
+    return None
+
+
+# Per-domain document-level similarity thresholds for _semantic_retrieve.
+# Document embeddings are summaries — formal/structured doc types embed farther
+# from conversational questions than narrative ones do.
+_DOC_DOMAIN_THRESHOLDS: dict = {
+    "dataset":       0.10,
+    "spreadsheet":   0.10,
+    "image":         0.15,
+    "personal_id":   0.20,
+    "immigration":   0.20,
+    "tax":           0.22,
+    "medical":       0.22,
+    "legal":         0.22,
+    "operations":    0.22,
+    "logistics":     0.22,
+    "utility":       0.25,
+    "insurance":     0.25,
+    "realestate":    0.25,
+    "education":     0.28,
+    "finance":       0.28,
+    "payroll":       0.28,
+    "corporate":     0.30,
+    "communication": 0.35,
+    "hr":            0.35,
+    # Default for unknown domains → _SIMILARITY_THRESHOLD (0.40)
+}
+
+# doc_type → domain group (must match _DOMAIN_GROUPS in document_react_agent.py)
+_DOC_TYPE_TO_DOMAIN: dict = {
+    "birth_certificate": "personal_id", "passport": "personal_id",
+    "drivers_license": "personal_id", "social_security_card": "personal_id",
+    "marriage_certificate": "personal_id", "death_certificate": "personal_id",
+    "vaccination_record": "personal_id", "naturalization_certificate": "personal_id",
+    "immigration": "immigration", "uscis_receipt": "immigration",
+    "immigration_receipt": "immigration", "visa_document": "immigration",
+    "tax_form": "tax", "w2": "tax", "tax_return": "tax",
+    "government_form": "tax", "property_tax_bill": "tax",
+    "medical_record": "medical", "medical": "medical",
+    "medical_bill": "medical", "lab_report": "medical", "prescription": "medical",
+    "contract": "legal", "legal": "legal", "legal_filing": "legal",
+    "affidavit": "legal", "court_order": "legal", "nda": "legal",
+    "manufacturing_spec": "operations", "quality_report": "operations",
+    "safety_document": "operations", "bom": "operations",
+    "work_order": "operations", "maintenance_log": "operations",
+    "packing_slip": "logistics", "bill_of_lading": "logistics",
+    "shipping_label": "logistics", "delivery_note": "logistics",
+    "freight_invoice": "logistics",
+    "utility_bill": "utility", "telecom_bill": "utility",
+    "internet_bill": "utility", "water_bill": "utility",
+    "gas_bill": "utility", "electric_bill": "utility",
+    "insurance_policy": "insurance", "declarations_page": "insurance",
+    "insurance_claim": "insurance", "insurance": "insurance",
+    "explanation_of_benefits": "insurance", "loss_run": "insurance",
+    "mortgage_document": "realestate", "mortgage_statement": "realestate",
+    "closing_disclosure": "realestate", "loan_document": "realestate",
+    "real_estate": "realestate", "lease_agreement": "realestate",
+    "property_deed": "realestate", "rent_statement": "realestate",
+    "education_certificate": "education", "student_record": "education",
+    "bank_statement": "finance", "credit_card_statement": "finance",
+    "invoice": "finance", "purchase_order": "finance",
+    "expense_report": "finance", "financial_statement": "finance",
+    "receipt": "finance", "transaction_log": "finance",
+    "pay_stub": "payroll", "payroll_report": "payroll",
+    "offer_letter": "payroll", "resume": "payroll",
+    "annual_report": "corporate", "quarterly_report": "corporate",
+    "sec_filing": "corporate", "audit_report": "corporate",
+    "email": "communication", "letter": "communication",
+    "memo": "communication", "report": "communication",
+    "hr_document": "hr", "employee_roster": "hr",
+    "dataset": "dataset", "spreadsheet": "spreadsheet", "image": "image",
+}
+
+
+def _threshold_for_doc_type(doc_type: str) -> float:
+    domain = _DOC_TYPE_TO_DOMAIN.get(doc_type or "")
+    return _DOC_DOMAIN_THRESHOLDS.get(domain, _SIMILARITY_THRESHOLD)
 
 
 # =============================================================================
@@ -553,31 +711,44 @@ def _build_prompt(question: str, context: str, doc_type: str, lang: Optional[str
     elif lang == "de":
         lang_instruction = "\n- CRITICAL: You MUST write your answer in German (de). Antworte auf Deutsch."
 
+    # These rules apply in all modes — block the hallucinated-web-citation pattern.
+    anti_hallucination = (
+        "- NEVER include URLs, hyperlinks, or citations to external websites.\n"
+        "- NEVER reference YouTube, Wikipedia, government sites, or any source not in the provided documents.\n"
+        "- NEVER use outside knowledge — if it is not in the excerpts below, it does not exist for this answer.\n"
+        "- If the provided documents do not contain the answer, output exactly: "
+        "\"I could not find this in your uploaded documents. Please upload the relevant document.\""
+    )
+
     if analytical:
-        reasoning_rules = """- Use the provided context as your primary source
-- Where the document states facts (risks, dependencies, strategies), reason logically from those facts to answer analytical or hypothetical questions
-- Clearly distinguish between what the document explicitly states vs. what can be reasonably inferred from it
-- If a mitigation or risk is not mentioned, say so — but still reason from related facts that are present
-- Do NOT fabricate specific numbers or names not in the data"""
+        reasoning_rules = (
+            "- Use the provided context as your primary source.\n"
+            "- Where the document states facts, reason logically from those facts.\n"
+            "- Clearly distinguish what the document explicitly states vs. what is inferred.\n"
+            "- Do NOT fabricate specific numbers or names not in the data."
+        )
         not_found_rule = '- If no relevant context exists at all, say: "The document does not address this directly."'
     else:
-        reasoning_rules = """- Do NOT invent or assume anything not in the provided data
-- Do NOT add general knowledge or typical industry norms"""
-        not_found_rule = '- If the answer is not in the data, say: "I could not find this in the provided data."'
+        reasoning_rules = (
+            "- Do NOT invent or assume anything not in the provided data.\n"
+            "- Do NOT add general knowledge or typical industry norms."
+        )
+        not_found_rule = '- If the answer is not in the data, say: "I could not find this in your uploaded documents."'
 
     return f"""You are {role}.
-Answer the question using the information provided below.
+Answer the question using ONLY the information in the document excerpts provided below.
 
 STRICT RULES:
 {rules_text}
 {reasoning_rules}
-{not_found_rule}{subject_rule}{lang_instruction}
+{not_found_rule}
+{anti_hallucination}{subject_rule}{lang_instruction}
 
 {context}
 
 Question: {question}
 
-Answer (bullet points only):"""
+Answer (bullet points only, no URLs, no external references):"""
 
 
 # =============================================================================
@@ -792,20 +963,73 @@ def _add_if(lines: list, label: str, value) -> None:
 # SEMANTIC RETRIEVAL — pgvector
 # =============================================================================
 
+def _is_personal_question(question: str) -> bool:
+    """True when the question is about the user's own documents, not general knowledge."""
+    return bool(_PERSONAL_PRONOUNS.search(question))
+
+
 def _semantic_retrieve(question: str, doc_type_filter: str, top_k: int) -> list:
+    """
+    Three-pass retrieval. First hit wins. No filters stacked on top of each other.
+
+    Pass A — doc-type keyword bridge:
+        Query explicitly names a document type (passport, birth certificate, W2…).
+        Fetch all docs of that type directly by doc_type. No similarity threshold.
+        Rationale: OCR chunks contain field values (dates, names), NOT the doc-type
+        label — cosine similarity systematically underranks them vs textbooks/FAQs.
+
+    Pass B — semantic search:
+        Low floor (0.10) so we retrieve broadly. Exclude pure reference/educational
+        types only when the question uses personal pronouns.
+
+    Pass C — keyword fallback:
+        Full-text LIKE search on filename + summary + raw_text. Zero floor.
+        Catches docs where the embedding model failed or text is too sparse.
+    """
     try:
         from app.config.model_factory import EmbeddingModelFactory
         from app.core.performance import cached_encode
-        embedding_model = EmbeddingModelFactory.get_model()
-        query_vector = cached_encode(embedding_model, question).tolist()
 
+        tenant_id = get_current_tenant_id() or DEFAULT_TENANT_ID
         db = SessionLocal()
         try:
-            where_dt = "AND doc_type = :dt" if doc_type_filter else ""
-            params = {
+            # ── Pass A: doc-type keyword bridge ──────────────────────────────────
+            if not doc_type_filter:
+                explicit_dt = _doctype_from_query_router(question)
+                if explicit_dt:
+                    dt_rows = db.execute(text("""
+                        SELECT id, filename, doc_type, summary, raw_text, 0.99::float AS similarity
+                        FROM documents
+                        WHERE status = 'completed'
+                          AND tenant_id = :tenant_id
+                          AND doc_type = :doc_type
+                        ORDER BY created_at DESC
+                        LIMIT :top_k
+                    """), {"tenant_id": tenant_id, "doc_type": explicit_dt, "top_k": top_k}).fetchall()
+                    if dt_rows:
+                        logger.info(f"🔍 RAG[A-doctype '{explicit_dt}']: {len(dt_rows)} docs")
+                        return [{"id": str(r.id), "filename": r.filename, "doc_type": r.doc_type,
+                                 "summary": r.summary, "raw_text": r.raw_text,
+                                 "similarity": float(r.similarity), "_bridged": True} for r in dt_rows]
+
+            # ── Pass B: semantic search (low threshold) ───────────────────────────
+            embedding_model = EmbeddingModelFactory.get_model()
+            query_vector = cached_encode(embedding_model, question).tolist()
+
+            where_dt    = "AND doc_type = :dt" if doc_type_filter else ""
+            where_excl  = ""
+            excl_params: dict = {}
+            if _is_personal_question(question) and not doc_type_filter:
+                excl_placeholders = ", ".join(f":rdt_{i}" for i, _ in enumerate(_REFERENCE_DOC_TYPES))
+                where_excl = f"AND doc_type NOT IN ({excl_placeholders})"
+                excl_params = {f"rdt_{i}": dt for i, dt in enumerate(_REFERENCE_DOC_TYPES)}
+
+            params: dict = {
                 "vec": str(query_vector),
-                "threshold": _SIMILARITY_THRESHOLD,
+                "threshold": 0.10,   # low floor — retrieve broadly, let LLM judge relevance
                 "top_k": top_k,
+                "tenant_id": tenant_id,
+                **excl_params,
             }
             if doc_type_filter:
                 params["dt"] = doc_type_filter
@@ -815,36 +1039,34 @@ def _semantic_retrieve(question: str, doc_type_filter: str, top_k: int) -> list:
                        1 - (embedding <=> CAST(:vec AS vector)) AS similarity
                 FROM documents
                 WHERE embedding IS NOT NULL AND status = 'completed'
+                  AND tenant_id = :tenant_id
                   {where_dt}
+                  {where_excl}
                   AND 1 - (embedding <=> CAST(:vec AS vector)) >= :threshold
                 ORDER BY embedding <=> CAST(:vec AS vector)
                 LIMIT :top_k
             """), params).fetchall()
 
-            logger.info(f"🔍 RAG retrieval: {len(rows)} docs for '{question}'")
+            logger.info(f"🔍 RAG[B-semantic]: {len(rows)} docs for '{question[:60]}'")
             if rows:
                 return [{"id": str(r.id), "filename": r.filename, "doc_type": r.doc_type,
                          "summary": r.summary, "raw_text": r.raw_text,
                          "similarity": float(r.similarity)} for r in rows]
 
-            # Semantic retrieval found nothing above threshold. Fall back to keyword
-            # search only when no doc_type_filter is active — if a specific type was
-            # requested and found nothing, keyword fallback would return wrong-domain docs.
-            if doc_type_filter:
-                logger.info(f"⚠ No semantic matches for type={doc_type_filter} — skipping keyword fallback to avoid cross-domain results")
-                return []
-            logger.info("⚠ No semantic matches — keyword fallback")
-            return _keyword_fallback(db, question, doc_type_filter, top_k, where_dt)
+            # ── Pass C: keyword fallback ──────────────────────────────────────────
+            logger.info(f"🔍 RAG[C-keyword fallback] for '{question[:60]}'")
+            where_dt_kw = "AND doc_type = :dt" if doc_type_filter else ""
+            return _keyword_fallback(db, question, doc_type_filter, top_k, where_dt_kw)
+
         finally:
             db.close()
     except Exception as e:
         logger.error(f"❌ Semantic retrieval failed: {e}", exc_info=True)
-        if doc_type_filter:
-            return []
         return _keyword_fallback_standalone(question, doc_type_filter, top_k)
 
 
-def _keyword_fallback(db, question, doc_type_filter, top_k, where_dt) -> list:
+def _keyword_fallback(db, question, doc_type_filter, top_k, where_dt, tenant_id: str = None) -> list:
+    tenant_id = tenant_id or get_current_tenant_id() or DEFAULT_TENANT_ID
     stopwords = {
         "the","a","an","is","are","was","were","what","which","who",
         "how","when","where","find","show","tell","me","about","this",
@@ -890,9 +1112,12 @@ def _keyword_fallback(db, question, doc_type_filter, top_k, where_dt) -> list:
         )
         for i, w in enumerate(words):
             params[f"w{i}"] = f"%{w}%"
+        params["tenant_id"] = tenant_id
         rows = db.execute(text(f"""
             SELECT id, filename, doc_type, summary, raw_text, 0.3 AS similarity
-            FROM documents WHERE status='completed' {where_dt}
+            FROM documents WHERE status='completed'
+              AND tenant_id = :tenant_id
+              {where_dt}
               AND ({conds})
             ORDER BY created_at DESC LIMIT :top_k
         """), params).fetchall()
@@ -911,12 +1136,36 @@ def _keyword_fallback_standalone(question, doc_type_filter, top_k) -> list:
         db.close()
 
 
+def _is_navigation_block(text: str) -> bool:
+    """True when a paragraph looks like a nav menu, TOC, or link list.
+
+    Heuristics: many short lines, almost no sentence-ending punctuation.
+    Applied paragraph-by-paragraph so only the nav block is stripped, not the whole doc.
+    """
+    lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
+    if len(lines) < 4:
+        return False
+    avg_len = sum(len(l) for l in lines) / len(lines)
+    if avg_len >= 45:
+        return False
+    sentence_lines = sum(1 for l in lines if l.endswith((".", "?", "!", ":", ";")))
+    return (sentence_lines / len(lines)) <= 0.15
+
+
+def _strip_navigation(raw: str) -> str:
+    """Remove nav-menu paragraphs from raw_text before feeding to the LLM."""
+    paragraphs = re.split(r'\n{2,}', raw)
+    clean = [p for p in paragraphs if not _is_navigation_block(p)]
+    return "\n\n".join(clean).strip()
+
+
 def _build_augmented_context(docs: list) -> str:
     docs_sorted = sorted(docs, key=lambda d: d["similarity"], reverse=True)
     blocks = []
     for doc in docs_sorted:
         summary = (doc.get("summary") or "").strip()[:300]
-        content = _clean_text(doc.get("raw_text") or "")[:_RAW_TEXT_LIMIT]
+        raw     = _clean_text(doc.get("raw_text") or "")
+        content = _strip_navigation(raw)[:_RAW_TEXT_LIMIT]
         sim = doc.get("similarity", 0)
         parts = [
             f"Document: {doc['filename']} (relevance: {sim:.0%})",
@@ -932,6 +1181,41 @@ def _build_augmented_context(docs: list) -> str:
 # STREAMING HELPER
 # =============================================================================
 
+# Patterns that indicate the LLM used outside knowledge rather than the retrieved docs.
+# Any URL, markdown link, or numeric citation bracket signals hallucinated web content.
+_HALLUCINATION_PATTERNS = [
+    re.compile(r'https?://\S+'),                        # bare URL
+    re.compile(r'\[.*?\]\(https?://'),                  # markdown link [text](url)
+    re.compile(r'\[\[?\d+\]?\]\(https?://'),            # citation [[1](url)]
+    re.compile(r'\[\d+\]'),                             # bare numeric citation [1]
+]
+
+_NOT_FOUND_RESPONSE = (
+    "⚠️ Your uploaded documents do not contain enough information to answer this question. "
+    "Please upload the relevant document and try again."
+)
+
+
+def _sanitize_response(text: str) -> tuple[str, bool]:
+    """Remove hallucinated URLs/citations. Returns (clean_text, was_hallucination).
+
+    If a hallucination pattern is found, strip it. If >40% of the content came
+    from hallucination patterns (i.e. the whole answer is fabricated), return
+    the not-found message instead.
+    """
+    original_len = len(text)
+    clean = text
+    found = False
+    for pat in _HALLUCINATION_PATTERNS:
+        if pat.search(clean):
+            found = True
+            clean = pat.sub("", clean)
+    # If we removed a lot of the content, the whole answer was fabricated
+    if found and len(clean.strip()) < original_len * 0.5:
+        return _NOT_FOUND_RESPONSE, True
+    return clean.strip(), found
+
+
 def _make_stream(prompt: str, source_doc: dict = None, session_id: str = "",
                  question: str = "", doc_type: str = "", lang: str = "en"):
     async def _stream():
@@ -941,18 +1225,15 @@ def _make_stream(prompt: str, source_doc: dict = None, session_id: str = "",
             if cached:
                 if source_doc:
                     yield f"data: {json.dumps({'source_document': source_doc})}\n\n"
-                # Replay cached answer token-by-token for consistent UX
                 for word in cached.split(" "):
                     yield f"data: {json.dumps({'token': word + ' '})}\n\n"
                 yield f"data: {json.dumps({'done': True, 'cached': True})}\n\n"
                 return
 
-        full_response = []
         try:
             if source_doc:
                 yield f"data: {json.dumps({'source_document': source_doc})}\n\n"
 
-            # ── LLM queue depth indicator ──────────────────────────────────
             depth = llm_queue.queue_depth()
             if depth > 0:
                 yield f"data: {json.dumps({'queue_position': depth + 1})}\n\n"
@@ -965,6 +1246,9 @@ def _make_stream(prompt: str, source_doc: dict = None, session_id: str = "",
                 "stop": ["Question:", "---", "\n\n\n", "Note:"],
             }
 
+            # Buffer the full response before streaming — we need to sanitize
+            # hallucinated URLs/citations before any token reaches the client.
+            full_response = []
             try:
                 stream = client.generate(
                     model=config.model,
@@ -976,23 +1260,33 @@ def _make_stream(prompt: str, source_doc: dict = None, session_id: str = "",
                     token = chunk.get("response", "")
                     if token:
                         full_response.append(token)
-                        yield f"data: {json.dumps({'token': token})}\n\n"
             except LLMQueueFullError as qe:
                 yield f"data: {json.dumps({'error': str(qe)})}\n\n"
                 return
 
             complete = "".join(full_response)
 
-            # ── Layer 5: Output guardrail ──────────────────────────────────
+            # ── Output guardrail ───────────────────────────────────────────
             try:
                 guard_output(complete, session_id=session_id)
             except GuardrailViolation as ge:
                 yield f"data: {json.dumps({'error': f'[Guardrail] {ge.message}'})}\n\n"
                 return
 
-            # ── Cache the response ─────────────────────────────────────────
-            if question and complete:
-                response_cache.set(question, complete, doc_type, lang)
+            # ── Hallucination sanitizer ────────────────────────────────────
+            # Strip fabricated URLs/citations; if the answer was mostly hallucinated,
+            # replace with the not-found message instead of partial garbage.
+            clean, had_hallucination = _sanitize_response(complete)
+            if had_hallucination:
+                logger.warning(f"Hallucination detected and sanitized for question: '{question[:80]}'")
+
+            # ── Cache only clean, non-hallucinated responses ───────────────
+            if question and clean and not had_hallucination:
+                response_cache.set(question, clean, doc_type, lang)
+
+            # Stream the sanitized response word-by-word
+            for word in clean.split(" "):
+                yield f"data: {json.dumps({'token': word + ' '})}\n\n"
 
             _disclaimer = "\n\n---\n⚠️ Always verify with your provider."
             yield f"data: {json.dumps({'token': _disclaimer})}\n\n"

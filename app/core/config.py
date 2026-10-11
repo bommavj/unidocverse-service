@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------
 model     = "phi3:mini"   # overwritten at startup by _load_active_model()
 embedding = "all-mpnet-base-v2"
+# One context size for every research-path LLM call: a different num_ctx makes
+# Ollama reload the model (~3s). 4096 cut whole tables out of the prompt.
+NUM_CTX   = 8192
 
 CURRENT_MODEL = {"name": model}
 
@@ -100,6 +103,30 @@ def _select_model_for_hardware() -> str:
 
     logger.info(f"🖥️  Hardware detection: {total_gb:.1f} GB RAM → selected model: {selected}")
     return selected
+
+
+def get_active_model() -> str:
+    """Read the current active model from DB (live, reflects frontend changes)."""
+    try:
+        from sqlalchemy import create_engine, text as sa_text
+        db_url = (
+            f"postgresql://"
+            f"{os.getenv('DB_USER', 'unidocverse')}:"
+            f"{os.getenv('DB_PASSWORD', 'unidocverse')}@"
+            f"{os.getenv('DB_HOST', 'localhost')}:"
+            f"{os.getenv('DB_PORT', '54321')}/"
+            f"{os.getenv('DB_NAME', 'unidocverse_db')}"
+        )
+        engine = create_engine(db_url)
+        with engine.connect() as conn:
+            row = conn.execute(
+                sa_text("SELECT value FROM settings WHERE key = 'active_model' LIMIT 1")
+            ).fetchone()
+            if row:
+                return row[0]
+    except Exception:
+        pass
+    return CURRENT_MODEL.get("name") or model
 
 
 def _persist_active_model(name: str) -> None:

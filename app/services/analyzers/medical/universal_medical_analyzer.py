@@ -1320,18 +1320,10 @@ class UniversalMedicalRecordAnalyzer:
             return None
 
     def _extract_pdf_ocr(self, file_path: str) -> Optional[str]:
-        """Extract text from PDF using OCR (pdf2image + pytesseract)"""
-        if not OCR_AVAILABLE:
-            logger.warning("OCR not available - install pdf2image and pytesseract")
-            return None
-
+        """Extract text from any document using universal OCR (auto-rotate, best engine)."""
         try:
-            pages = convert_from_path(file_path)
-            text_parts: List[str] = []
-            for page in pages:
-                text = pytesseract.image_to_string(page)
-                text_parts.append(text)
-            text = "\n".join(text_parts)
+            from app.services.ocr.ocr_utils import ocr_any
+            text = ocr_any(file_path)
             return text.strip() or None
         except Exception as e:
             logger.error(f"OCR extraction error: {e}")

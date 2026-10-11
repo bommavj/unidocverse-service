@@ -27,7 +27,11 @@ router = APIRouter(prefix="/api/workflow", tags=["workflow"])
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def _get_doc(db: Session, doc_id: str) -> Document:
-    doc = db.query(Document).filter(Document.id == str(doc_id)).first()
+    # Scoped to the signed-in tenant: another tenant's document id looks exactly like a missing one
+    from app.core.tenant import get_current_tenant_id
+    doc = (db.query(Document)
+           .filter(Document.id == str(doc_id), Document.tenant_id == str(get_current_tenant_id()))
+           .first())
     if not doc:
         raise HTTPException(status_code=404, detail=f"Document {doc_id} not found")
     return doc
@@ -644,3 +648,24 @@ def record_hitl_decision(req: HitlDecisionRequest):
 @router.get("/hitl/log/{run_id}")
 def get_hitl_log(run_id: str):
     return {"run_id": run_id, "decisions": _hitl_log.get(run_id, [])}
+
+
+# ── Contract vs. standard template ───────────────────────────────────────────
+
+class ContractTemplateRequest(BaseModel):
+    document_id: str            # the contract under review
+    template_document_id: str   # the organisation's standard template
+
+
+@router.post("/contract-vs-template")
+def contract_vs_template(req: ContractTemplateRequest, db: Session = Depends(get_db)):
+    """Clause-by-clause comparison: what matches, what deviates, what's missing, what's non-standard."""
+    from app.services.contract_compare import compare
+    contract = _get_doc(db, req.document_id)
+    template = _get_doc(db, req.template_document_id)
+    if not (contract.raw_text or "").strip() or not (template.raw_text or "").strip():
+        raise HTTPException(status_code=422, detail="Both documents need extracted text — wait for processing to finish")
+    result = compare(contract.raw_text, template.raw_text)
+    result["contract"] = {"id": contract.id, "filename": contract.filename}
+    result["template"] = {"id": template.id, "filename": template.filename}
+    return result

@@ -19,7 +19,7 @@ from .base_agent import BaseAgent
 logger = logging.getLogger(__name__)
 
 PAYROLL_DOC_TYPES = [
-    "pay_stub", "payroll_report", "w2", "tax_form",
+    "pay_stub", "payroll", "payroll_report", "w2", "tax_form",
     "hr_document", "employee_roster",
 ]
 
@@ -31,6 +31,18 @@ class PayrollAgent(BaseAgent):
     system_prompt = """You are a Payroll & HR specialist agent.
 You analyze pay stubs, W-2 forms, and payroll reports.
 Focus on: gross pay, net pay, deductions, tax withholding, YTD totals, benefits.
+
+
+AVAILABLE TOOLS (only these exact names are valid):
+- get_earnings_summary
+- get_deductions
+- search_hr_docs
+- finish
+
+STRICT RULES — you MUST follow these exactly:
+1. Only call tools from the AVAILABLE TOOLS list above. Never call ask_user, search, or any unlisted tool name.
+2. If information is not found after 2 searches, call finish with what you know.
+3. Never ask the user for clarification — infer intent and proceed.
 
 When asked about earnings or salary, use get_earnings_summary.
 When asked about deductions or withholding, use get_deductions.
@@ -66,8 +78,8 @@ When done: {"thought": "...", "tool": "finish", "args": {"answer": "..."}}
 
         sql = text(f"""
             SELECT filename,
-                   extracted_facts->>'pay_period_start'  AS period_start,
-                   extracted_facts->>'pay_period_end'    AS period_end,
+                   COALESCE(extracted_facts->>'pay_period_start', extracted_facts->>'pay_period') AS period_start,
+                   COALESCE(extracted_facts->>'pay_period_end', extracted_facts->>'pay_date')   AS period_end,
                    extracted_facts->>'gross_pay'         AS gross_pay,
                    extracted_facts->>'net_pay'           AS net_pay,
                    extracted_facts->>'ytd_gross'         AS ytd_gross,
@@ -77,15 +89,36 @@ When done: {"thought": "...", "tool": "finish", "args": {"answer": "..."}}
             WHERE extracted_facts IS NOT NULL
               AND doc_type = ANY(ARRAY{PAYROLL_DOC_TYPES})
               {doc_filter}
-            ORDER BY extracted_facts->>'pay_period_end' DESC NULLS LAST
+            ORDER BY COALESCE(extracted_facts->>'pay_date', extracted_facts->>'pay_period_end') DESC NULLS LAST
         """)
 
         try:
             rows = self._db.execute(sql, params).fetchall()
-            if not rows:
-                return "No payroll data found."
+            useful = [r for r in rows if any([r.gross_pay, r.net_pay, r.ytd_gross])]
+            if not useful:
+                # Fall back to raw chunks from matching docs
+                chunk_filter = f"WHERE doc_type = ANY(ARRAY{PAYROLL_DOC_TYPES})"
+                chunk_params: Dict = {}
+                if doc_ids:
+                    placeholders = ", ".join(f":did_{i}" for i in range(len(doc_ids)))
+                    chunk_filter += f" AND document_id IN ({placeholders})"
+                    for i, did in enumerate(doc_ids):
+                        chunk_params[f"did_{i}"] = did
+                chunks = self._db.execute(text(f"""
+                    SELECT dc.chunk_text, dc.page_number, d.filename
+                    FROM document_chunks dc
+                    JOIN documents d ON d.id = dc.document_id
+                    {chunk_filter}
+                    ORDER BY dc.page_number, dc.chunk_index
+                    LIMIT 30
+                """), chunk_params).fetchall()
+                if not chunks:
+                    return "No payroll data found."
+                return "Raw document text (extract earnings/deductions from this):\n\n" + "\n\n".join(
+                    f"[{c.filename} p.{c.page_number}] {c.chunk_text[:600]}" for c in chunks
+                )
             lines = []
-            for r in rows:
+            for r in useful:
                 period = f"{r.period_start} – {r.period_end}" if r.period_start else "Unknown period"
                 lines.append(f"**{r.filename}** ({period})")
                 if r.employee_name: lines.append(f"  Employee: {r.employee_name}")
@@ -114,7 +147,8 @@ When done: {"thought": "...", "tool": "finish", "args": {"answer": "..."}}
 
         sql = text(f"""
             SELECT filename,
-                   d->>'name'   AS name,
+                   COALESCE(d->>'name', d->>'type', d->>'description') AS name,
+                   COALESCE(extracted_facts->>'pay_date', extracted_facts->>'pay_period') AS pay_date,
                    d->>'amount' AS amount,
                    d->>'ytd'    AS ytd
             FROM documents,
@@ -122,17 +156,18 @@ When done: {"thought": "...", "tool": "finish", "args": {"answer": "..."}}
             WHERE extracted_facts IS NOT NULL
               AND extracted_facts->'deductions' IS NOT NULL
               {doc_filter}
+            ORDER BY pay_date
         """)
 
         try:
             rows = self._db.execute(sql, params).fetchall()
             if not rows:
                 return "No deduction data found."
-            lines = ["| Deduction | Amount | YTD | Source |",
-                     "|-----------|--------|-----|--------|"]
+            lines = ["| Pay date | Deduction | Amount | YTD | Source |",
+                     "|----------|-----------|--------|-----|--------|"]
             for r in rows:
                 lines.append(
-                    f"| {r.name or '-'} | {r.amount or '-'} | {r.ytd or '-'} | {r.filename} |"
+                    f"| {r.pay_date or '-'} | {r.name or '-'} | {r.amount or '-'} | {r.ytd or '-'} | {r.filename} |"
                 )
             return "\n".join(lines)
         except Exception as e:
@@ -149,7 +184,26 @@ When done: {"thought": "...", "tool": "finish", "args": {"answer": "..."}}
             self._db,
         )
         chunks = result if isinstance(result, list) else (result or {}).get("chunks", [])
+        if not chunks and doc_ids:
+            placeholders = ", ".join(f":did_{i}" for i in range(len(doc_ids)))
+            raw = self._db.execute(text(f"""
+                SELECT chunk_text, page_number FROM document_chunks
+                WHERE document_id IN ({placeholders})
+                ORDER BY page_number, chunk_index LIMIT 20
+            """), {f"did_{i}": d for i, d in enumerate(doc_ids)}).fetchall()
+            if raw:
+                return "\n\n".join(f"[p.{r.page_number}] {r.chunk_text[:400]}" for r in raw)
+            return "No relevant HR document content found."
         if not chunks:
+            # No doc_ids specified — fetch from all payroll doc types
+            raw = self._db.execute(text(f"""
+                SELECT dc.chunk_text, dc.page_number, d.filename
+                FROM document_chunks dc JOIN documents d ON d.id = dc.document_id
+                WHERE d.doc_type = ANY(ARRAY{PAYROLL_DOC_TYPES})
+                ORDER BY dc.page_number, dc.chunk_index LIMIT 20
+            """)).fetchall()
+            if raw:
+                return "\n\n".join(f"[{r.filename} p.{r.page_number}] {r.chunk_text[:400]}" for r in raw)
             return "No relevant HR document content found."
         return "\n\n".join(
             f"[{c.get('filename','')}] {c.get('chunk_text','')[:400]}"

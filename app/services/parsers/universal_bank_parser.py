@@ -104,18 +104,11 @@ class UniversalBankParser:
             return ""
 
     def _extract_text_with_ocr(self, file_path: str) -> str:
-        """OCR extraction"""
-        if not OCR_AVAILABLE:
-            return ""
-
+        """OCR extraction with auto-rotation and best-engine fallback."""
         try:
-            images = convert_from_path(file_path, dpi=300)
-            text = ""
-            for i, img in enumerate(images, 1):
-                logger.info(f"   OCR page {i}...")
-                text += pytesseract.image_to_string(img, lang='eng') + "\n"
-            return text
-        except:
+            from app.services.ocr.ocr_utils import ocr_any
+            return ocr_any(file_path)
+        except Exception:
             return ""
 
     def _extract_transactions(self, text: str) -> List[Dict]:

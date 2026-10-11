@@ -35,7 +35,7 @@ class LegalWorkflowService:
             if not contract_name:
                 m = re.search(r'^([^\n]{10,100})', txt)
                 contract_name = m.group(1).strip() if m else filename
-            contract_name = self._clean_str(contract_name)
+            contract_name = self._clean_str(re.sub(r'[*_#`]+', ' ', contract_name or ''))
 
             # 2. Extract Counterparty
             counterparty = self._extract_counterparty(scanner, txt)
@@ -43,13 +43,13 @@ class LegalWorkflowService:
             # 3. Extract Notice Period
             notice_period = scanner.find_regex(r'(\d+\s+(?:days|months)\s+prior\s+notice)') or \
                             scanner.find_regex(r'notice\s+period\s+of\s+(\d+\s+\w+)') or \
-                            "30 Days prior"
+                            None
             notice_period = self._clean_str(notice_period)
 
             # 4. Extract Governing Law & Venue
             gov_law = scanner.find_regex(r'governing\s+law\s+of\s+(?:the\s+state\s+of\s+)?([A-Za-z\s]{2,30})') or \
                       scanner.find_regex(r'governed\s+by\s+(?:the\s+laws\s+of\s+)?([A-Za-z\s]{2,30})') or \
-                      "Delaware"
+                      None
             gov_law = self._clean_str(gov_law)
 
             # 5. Extract Expiry Date & Calculate Status
@@ -97,7 +97,7 @@ class LegalWorkflowService:
                     pass
 
             # Check governing law deviation
-            if gov_law.lower() not in ["delaware", "new york", "california"]:
+            if gov_law and gov_law.lower() not in ["delaware", "new york", "california"]:
                 deviations.append(f"Non-standard governing law: {gov_law}")
                 playbook_notes.append(f"ADVISORY: Governing law is set to {gov_law} instead of standard jurisdictions (Delaware, New York, or California).")
                 if risk_rating == "Low":
@@ -285,7 +285,7 @@ class LegalWorkflowService:
         
         fallback = scanner.find_regex(r'counterparty:\s*(.*)') or \
                    scanner.find_regex(r'agreement\s+by\s+and\s+between\s+(.*?)\s+and')
-        return self._clean_str(fallback or "Unknown Counterparty")
+        return self._clean_str(fallback) or None
 
     def _clean_str(self, val: str) -> str:
         if not val:

@@ -539,6 +539,15 @@ def _merge_fields(llm: Dict, tables: Dict, regex: Dict, text: str) -> Dict[str, 
     # Policy type default
     merged.setdefault("policy_type", _detect_policy_type(text))
 
+    # Detect six-month premium label so the UI can display "6-month" instead of "annual".
+    # Do NOT multiply — store exactly what the document says.
+    six_month_pat = re.compile(
+        r"total\s+six[\s\-]month\s+premium|6[\s\-]month\s+(?:total\s+)?premium", re.I
+    )
+    if six_month_pat.search(text):
+        merged["premium_freq"] = "semi_annual"
+        logger.info("📅 Six-month premium label detected — storing as-is")
+
     logger.info(
         f"📊 Merged: {len(merged)} fields | "
         f"policy={merged.get('policy_number','?')} | "

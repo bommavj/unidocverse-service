@@ -9,6 +9,7 @@ from sqlalchemy import text, or_
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.api.auth_router import get_current_user
 from app.models.client import Client
 from app.models.document import Document
 from app.models.policy import Policy
@@ -203,9 +204,9 @@ async def get_clients(
 
 @router.post("")
 async def create_client(
-        payload:    ClientCreate,
-        created_by: Optional[str] = Query(None),
-        db:         Session       = Depends(get_db)
+        payload:      ClientCreate,
+        db:           Session = Depends(get_db),
+        current_user: dict    = Depends(get_current_user),
 ):
     """Create a new client."""
     try:
@@ -236,7 +237,8 @@ async def create_client(
             tags           = payload.tags,
             avatar_color   = payload.avatar_color,
             source         = 'manual',
-            created_by     = created_by,
+            tenant_id      = current_user["tenant_id"],
+            created_by     = current_user["id"],
         )
 
         db.add(client)
@@ -615,13 +617,14 @@ async def get_client_notes(
 
 @router.post("/{client_id}/notes")
 async def add_client_note(
-    client_id:  str,
-    payload:    NoteCreate,
-    created_by: Optional[str] = Query(None),
-    db:         Session       = Depends(get_db)
+    client_id:    str,
+    payload:      NoteCreate,
+    db:           Session = Depends(get_db),
+    current_user: dict    = Depends(get_current_user),
 ):
     """Add a manual note or activity to a client."""
     note_id = str(_uuid.uuid4())
+    by = current_user["username"]
     db.execute(text("""
         INSERT INTO client_notes
             (id, client_id, note_type, title, body, created_by)
@@ -633,7 +636,7 @@ async def add_client_note(
         "type":  payload.note_type,
         "title": payload.title,
         "body":  payload.body,
-        "by":    created_by or "agent",
+        "by":    by,
     })
     db.commit()
     return {
@@ -641,7 +644,7 @@ async def add_client_note(
         "note_type":  payload.note_type,
         "title":      payload.title,
         "body":       payload.body,
-        "created_by": created_by or "agent",
+        "created_by": by,
         "icon":       NOTE_TYPE_ICONS.get(payload.note_type, "📋"),
         "source":     "manual",
     }

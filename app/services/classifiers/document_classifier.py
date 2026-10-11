@@ -16,34 +16,63 @@ logger = logging.getLogger(__name__)
 # Patterns that are conclusive — ONLY found in that document type.
 # Credit card is checked BEFORE bank_statement because they share vocabulary.
 
+# Heuristic rule format:
+#   (doc_type, positive_patterns, min_positive_hits, negative_patterns, max_negative_hits)
+# A rule fires only when positive_hits >= min_positive AND negative_hits <= max_negative.
+# Negative patterns catch cross-type contamination (e.g. "homeowners" in property tax bills).
 _HEURISTIC_RULES = [
+    (
+        "property_tax_bill",
+        [
+            re.compile(r"(secured|unsecured)\s+(property\s+)?tax\s+bill", re.I),
+            re.compile(r"county\s+(of\s+)?\w+\s+(property\s+tax|tax\s+collector)", re.I),
+            re.compile(r"assessor['\u2019]?s?\s+parcel\s+number", re.I),
+            re.compile(r"parcel\s+number[\s:\|]+[\d\-]+", re.I),
+            re.compile(r"(tax\s+rate\s+area|tra\s*[\d])", re.I),
+            re.compile(r"(general\s+tax\s+levy|special\s+assessments?\s+total)", re.I),
+            re.compile(r"(first\s+installment|second\s+installment)\s+(due|delinquent)", re.I),
+            re.compile(r"property\s+tax\s+(payment|amount|due|bill)", re.I),
+        ],
+        2,  # any 2 = property tax bill
+        [],  # no negatives needed — these patterns are unambiguous
+        0,
+    ),
     (
             "declarations_page",
             [
                 re.compile(r"coverage\s+declaration", re.I),
                 re.compile(r"named\s+insured", re.I),
-                re.compile(r"expiration\s+date", re.I),
-                re.compile(r"(coverage\s+[abcdef]\s*[\-–]?\s*(dwelling|other\s+structures|personal\s+property|loss\s+of\s+use|personal\s+liability|med\s+pay))", re.I),
                 re.compile(r"total\s+policy\s+premium", re.I),
                 re.compile(r"(homeowners|ho-?3|ho\s+3|dwelling\s+fire|renters\s+policy)", re.I),
                 re.compile(r"(stillwater|travelers|hartford|geico|chubb|aegis|nationwide|state\s+farm|allstate|progressive)\s+insurance", re.I),
                 re.compile(r"section\s+[i1]\s*[\-–]?\s*property\s+coverages", re.I),
                 re.compile(r"section\s+[ii2]\s*[\-–]?\s*liability\s+coverages", re.I),
-            ],
-            2,  # any 2 of these = declarations page, no ambiguity
-    ),
-    (
-            "annual_report",
-            [
-                re.compile(r"\bform\s+10-k\b", re.I),
-                re.compile(r"annual\s+report\s+pursuant\s+to\s+section", re.I),
-                re.compile(r"securities\s+and\s+exchange\s+commission", re.I),
-                re.compile(r"fiscal\s+year\s+ended", re.I),
-                re.compile(r"consolidated\s+balance\s+sheet", re.I),
-                re.compile(r"consolidated\s+statements?\s+of\s+(comprehensive\s+)?loss", re.I),
+                # Coverage A/B/C/D/E/F with explicit insurance context (not standalone "dwelling")
+                re.compile(r"coverage\s+[abcdef]\s*[\-–]?\s*(dwelling|other\s+structures|personal\s+property|loss\s+of\s+use|personal\s+liability|med\s+pay)", re.I),
             ],
             2,
-        ),
+            # Negative: property tax indicators invalidate a declarations_page match
+            [
+                re.compile(r"assessor['\u2019]?s?\s+parcel", re.I),
+                re.compile(r"tax\s+rate\s+area", re.I),
+                re.compile(r"(first|second)\s+installment\s+(due|delinquent)", re.I),
+                re.compile(r"county\s+(of\s+)?\w+\s+(property\s+tax|tax\s+collector)", re.I),
+                re.compile(r"parcel\s+number[\s:\|]+[\d\-]+", re.I),
+            ],
+            1,  # 1 negative hit is enough to reject the declarations_page match
+    ),
+    (
+        "annual_report",
+        [
+            re.compile(r"\bform\s+10-k\b", re.I),
+            re.compile(r"annual\s+report\s+pursuant\s+to\s+section", re.I),
+            re.compile(r"securities\s+and\s+exchange\s+commission", re.I),
+            re.compile(r"fiscal\s+year\s+ended", re.I),
+            re.compile(r"consolidated\s+balance\s+sheet", re.I),
+            re.compile(r"consolidated\s+statements?\s+of\s+(comprehensive\s+)?loss", re.I),
+        ],
+        2, [], 0,
+    ),
     (
         "credit_card_statement",
         [
@@ -57,7 +86,7 @@ _HEURISTIC_RULES = [
             re.compile(r"late\s+payment\s+warning", re.I),
             re.compile(r"\bAPR\b", re.I),
         ],
-        2,
+        2, [], 0,
     ),
     (
         "bank_statement",
@@ -72,7 +101,7 @@ _HEURISTIC_RULES = [
             re.compile(r"(ending|closing)\s+balance", re.I),
             re.compile(r"daily\s+ledger\s+balance", re.I),
         ],
-        2,
+        2, [], 0,
     ),
     (
         "utility_bill",
@@ -84,7 +113,7 @@ _HEURISTIC_RULES = [
             re.compile(r"billing\s+period.{0,40}(kwh|therms?|meter)", re.I),
             re.compile(r"service\s+address", re.I),
         ],
-        2,
+        2, [], 0,
     ),
     (
         "invoice",
@@ -95,7 +124,7 @@ _HEURISTIC_RULES = [
             re.compile(r"remit\s+to", re.I),
             re.compile(r"payment\s+terms", re.I),
         ],
-        2,
+        2, [], 0,
     ),
     (
         "purchase_order",
@@ -104,7 +133,7 @@ _HEURISTIC_RULES = [
             re.compile(r"p\.?o\.?\s*(number|#|no\.?)\s*[:\-]?\s*\w+", re.I),
             re.compile(r"requisition\s+number", re.I),
         ],
-        1,
+        1, [], 0,
     ),
     (
         "tax_form",
@@ -118,6 +147,10 @@ _HEURISTIC_RULES = [
             re.compile(r"federal\s+income\s+tax\s+withheld", re.I),
         ],
         1,
+        # Exclude property tax bills — they share "tax" language but are a different type
+        [re.compile(r"assessor['’]?s?\s+parcel", re.I),
+         re.compile(r"(secured|unsecured)\s+tax\s+bill", re.I)],
+        1,
     ),
     (
         "resume",
@@ -126,7 +159,7 @@ _HEURISTIC_RULES = [
             re.compile(r"(references\s+available|curriculum\s+vitae|\bcv\b)", re.I),
             re.compile(r"(objective|summary|profile)\s*[\n\r]", re.I),
         ],
-        2,
+        2, [], 0,
     ),
     (
         "contract",
@@ -137,7 +170,232 @@ _HEURISTIC_RULES = [
             re.compile(r"governing\s+law", re.I),
             re.compile(r"(indemnif(y|ication)|hold\s+harmless)", re.I),
         ],
+        2, [], 0,
+    ),
+    # ── Pay Stub / Payroll ───────────────────────────────────────────────────────
+    (
+        "pay_stub",
+        [
+            re.compile(r"(gross\s+pay|gross\s+earnings)", re.I),
+            re.compile(r"(net\s+pay|take.?home\s+pay)", re.I),
+            re.compile(r"\byt[dt]\b", re.I),  # YTD or YTT
+            re.compile(r"(federal\s+income\s+tax|fica|social\s+security\s+tax|medicare\s+tax)", re.I),
+            re.compile(r"(pay\s+period|pay\s+date|check\s+date)", re.I),
+            re.compile(r"(employee\s+id|emp\.?\s*id|employee\s+number)", re.I),
+            re.compile(r"(regular\s+hours|overtime\s+hours|hourly\s+rate)", re.I),
+        ],
+        3, [], 0,
+    ),
+    # ── Expense Report ──────────────────────────────────────────────────────────
+    (
+        "expense_report",
+        [
+            re.compile(r"expense\s+report", re.I),
+            re.compile(r"(reimbursement|reimburse)", re.I),
+            re.compile(r"(business\s+purpose|expense\s+category|expense\s+type)", re.I),
+            re.compile(r"(submitted\s+by|employee\s+name|department)", re.I),
+            re.compile(r"(receipt\s+attached|receipt\s+required|no\s+receipt)", re.I),
+        ],
+        2, [], 0,
+    ),
+    # ── Receipt ─────────────────────────────────────────────────────────────────
+    (
+        "receipt",
+        [
+            re.compile(r"(receipt\s+number|receipt\s*#|transaction\s+id)", re.I),
+            re.compile(r"(subtotal|sub-total|sales\s+tax|total\s+paid)", re.I),
+            re.compile(r"(thank\s+you\s+for\s+your\s+(purchase|order|visit))", re.I),
+            re.compile(r"(cashier|register\s+#|store\s+#|order\s+confirmation)", re.I),
+        ],
+        2, [], 0,
+    ),
+    # ── Medical Record ──────────────────────────────────────────────────────────
+    (
+        "medical_record",
+        [
+            re.compile(r"(date\s+of\s+service|dos\s*:)", re.I),
+            re.compile(r"(diagnosis|icd.?\d{1,2}\s*[:–])", re.I),
+            re.compile(r"(procedure\s+code|cpt\s*[:–\s]\s*\d{5})", re.I),
+            re.compile(r"(attending\s+physician|ordering\s+provider|rendering\s+provider)", re.I),
+            re.compile(r"(patient\s+(name|dob|id|mrn)|medical\s+record\s+number)", re.I),
+            re.compile(r"(discharge\s+summary|chief\s+complaint|assessment\s+and\s+plan)", re.I),
+        ],
+        2, [], 0,
+    ),
+    # ── Medical Bill / EOB ───────────────────────────────────────────────────────
+    (
+        "medical_bill",
+        [
+            re.compile(r"(explanation\s+of\s+benefits|eob)", re.I),
+            re.compile(r"(amount\s+billed|insurance\s+paid|patient\s+(responsibility|owes))", re.I),
+            re.compile(r"(deductible\s+(applied|met)|out.of.pocket)", re.I),
+            re.compile(r"(service\s+date|claim\s+number|provider\s+name)", re.I),
+        ],
+        2, [], 0,
+    ),
+    # ── Insurance Policy ────────────────────────────────────────────────────────
+    (
+        "insurance_policy",
+        [
+            re.compile(r"policy\s+(number|no\.?|#)\s*[:\-]?\s*[\w\-]+", re.I),
+            re.compile(r"(effective\s+date|policy\s+period)", re.I),
+            re.compile(r"(exclusion|endorsement|rider|addendum)", re.I),
+            re.compile(r"(insured|policyholder|named\s+insured)", re.I),
+            re.compile(r"(deductible|premium|coverage\s+limit)", re.I),
+        ],
+        3,
+        # Exclude if it looks like a declarations page (simpler summary) or property tax
+        [re.compile(r"coverage\s+declaration", re.I),
+         re.compile(r"assessor['’]?s?\s+parcel", re.I)],
+        1,
+    ),
+    # ── Insurance Claim ─────────────────────────────────────────────────────────
+    (
+        "insurance_claim",
+        [
+            re.compile(r"(claim\s+(number|#|form)|claimant)", re.I),
+            re.compile(r"(date\s+of\s+(loss|incident|accident))", re.I),
+            re.compile(r"(adjuster|claim\s+adjuster|claims\s+representative)", re.I),
+            re.compile(r"(loss\s+description|damage\s+description)", re.I),
+        ],
+        2, [], 0,
+    ),
+    # ── Mortgage Document ────────────────────────────────────────────────────────
+    (
+        "mortgage_document",
+        [
+            re.compile(r"(mortgage|deed\s+of\s+trust|trust\s+deed)", re.I),
+            re.compile(r"(borrower|mortgagor|lender|mortgagee)", re.I),
+            re.compile(r"(loan\s+amount|principal\s+amount|original\s+loan)", re.I),
+            re.compile(r"(interest\s+rate|annual\s+percentage\s+rate|apr)", re.I),
+            re.compile(r"(monthly\s+payment|amortization|balloon\s+payment)", re.I),
+        ],
+        3, [], 0,
+    ),
+    # ── Closing Disclosure ───────────────────────────────────────────────────────
+    (
+        "closing_disclosure",
+        [
+            re.compile(r"closing\s+disclosure", re.I),
+            re.compile(r"(cash\s+to\s+close|funds\s+to\s+close)", re.I),
+            re.compile(r"(loan\s+terms|loan\s+information|projected\s+payments)", re.I),
+            re.compile(r"(closing\s+costs|loan\s+costs|other\s+costs)", re.I),
+            re.compile(r"(hud-1|settlement\s+statement|good\s+faith\s+estimate)", re.I),
+        ],
+        2, [], 0,
+    ),
+    # ── Lease Agreement ──────────────────────────────────────────────────────────
+    (
+        "lease_agreement",
+        [
+            re.compile(r"(lease\s+agreement|rental\s+agreement)", re.I),
+            re.compile(r"(landlord|lessor|property\s+owner)", re.I),
+            re.compile(r"(tenant|lessee|renter)", re.I),
+            re.compile(r"(monthly\s+rent|rental\s+amount|rent\s+due)", re.I),
+            re.compile(r"(security\s+deposit|lease\s+term|tenancy)", re.I),
+        ],
+        3, [], 0,
+    ),
+    # ── USCIS / Immigration Receipt ──────────────────────────────────────────────
+    (
+        "uscis_receipt",
+        [
+            re.compile(r"(i-797|form\s+i.?797)", re.I),
+            re.compile(r"(uscis|u\.s\.\s+citizenship\s+and\s+immigration)", re.I),
+            re.compile(r"(receipt\s+notice|approval\s+notice|priority\s+date)", re.I),
+            re.compile(r"(petition|application\s+type|case\s+type)", re.I),
+        ],
+        2, [], 0,
+    ),
+    # ── Government Form ──────────────────────────────────────────────────────────
+    (
+        "government_form",
+        [
+            re.compile(r"\bform\s+(i-9|ss-4|941|940|w-4|i-9)\b", re.I),
+            re.compile(r"(department\s+of\s+(labor|treasury|homeland\s+security|state))", re.I),
+            re.compile(r"(omb\s+control\s+number|omb\s+no\.)", re.I),
+            re.compile(r"(social\s+security\s+administration|ssa\.gov)", re.I),
+        ],
         2,
+        # Exclude IRS income tax forms — those are tax_form
+        [re.compile(r"(form\s+1040|form\s+w-2|form\s+1099)", re.I)],
+        1,
+    ),
+    # ── NDA ──────────────────────────────────────────────────────────────────────
+    (
+        "nda",
+        [
+            re.compile(r"(non.?disclosure\s+agreement|nda|confidentiality\s+agreement)", re.I),
+            re.compile(r"(confidential\s+information|proprietary\s+information)", re.I),
+            re.compile(r"(disclosing\s+party|receiving\s+party)", re.I),
+        ],
+        2, [], 0,
+    ),
+    # ── Statement of Work / SOW ──────────────────────────────────────────────────
+    (
+        "sow",
+        [
+            re.compile(r"(statement\s+of\s+work|scope\s+of\s+work)", re.I),
+            re.compile(r"(deliverables|milestones|acceptance\s+criteria)", re.I),
+            re.compile(r"(project\s+timeline|project\s+schedule|completion\s+date)", re.I),
+        ],
+        2, [], 0,
+    ),
+    # ── Offer Letter ─────────────────────────────────────────────────────────────
+    (
+        "offer_letter",
+        [
+            re.compile(r"(offer\s+of\s+employment|employment\s+offer)", re.I),
+            re.compile(r"(start\s+date|commencement\s+date|first\s+day)", re.I),
+            re.compile(r"(base\s+salary|annual\s+salary|compensation\s+package)", re.I),
+            re.compile(r"(at.?will\s+employment|contingent\s+on|background\s+check)", re.I),
+        ],
+        2, [], 0,
+    ),
+    # ── Payoff Statement ─────────────────────────────────────────────────────────
+    (
+        "payoff_statement",
+        [
+            re.compile(r"(payoff\s+(amount|quote|statement|figure))", re.I),
+            re.compile(r"(good\s+through|valid\s+through|per\s+diem)", re.I),
+            re.compile(r"(outstanding\s+balance|remaining\s+balance|loan\s+payoff)", re.I),
+        ],
+        2, [], 0,
+    ),
+    # ── Birth Certificate ────────────────────────────────────────────────────────
+    (
+        "birth_certificate",
+        [
+            re.compile(r"(certificate\s+of\s+(live\s+)?birth|birth\s+certificate)", re.I),
+            re.compile(r"(date\s+of\s+birth|place\s+of\s+birth|city\s+of\s+birth)", re.I),
+            re.compile(r"(county\s+of\s+birth|state\s+of\s+birth|country\s+of\s+birth)", re.I),
+            re.compile(r"(father.{0,5}name|mother.{0,5}(maiden\s+)?name)", re.I),
+            re.compile(r"(state\s+registrar|county\s+clerk|vital\s+(records?|statistics))", re.I),
+        ],
+        2, [], 0,
+    ),
+    # ── Passport ─────────────────────────────────────────────────────────────────
+    (
+        "passport",
+        [
+            re.compile(r"\bpassport\b", re.I),
+            re.compile(r"(passport\s+(number|no\.?|#))", re.I),
+            re.compile(r"(nationality|country\s+of\s+citizenship)", re.I),
+            re.compile(r"(date\s+of\s+(issue|expiry|expiration))", re.I),
+            re.compile(r"(place\s+of\s+birth|issuing\s+authority|issuing\s+country)", re.I),
+        ],
+        2, [], 0,
+    ),
+    # ── Driver's License ──────────────────────────────────────────────────────────
+    (
+        "drivers_license",
+        [
+            re.compile(r"(driver.{0,5}s?\s+license|driving\s+license)", re.I),
+            re.compile(r"(license\s+(number|no\.?|class)|dl\s+(number|no\.?|class))", re.I),
+            re.compile(r"(department\s+of\s+motor\s+vehicles|dmv)", re.I),
+            re.compile(r"(endorsements|restrictions|class\s+[a-cm])", re.I),
+        ],
+        2, [], 0,
     ),
 ]
 
@@ -200,14 +458,20 @@ DOC_TYPES = [
 
     "insurance_claim", "insurance_policy", "insurance_eob",
     "auto_insurance_claim", "health_insurance_claim",
-    "declarations_page",  # ← ADD THIS
-    "renewal_notice",  # ← ADD THIS (for future)
-    "nonrenewal_notice",  # ← ADD THIS (for future)
-    "cancellation_notice",  # ← ADD THIS (for future)
-    "loss_run",  # ← ADD THIS (for future)
+    "declarations_page",
+    "renewal_notice", "nonrenewal_notice", "cancellation_notice", "loss_run",
     "loan_estimate", "closing_disclosure", "payoff_statement", "payoff_quote", "mortgage_payoff",
 
+    # Property / Tax
+    "property_tax_bill",
 
+    # Personal Identity Documents
+    "birth_certificate", "passport", "drivers_license",
+    "social_security_card", "marriage_certificate", "death_certificate",
+    "vaccination_record", "naturalization_certificate",
+
+    # Other common docs without dedicated filename patterns
+    "explanation_of_benefits",
 ]
 
 
@@ -446,6 +710,70 @@ DOC_KEYWORDS: Dict[str, List[str]] = {
         "interest per diem",
     ],
 
+    "property_tax_bill": [
+        "secured property tax", "unsecured property tax", "annual secured",
+        "assessor parcel number", "parcel number", "tax rate area",
+        "first installment", "second installment", "delinquent date",
+        "total amount due", "taxable value", "county tax collector",
+        "general tax levy", "special assessments", "homeowners exemption",
+        "fiscal year", "property tax bill",
+    ],
+
+    "birth_certificate": [
+        "certificate of birth", "certificate of live birth", "birth certificate",
+        "date of birth", "place of birth", "city of birth", "county of birth",
+        "state file number", "certificate number", "registration number",
+        "father name", "mother name", "maiden name",
+        "state registrar", "county clerk", "vital records", "vital statistics",
+        "registrar of vital statistics",
+    ],
+
+    "passport": [
+        "passport", "passport number", "passport no",
+        "nationality", "country of citizenship",
+        "place of birth", "date of issue", "date of expiry", "date of expiration",
+        "issuing authority", "issuing country",
+        "united states of america", "bearer", "machine readable",
+    ],
+
+    "drivers_license": [
+        "driver license", "drivers license", "driver's license",
+        "license number", "license class", "dl number",
+        "department of motor vehicles", "dmv",
+        "endorsements", "restrictions",
+        "expiration date", "date of birth", "address",
+        "organ donor", "real id", "commercial driver",
+    ],
+
+    "social_security_card": [
+        "social security", "social security number", "ssn",
+        "social security administration", "ssa",
+        "this number has been established for",
+        "signature", "not valid for employment",
+    ],
+
+    "marriage_certificate": [
+        "certificate of marriage", "marriage certificate", "marriage license",
+        "groom", "bride", "husband", "wife", "spouse",
+        "date of marriage", "place of marriage", "county clerk",
+        "officiant", "witness", "solemnized",
+    ],
+
+    "death_certificate": [
+        "certificate of death", "death certificate",
+        "date of death", "cause of death", "place of death",
+        "decedent", "deceased",
+        "state registrar", "vital records", "funeral home",
+        "manner of death", "certifying physician",
+    ],
+
+    "vaccination_record": [
+        "vaccination", "immunization", "vaccine",
+        "covid-19", "covid vaccine", "mmr", "hepatitis",
+        "date administered", "dose", "lot number",
+        "health department", "cdc card", "who yellow card",
+    ],
+
 }
 
 
@@ -669,6 +997,53 @@ STRUCTURAL_PATTERNS = {
             "payoff amount",
             "loan number",
             "wire instructions",
+        ],
+    },
+
+    "property_tax_bill": {
+        "min_tables": 0,
+        "keywords_any": [
+            "secured property tax", "unsecured property tax",
+            "assessor parcel number", "parcel number", "tax rate area",
+            "first installment", "second installment",
+            "total amount due", "county tax collector", "annual secured",
+        ],
+    },
+
+    "birth_certificate": {
+        "min_tables": 0,
+        "keywords_any": [
+            "certificate of birth", "certificate of live birth",
+            "date of birth", "place of birth",
+            "state registrar", "county clerk", "vital records",
+            "father name", "mother name", "maiden name",
+        ],
+    },
+
+    "passport": {
+        "min_tables": 0,
+        "keywords_any": [
+            "passport", "passport number", "nationality",
+            "date of issue", "date of expiry", "place of birth",
+            "issuing authority", "country of citizenship",
+        ],
+    },
+
+    "drivers_license": {
+        "min_tables": 0,
+        "keywords_any": [
+            "driver license", "drivers license",
+            "license number", "license class",
+            "department of motor vehicles", "dmv",
+            "endorsements", "restrictions", "organ donor",
+        ],
+    },
+
+    "vaccination_record": {
+        "min_tables": 0,
+        "keywords_any": [
+            "vaccination", "immunization", "vaccine",
+            "date administered", "dose", "lot number", "cdc",
         ],
     },
 
@@ -957,6 +1332,36 @@ DOC_REGEX: Dict[str, re.Pattern] = {
         r"(payoff statement|payoff quote|good through|per diem|payoff amount|total amount due)",
         re.I
     ),
+    "property_tax_bill": re.compile(
+        r"\b(assessor.{0,5}parcel\s+number|secured\s+property\s+tax|unsecured\s+property\s+tax|"
+        r"tax\s+rate\s+area|first\s+installment\s+due|second\s+installment\s+due|"
+        r"annual\s+secured\s+bill|county\s+tax\s+collector)\b",
+        re.I
+    ),
+    "birth_certificate": re.compile(
+        r"\b(certificate\s+of\s+(live\s+)?birth|birth\s+certificate|"
+        r"vital\s+(records?|statistics)|state\s+registrar|county\s+clerk.{0,30}birth|"
+        r"date\s+of\s+birth.{0,50}place\s+of\s+birth)\b",
+        re.I
+    ),
+    "passport": re.compile(
+        r"\b(passport\s+(number|no\.?|#)|united\s+states\s+passport|"
+        r"country\s+of\s+citizenship|date\s+of\s+(issue|expiry|expiration).{0,30}passport|"
+        r"machine\s+readable\s+zone|issuing\s+authority.{0,30}passport)\b",
+        re.I
+    ),
+    "drivers_license": re.compile(
+        r"\b(driver.{0,5}s?\s+license|driving\s+license|"
+        r"department\s+of\s+motor\s+vehicles|dmv.{0,30}license|"
+        r"license\s+class\s+[a-cm]|dl\s+number|license\s+no\.?\s*[a-z0-9]+)\b",
+        re.I
+    ),
+    "vaccination_record": re.compile(
+        r"\b(vaccination\s+record|immunization\s+record|covid.{0,10}vaccine|"
+        r"cdc\s+covid|vaccine\s+card|lot\s+number.{0,30}(dose|vaccine)|"
+        r"date\s+administered)\b",
+        re.I
+    ),
 }
 
 
@@ -1020,6 +1425,20 @@ def _text_blob_from_parsed(parsed: Dict[str, Any]) -> str:
     return result
 
 
+import time as _time
+
+# Module-level cache so all DocumentClassifier instances share one DB read per TTL window.
+_MODEL_CACHE: dict = {"model": None, "ts": 0.0}
+_MODEL_CACHE_TTL = 60.0  # seconds — refresh at most once per minute
+
+def _get_cached_model() -> str:
+    now = _time.monotonic()
+    if _MODEL_CACHE["model"] is None or (now - _MODEL_CACHE["ts"]) > _MODEL_CACHE_TTL:
+        _MODEL_CACHE["model"] = config.get_active_model()
+        _MODEL_CACHE["ts"] = now
+    return _MODEL_CACHE["model"]
+
+
 class DocumentClassifier:
     """4-layer classifier: structural + keyword + regex + LLM (fallback)"""
 
@@ -1030,7 +1449,8 @@ class DocumentClassifier:
             import ollama
             host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
             self.client = ollama.Client(host=host)
-            self.model = os.getenv("OLLAMA_MODEL", config.model)
+            # Use env var only when explicitly set; otherwise read from DB with TTL cache
+            self.model = os.getenv("OLLAMA_MODEL") or _get_cached_model()
             self.client.list()
             logger.info(f"✅ LLM classifier initialized with Ollama ({self.model})")
         except Exception as e:
@@ -1043,14 +1463,19 @@ class DocumentClassifier:
     def scored_heuristic_classify(self, text: str) -> Tuple[Optional[str], float]:
         """
         Returns (doc_type, confidence) or (None, 0.0).
-        Replaces the old heuristic_classify() that returned just a string.
-        credit_card_statement is checked before bank_statement to prevent overlap.
+        Rules are 5-tuples: (doc_type, pos_patterns, min_pos, neg_patterns, max_neg).
+        A rule fires only when positive_hits >= min_pos AND negative_hits <= max_neg.
         """
-        for doc_type, patterns, min_hits in _HEURISTIC_RULES:
-            hits = sum(1 for p in patterns if p.search(text))
-            if hits >= min_hits:
-                confidence = min(0.65 + (hits / len(patterns)) * 0.35, 0.99)
-                return doc_type, confidence
+        for rule in _HEURISTIC_RULES:
+            doc_type, pos_patterns, min_pos, neg_patterns, max_neg = rule
+            pos_hits = sum(1 for p in pos_patterns if p.search(text))
+            if pos_hits < min_pos:
+                continue
+            neg_hits = sum(1 for p in neg_patterns if p.search(text))
+            if neg_hits > max_neg:
+                continue
+            confidence = min(0.65 + (pos_hits / len(pos_patterns)) * 0.35, 0.99)
+            return doc_type, confidence
         return None, 0.0
 
     # ---------- Corrections ----------
@@ -1204,10 +1629,90 @@ Return JSON:
 
     # ---------- classify() — 4-layer ensemble ----------
 
+    # Filename substring → (doc_type, confidence) — checked before all other layers.
+    # Order matters: more specific patterns first.
+    # Official form identifiers — more reliable than any keyword score.
+    _CONTENT_SIGNATURES = [
+        (r"CDTFA-?230|BOE-?230|\bresale certificate\b", "resale_certificate"),
+        (r"CDTFA-?401|BOE-?401|sales and use tax return", "sales_tax_return"),
+        # US visa foil: machine-readable line "VNUSA…" / "VCUSA…", or the printed field labels
+        (r"\bV[NC]USA[A-Z<&]|visa\s*type\s*/?\s*class.{0,80}issue\s*date|issuing\s*post\s*name", "visa_document"),
+    ]
+
+    _FILENAME_TYPE_MAP = [
+        (["resale certificate", "resale-certificate", "resale_certificate", "cdtfa-230", "cdtfa230"], "resale_certificate", 0.95),
+        (["cdtfa-401", "cdtfa401", "sales and use tax return", "sales tax return", "sales-tax-return"], "sales_tax_return", 0.95),
+        (["sales ledger", "sales_ledger", "sales-ledger", "sales journal", "sales_journal"], "sales_ledger", 0.92),
+        # Specific phrases first. Bare "statement" is NOT a signal — pay stubs
+        # ("earnings statement"), mortgage, credit card, brokerage and utility
+        # documents are all "statements".
+        (["property-tax", "property_tax", "secured-bill", "unsecured-bill", "tax-bill"], "property_tax_bill", 0.95),
+        (["payroll", "paystub", "pay_stub", "pay-stub", "pay stub", "payslip",
+          "earnings statement", "earnings_statement", "earnings-statement"], "pay_stub", 0.90),
+        (["mortgage statement", "mortgage_statement", "mortgage-statement"], "mortgage_statement", 0.90),
+        (["invoice"],                                  "invoice",               0.90),
+        (["credit_card", "creditcard", "credit card", "credit-card"], "credit_card_statement", 0.90),
+        (["bank statement", "bank_statement", "bank-statement", "bankstatement", "estmt",
+          "checking statement", "savings statement"],  "bank_statement",        0.85),
+        (["expense"],                                  "expense_report",        0.85),
+        (["receipt"],                                  "receipt",               0.85),
+        (["purchase_order", "purchase-order"],         "purchase_order",        0.85),
+        (["w2", "w-2"],                                "w2",                    0.90),
+        (["1099"],                                     "tax_form",              0.90),
+        (["1040"],                                     "tax_return",            0.90),
+        (["dec-page", "dec_page", "declarations"],     "declarations_page",     0.88),
+        (["mortgage"],                                 "mortgage_document",     0.85),
+        (["closing", "hud-1", "hud_1"],                "closing_disclosure",    0.85),
+        (["i-797", "i797", "i-94", "i94"],             "uscis_receipt",         0.88),
+        (["birth-certificate", "birth_certificate", "certificate-of-birth", "birth-record",
+           "birthcert", "birth cert", "birth-cert", "birthcertificate"], "birth_certificate", 0.95),
+        (["passport"],                                 "passport",              0.90),
+        (["drivers-license", "driver-license", "drivers_license", "driver_license"], "drivers_license", 0.90),
+    ]
+
+    def _classify_by_filename(self, parsed: Dict) -> Tuple[Optional[str], float]:
+        """Returns (doc_type, confidence) if filename is a strong signal, else (None, 0)."""
+        filename = ""
+        if isinstance(parsed, dict) and isinstance(parsed.get("metadata"), dict):
+            filename = parsed["metadata"].get("filename", "").lower()
+        if not filename:
+            return None, 0.0
+        for substrings, doc_type, conf in self._FILENAME_TYPE_MAP:
+            if any(s in filename for s in substrings):
+                logger.info(f"📄 Filename match: '{filename}' → {doc_type} ({conf:.2f})")
+                return doc_type, conf
+        return None, 0.0
+
     def classify(self, table: Dict[str, Any] = None, parsed: Dict[str, Any] = None, fmt: str = None) -> Dict[str, Any]:
         if not isinstance(parsed, dict):
             logger.error(f"❌ Invalid parsed type: {type(parsed)}")
             return self._fallback_classify(table, parsed, fmt)
+
+        # Unmistakable form signatures in the content win outright.
+        _sig_text = (_text_blob_from_parsed(parsed) or "")[:600]  # form header only — reports mention these forms too
+        for pattern, sig_type in self._CONTENT_SIGNATURES:
+            if re.search(pattern, _sig_text, re.I):
+                return {"type": sig_type, "confidence": 0.97, "reasoning": "form_signature",
+                        "matched_keywords": [], "rule_scores": {}, "ml_scores": {}}
+        # IRS forms print their number in the header ("Form 1099-NEC", "Schedule K-1 (Form 1065)")
+        from app.services.tax.irs_forms import classify_form
+        irs_type = classify_form(_sig_text)
+        if irs_type:
+            return {"type": irs_type, "confidence": 0.96, "reasoning": "irs_form_signature",
+                    "matched_keywords": [], "rule_scores": {}, "ml_scores": {}}
+
+        # Filename is a strong hint (it rescues garbled scans), but readable
+        # content that confidently says otherwise wins — users name files loosely.
+        fn_type, fn_conf = self._classify_by_filename(parsed)
+        if fn_conf >= 0.85:
+            content = _text_blob_from_parsed(parsed) or ""
+            c_type, c_conf = self.scored_heuristic_classify(content) if len(content) >= 200 else (None, 0.0)
+            if c_type and c_type != fn_type and c_conf >= 0.9:
+                logger.info(f"📄 Filename says {fn_type} but content says {c_type} ({c_conf:.2f}) — using content")
+                return {"type": c_type, "confidence": c_conf, "reasoning": "content_over_filename",
+                        "matched_keywords": [], "rule_scores": {}, "ml_scores": {}}
+            return {"type": fn_type, "confidence": fn_conf, "reasoning": "filename_priority",
+                    "matched_keywords": [], "rule_scores": {}, "ml_scores": {}}
 
         text = _text_blob_from_parsed(parsed)
         if not text or len(text) < 10:
@@ -1322,6 +1827,8 @@ Return JSON:
             filename = parsed["metadata"].get("filename", "").lower()
 
         if filename:
+            if "property-tax" in filename or "property_tax" in filename or "tax-bill" in filename or "secured-bill" in filename or "unsecured-bill" in filename:
+                return {"type": "property_tax_bill", "confidence": 0.92, "reasoning": "filename_match"}
             if "invoice" in filename:
                 return {"type": "invoice", "confidence": 0.75, "reasoning": "filename_match"}
             if "credit_card" in filename or "creditcard" in filename:
@@ -2869,6 +3376,8 @@ Return JSON:
             filename = parsed["metadata"].get("filename", "").lower()
 
         if filename:
+            if "property-tax" in filename or "property_tax" in filename or "tax-bill" in filename or "secured-bill" in filename or "unsecured-bill" in filename:
+                return {"type": "property_tax_bill", "confidence": 0.92, "reasoning": "filename_match"}
             if "invoice" in filename:
                 return {"type": "invoice", "confidence": 0.75, "reasoning": "filename_match"}
             if "bank" in filename or "statement" in filename:

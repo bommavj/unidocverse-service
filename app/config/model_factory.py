@@ -39,7 +39,9 @@ class EmbeddingModelFactory:
                             f"Embedding model not found at: {cls.MODEL_PATH}"
                         )
 
-                    cls._instance = SentenceTransformer(
+                    from app.core.model_lock import MODEL_LOAD_LOCK
+                    with MODEL_LOAD_LOCK:
+                        cls._instance = SentenceTransformer(
                         str(cls.MODEL_PATH)
                     )
 

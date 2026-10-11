@@ -29,7 +29,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,7 @@ DOCLING_FORMATS = {".pdf", ".docx", ".pptx", ".xlsx", ".html",
 _CHARS_PER_PAGE_RICH  = 300   # above → text-native (skip OCR)
 _CHARS_PER_PAGE_MIXED = 50    # below → scanned (must OCR); between → mixed/form
 _SIZE_RATIO_THRESHOLD = 150   # file_bytes / extracted_chars; high = image-heavy
+_FAST_PATH_MIN_PAGES  = 20    # text PDFs longer than this skip Docling
 
 
 # =============================================================================
@@ -52,16 +53,12 @@ def _detect_ocr_tier(file_path: str) -> str:
     Returns: 'text_native' | 'mixed_form' | 'scanned'
     """
     try:
-        import pdfplumber
+        import fitz  # PyMuPDF — ~25x faster than pdfplumber for a text probe
         file_bytes  = Path(file_path).stat().st_size
-        total_chars = 0
-        page_count  = 0
-
-        with pdfplumber.open(file_path) as pdf:
-            page_count = len(pdf.pages)
-            for page in pdf.pages:
-                t = page.extract_text() or ""
-                total_chars += len(t)
+        with fitz.open(file_path) as pdf:
+            page_texts = [page.get_text("text") or "" for page in pdf]
+        page_count  = len(page_texts)
+        total_chars = sum(len(t) for t in page_texts)
 
         if page_count == 0:
             return "scanned"
@@ -80,19 +77,19 @@ def _detect_ocr_tier(file_path: str) -> str:
             # ── Custom font / garbled text detection ─────────────────────────
             # CrawfordTech PDFs extract chars but they're garbage symbols.
             try:
-                with pdfplumber.open(file_path) as _pdf2:
-                    _sample = ''.join((p.extract_text() or '')[:300] for p in _pdf2.pages[:2])
+                _sample = ''.join(t[:300] for t in page_texts[:2])
                 _real = sum(1 for c in _sample if c.isalpha() or c.isdigit())
                 if _real / max(len(_sample), 1) < 0.2 and len(_sample) > 50:
                     logger.warning(f'⚠️ Custom font encoding detected — forcing OCR')
                     return 'scanned'
             except Exception:
                 pass
+            return "scanned"
 
-                return "scanned"
-
-        if chars_per_page >= _CHARS_PER_PAGE_RICH and size_ratio < _SIZE_RATIO_THRESHOLD:
-            return "text_native"
+        if chars_per_page >= _CHARS_PER_PAGE_RICH:
+            # Rich text layer. A large file per char means embedded images —
+            # OCR those regions only; the text itself is already good.
+            return "text_native" if size_ratio < _SIZE_RATIO_THRESHOLD else "rich_with_images"
 
         return "mixed_form"
 
@@ -105,7 +102,22 @@ def _detect_ocr_tier(file_path: str) -> str:
 # CONVERTER FACTORY
 # =============================================================================
 
+_CONVERTER_CACHE: dict = {}
+_CONVERTER_LOCK = __import__("threading").Lock()
+_CONVERT_LOCK = __import__("threading").Lock()
+
+
 def _build_pdf_converter(ocr_tier: str):
+    """One converter per OCR tier — building one reloads Docling's layout and
+    table models (seconds each), which used to happen on every upload."""
+    with _CONVERTER_LOCK:
+        conv = _CONVERTER_CACHE.get(ocr_tier)
+        if conv is None:
+            conv = _CONVERTER_CACHE[ocr_tier] = _new_pdf_converter(ocr_tier)
+        return conv
+
+
+def _new_pdf_converter(ocr_tier: str):
     """
     Build a DocumentConverter with correct Docling API for the installed version.
     Tries the new PdfFormatOption API first, falls back to legacy format_options dict.
@@ -119,7 +131,11 @@ def _build_pdf_converter(ocr_tier: str):
         opts.do_ocr = False
     else:
         opts.do_ocr = True
-        opts.ocr_options.force_full_page_ocr = True
+        # Scans and filled forms need every page OCR'd (form values are often
+        # only visible as images). Text-rich PDFs with images keep their text
+        # layer and OCR bitmap regions only — full-page OCR on 100 text pages
+        # re-reads everything and can degrade good text.
+        opts.ocr_options.force_full_page_ocr = ocr_tier in ("scanned", "mixed_form")
         # Also OCR picture regions (catches image-embedded flyers)
         try:
             opts.do_picture_ocr = True
@@ -297,6 +313,25 @@ class DoclingParser:
             logger.error(f"❌ [DoclingParser] File not found: {file_path}")
             return self._empty(ext)
 
+        # Fast-path handled upstream by _parse_fast; only Docling-native or
+        # unknown formats reach here.  For anything Docling cannot process,
+        # delegate to ocr_any which covers every allowed format.
+        if ext not in DOCLING_FORMATS:
+            try:
+                from app.services.ocr.ocr_utils import ocr_any
+                logger.info(f"📄 [DoclingParser] Non-Docling format {ext!r} → ocr_any")
+                text = ocr_any(file_path)
+                return {
+                    "text":     text,
+                    "tables":   [],
+                    "sheets":   [],
+                    "metadata": {"format": ext.lstrip("."), "source": "ocr_any"},
+                    "type":     "document",
+                }
+            except Exception as e:
+                logger.error(f"❌ ocr_any fallback failed for {ext!r}: {e}")
+                return self._empty(ext)
+
         try:
             from docling.document_converter import DocumentConverter  # noqa
         except ImportError:
@@ -314,6 +349,10 @@ class DoclingParser:
         try:
             if ext == ".pdf":
                 ocr_tier  = _detect_ocr_tier(file_path)
+                if ocr_tier in ("text_native", "rich_with_images"):
+                    fast = self._fast_pdf_text(file_path)
+                    if fast is not None:
+                        return fast
                 converter = _build_pdf_converter(ocr_tier)
             else:
                 converter = self._get_default_converter()
@@ -321,7 +360,10 @@ class DoclingParser:
                     return self._empty(ext)
 
             _t0_convert = time.perf_counter()
-            result = converter.convert(file_path)
+            # Converters are shared (cached) and Docling isn't safe to run
+            # concurrently on one instance — parallel uploads deadlocked.
+            with _CONVERT_LOCK:
+                result = converter.convert(file_path)
             doc    = result.document
             logger.info(f"⏱️ [DoclingParser] converter.convert() took {time.perf_counter() - _t0_convert:.1f}s")
 
@@ -395,6 +437,30 @@ class DoclingParser:
         except Exception as e:
             logger.error(f"❌ pdfplumber also failed: {e}")
             return self._empty(ext)
+
+    @staticmethod
+    def _fast_pdf_text(file_path: str) -> Optional[dict[str, Any]]:
+        """
+        Large PDFs with a real text layer: read the text directly (<1s for 100+
+        pages) instead of running Docling's per-page layout/table models
+        (10+ min). Small PDFs return None and keep Docling — statement and
+        pay-stub extractors rely on its Markdown tables, and it's fast there.
+        """
+        import fitz
+        with fitz.open(file_path) as pdf:
+            if len(pdf) <= _FAST_PATH_MIN_PAGES:
+                return None
+            t0 = time.perf_counter()
+            parts = [f"## Page {i + 1}\n\n{(page.get_text('text') or '').strip()}"
+                     for i, page in enumerate(pdf)]
+            meta = {"page_count": len(pdf), "parser": "pymupdf_fast"}
+            for key in ("title", "author"):
+                if pdf.metadata and pdf.metadata.get(key):
+                    meta[key] = pdf.metadata[key]
+        text = _normalize_numeric_spaces("\n\n".join(parts))
+        logger.info(f"⚡ [DoclingParser] Fast text path: {meta['page_count']} pages, "
+                    f"{len(text):,} chars in {time.perf_counter() - t0:.1f}s")
+        return {"text": text, "tables": [], "metadata": meta, "type": "pdf"}
 
     @staticmethod
     def _empty(ext: str) -> dict[str, Any]:

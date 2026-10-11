@@ -12,6 +12,7 @@ Default tenant UUID (for local dev / migration):
   00000000-0000-0000-0000-000000000001
 """
 import logging
+import os
 from contextvars import ContextVar
 from typing import Optional
 from uuid import UUID
@@ -31,6 +32,27 @@ _current_tenant_id: ContextVar[str] = ContextVar(
 )
 
 
+_NO_TENANT = "00000000-0000-0000-0000-00000000ffff"     # matches no tenant — unknown users see nothing
+_user_tenants: dict = {}
+
+
+def _tenant_of_user(sub) -> Optional[str]:
+    try:
+        uid = int(sub)
+    except (TypeError, ValueError):
+        return None
+    if uid not in _user_tenants:
+        from app.core.database import SessionLocal
+        from sqlalchemy import text as _text
+        db = SessionLocal()
+        try:
+            t = db.execute(_text("SELECT tenant_id FROM users WHERE id = :i"), {"i": uid}).scalar()
+            _user_tenants[uid] = str(t) if t else None
+        finally:
+            db.close()
+    return _user_tenants[uid]
+
+
 def get_current_tenant_id() -> str:
     """Return the tenant_id for the current request. Falls back to default tenant."""
     return _current_tenant_id.get()
@@ -46,7 +68,7 @@ class TenantMiddleware(BaseHTTPMiddleware):
     Extracts tenant_id from the request and stores it in context.
 
     Resolution order:
-      1. X-Tenant-ID header (dev/service-to-service)
+      1. X-Tenant-ID header — only with UDV_ALLOW_TENANT_HEADER=1 (local testing)
       2. JWT claim 'tenant_id'  (production — decode from Authorization header)
       3. Default tenant         (local dev fallback)
     """
@@ -57,16 +79,25 @@ class TenantMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         tenant_id = DEFAULT_TENANT_ID
 
-        # 1. Explicit header (dev / internal calls)
+        # The signed-in user's token decides the tenant. A client-supplied X-Tenant-ID header used to
+        # win over it, letting any logged-in user read another tenant's data — it's now honoured only
+        # when UDV_ALLOW_TENANT_HEADER=1 is set (local service-to-service testing).
         header_tid = request.headers.get("X-Tenant-ID")
-        if header_tid:
+        if header_tid and os.getenv("UDV_ALLOW_TENANT_HEADER") == "1":
             tenant_id = header_tid
 
-        # 2. JWT claim — decode without verifying signature here (auth middleware
-        #    already verified it upstream). Just read the payload.
+        # JWT claim — read without verifying here; protected routes verify the token itself
+        # (get_current_user), so on any route that returns tenant data the claim is trusted.
         else:
             auth = request.headers.get("Authorization", "")
-            if auth.startswith("Bearer "):
+            from app.core import api_tokens
+            if auth.startswith("Bearer ") and api_tokens.is_api_token(auth[7:].strip()):
+                row = api_tokens.resolve(auth[7:].strip())
+                tenant_id = str(row.tenant_id) if row else _NO_TENANT
+                if row and row.scope == "read" and request.method not in api_tokens.SAFE_METHODS:
+                    from starlette.responses import JSONResponse
+                    return JSONResponse({"detail": "This API token is read-only"}, status_code=403)
+            elif auth.startswith("Bearer "):
                 try:
                     import base64, json as _json
                     token = auth.split(" ", 1)[1]
@@ -75,6 +106,9 @@ class TenantMiddleware(BaseHTTPMiddleware):
                     payload_b64 += "=" * (-len(payload_b64) % 4)
                     payload = _json.loads(base64.urlsafe_b64decode(payload_b64))
                     jwt_tid = payload.get("tenant_id") or payload.get("tid")
+                    if not jwt_tid and payload.get("sub"):
+                        # Tokens issued before tenant_id was added: use the user's own tenant, never the default
+                        jwt_tid = _tenant_of_user(payload["sub"]) or _NO_TENANT
                     if jwt_tid:
                         tenant_id = jwt_tid
                 except Exception:

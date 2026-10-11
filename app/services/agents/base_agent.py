@@ -123,9 +123,10 @@ Next action (JSON only):"""
         resp = ollama.chat(
             model=self._get_model(),
             messages=[{"role": "user", "content": prompt}],
-            options={"num_predict": 400, "temperature": 0.0},
+            options={"num_predict": 400, "temperature": 0.0, "think": False},
         )
         raw = resp["message"]["content"].strip()
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         raw = re.sub(r"```[a-z]*\s*", "", raw).strip("`").strip()
         start = raw.find("{")
         if start == -1:
@@ -248,12 +249,22 @@ Next action (JSON only):"""
         )
 
     def _collect_sources(self, history: List[Dict]) -> List[str]:
+        # Match the tenant's real filenames — a regex can't handle names like
+        # "Statement for Apr 24, 2026.pdf" (spaces, commas) or non-PDF files.
+        try:
+            from sqlalchemy import text as _t
+            names = [r[0] for r in self._db.execute(
+                _t("SELECT DISTINCT filename FROM documents WHERE tenant_id = :tenant_id"),
+                self._tenant_params).fetchall() if r[0]]
+        except Exception:
+            names = []
+        names.sort(key=len, reverse=True)
         sources = []
         for h in history:
-            result = h.get("result", "")
-            for match in re.findall(r'\b[\w\-]+\.pdf\b', result, re.IGNORECASE):
-                if match not in sources:
-                    sources.append(match)
+            result = str(h.get("result", ""))
+            for name in names:
+                if name in result and name not in sources:
+                    sources.append(name)
         return sources
 
     def __del__(self):

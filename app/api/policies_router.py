@@ -8,6 +8,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.api.auth_router import get_current_user
 from app.models.policy import Policy
 from app.models.client import Client
 
@@ -163,9 +164,9 @@ async def get_policies(
 
 @router.post("")
 async def create_policy(
-        payload:    PolicyCreate,
-        created_by: Optional[str] = Query(None),
-        db:         Session       = Depends(get_db)
+        payload:      PolicyCreate,
+        db:           Session = Depends(get_db),
+        current_user: dict    = Depends(get_current_user),
 ):
     client = _get_client(db, payload.client_id)
     if not client:
@@ -191,7 +192,8 @@ async def create_policy(
             assigned_agent   = payload.assigned_agent,
             notes            = payload.notes,
             source           = 'manual',
-            created_by       = created_by,
+            tenant_id        = current_user["tenant_id"],
+            created_by       = current_user["id"],
         )
         db.add(policy)
         db.commit()

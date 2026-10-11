@@ -43,8 +43,7 @@ class FinanceWorkflowService:
 
             vendor = scanner.find_regex(r'Vendor:\s*(.*)') or \
                      scanner.find_regex(r'Supplier:\s*(.*)') or \
-                     scanner.find_regex(r'Billed\s+By:\s*(.*)') or \
-                     "Amazon Web Services"
+                     scanner.find_regex(r'Billed\s+By:\s*(.*)')
             vendor = self._clean_str(vendor)
 
             # 2. Parse Invoice Amount
@@ -55,16 +54,22 @@ class FinanceWorkflowService:
                 scanner.find_regex(r'Total:\s*\$?([\d,.]+)')
             )
 
-            # Standard 3-way match logic
-            po_val = invoice_val
-            receipt_val = invoice_val
 
-            is_discrepancy = "discrepancy" in txt.lower() or "mismatch" in txt.lower() or "violation" in txt.lower()
-            if is_discrepancy:
-                po_val = invoice_val - 400.0
-                match_status = "failed"
-            else:
+            # Required field not in the document: write nothing rather than a placeholder
+            if not vendor or not invoice_val:
+                return state
+
+            # 3-way match only with real PO and receipt amounts from the document
+            po_found = self._parse_number(scanner.find_regex(r'P\.?O\.?\s+Amount:\s*\$?([\d,.]+)') or
+                                          scanner.find_regex(r'Purchase\s+Order\s+(?:Amount|Total):\s*\$?([\d,.]+)'))
+            rcv_found = self._parse_number(scanner.find_regex(r'(?:Received|Receipt|Goods\s+Received)\s+Amount:\s*\$?([\d,.]+)'))
+            po_val, receipt_val = po_found or 0.0, rcv_found or 0.0
+            if not (po_found and rcv_found):
+                match_status = "pending"          # PO or receiving record not on file
+            elif abs(invoice_val - po_val) <= 0.01 and abs(invoice_val - receipt_val) <= 0.01:
                 match_status = "pass"
+            else:
+                match_status = "failed"
 
             # Auto-approve logic
             is_approved = False
@@ -186,7 +191,7 @@ class FinanceWorkflowService:
                 "match_status": match_status,
                 "is_approved": is_approved,
                 "approval_notes": approval_notes,
-                "has_discrepancy": is_discrepancy
+                "has_discrepancy": match_status == "failed"
             })
 
             doc.doc_metadata = meta
