@@ -1,3 +1,12 @@
+import multiprocessing
+import sys
+
+# Frozen desktop build: worker processes spawned by torch/docling/tokenizers re-run
+# this file. freeze_support() makes them run their task and exit instead of
+# booting a second copy of the whole app (which then finds its port taken).
+if getattr(sys, "frozen", False):
+    multiprocessing.freeze_support()
+
 from dotenv import load_dotenv
 import os
 load_dotenv()
@@ -157,7 +166,7 @@ async def lifespan(app: FastAPI):
     start_background_worker()
     logger.info("✅ Document job queue worker started")
 
-    logger.info("✅ Server ready at http://localhost:8000")
+    logger.info("✅ Server ready at http://localhost:7979")
 
     # ── Auto-activate 90-day trial on first launch ────────────────────────
     try:
@@ -494,7 +503,7 @@ def _port_in_use(host: str, port: int) -> bool:
 if __name__ == "__main__":
     import uvicorn
     host = "0.0.0.0"
-    port = int(os.getenv("PORT", "8000"))
+    port = int(os.getenv("PORT", "7979"))
     if _port_in_use("127.0.0.1", port):
         logger.info(f"⚠️ Port {port} already in use — skipping")
     else:

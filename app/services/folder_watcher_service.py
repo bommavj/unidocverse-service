@@ -427,7 +427,7 @@ class FolderWatcherService:
 
     CONFIG_FILE = Path.home() / "Library" / "Application Support" / "UniDocVerse" / "watch_folders.json"
 
-    def __init__(self, api_url: str = "http://localhost:8000"):
+    def __init__(self, api_url: str = "http://localhost:7979"):
         self.api_url  = api_url
         self._configs: Dict[str, dict]         = {}
         self._watchers: Dict[str, FolderWatcher] = {}

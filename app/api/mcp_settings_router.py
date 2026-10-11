@@ -15,7 +15,7 @@ from app.mcp_server.server import _load_settings, save_mcp_settings
 
 router = APIRouter(prefix="/api/mcp", tags=["mcp"])
 
-MCP_SSE_URL = "http://localhost:8000/mcp/sse"
+MCP_SSE_URL = "http://localhost:7979/mcp/sse"
 
 # Per-client metadata: config path, detection hint, JSON to merge, restart command.
 _CLIENT_CONFIG: dict = {

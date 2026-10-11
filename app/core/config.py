@@ -247,8 +247,13 @@ class Settings(BaseSettings):
         "http://localhost:4200",
         "http://localhost:3000",
         "http://localhost:8000",
+        "http://localhost:7979",
         "http://localhost:8080",
         "http://localhost",
+        # Desktop app webview (Tauri): macOS/Linux use tauri://, Windows uses http(s)://tauri.localhost
+        "tauri://localhost",
+        "http://tauri.localhost",
+        "https://tauri.localhost",
         "https://unidocverse.com",
         "https://www.unidocverse.com",
         "https://staging.unidocverse.com",

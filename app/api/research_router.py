@@ -558,7 +558,7 @@ def research_action_confirm(body: ActionConfirmRequest, _: dict = Depends(get_cu
     if body.approval_id:
         try:
             import urllib.request as _ureq, json as _json, os as _os
-            base = _os.environ.get("BACKEND_URL", "http://localhost:8000")
+            base = _os.environ.get("BACKEND_URL", "http://localhost:7979")
             data = _json.dumps({"decision": "approved", "comment": "Confirmed by user in Research Agent"}).encode()
             req  = _ureq.Request(f"{base}/api/approvals/{body.approval_id}/decide",
                                  data=data, headers={"Content-Type": "application/json"}, method="POST")
@@ -579,7 +579,7 @@ def research_action_cancel(body: ActionCancelRequest, _: dict = Depends(get_curr
     if body.approval_id:
         try:
             import urllib.request as _ureq, json as _json, os as _os
-            base = _os.environ.get("BACKEND_URL", "http://localhost:8000")
+            base = _os.environ.get("BACKEND_URL", "http://localhost:7979")
             data = _json.dumps({"decision": "rejected", "comment": "Cancelled by user in Research Agent"}).encode()
             req  = _ureq.Request(f"{base}/api/approvals/{body.approval_id}/decide",
                                  data=data, headers={"Content-Type": "application/json"}, method="POST")
