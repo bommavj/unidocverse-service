@@ -37,10 +37,10 @@ _user_tenants: dict = {}
 
 
 def _tenant_of_user(sub) -> Optional[str]:
-    try:
-        uid = int(sub)
-    except (TypeError, ValueError):
+    # users.id is a UUID on fresh installs and an integer on older ones
+    if sub is None:
         return None
+    uid = str(sub)
     if uid not in _user_tenants:
         from app.core.database import SessionLocal
         from sqlalchemy import text as _text

@@ -3,7 +3,7 @@
 CREATE TABLE IF NOT EXISTS api_tokens (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id     UUID NOT NULL,
-    user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name          TEXT NOT NULL,
     prefix        TEXT NOT NULL,                       -- first characters, shown in lists to tell tokens apart
     token_hash    TEXT NOT NULL UNIQUE,
