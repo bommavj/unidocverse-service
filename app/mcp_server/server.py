@@ -28,7 +28,7 @@ from app.core.guardrails import (
 logger = logging.getLogger(__name__)
 
 # Internal base URL — same process, loopback is fine
-_BASE = "http://localhost:8000"
+_BASE = "http://localhost:7979"
 
 # ── Settings store ────────────────────────────────────────────────────────────
 _SETTINGS_PATH = Path(__file__).parent / "mcp_settings.json"

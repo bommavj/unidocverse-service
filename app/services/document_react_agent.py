@@ -3357,7 +3357,7 @@ _ACTION_INTENTS = {
     "delete_request",
 }
 
-_BACKEND_BASE = os.environ.get("BACKEND_URL", "http://localhost:8000")
+_BACKEND_BASE = os.environ.get("BACKEND_URL", "http://localhost:7979")
 
 
 def _http_get(path: str) -> Dict:

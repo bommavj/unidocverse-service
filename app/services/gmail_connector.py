@@ -397,7 +397,7 @@ class GmailPoller:
 class GmailService:
     CONFIG_FILE = APP_DATA_DIR / "gmail_connections.json"
 
-    def __init__(self, api_url: str = "http://localhost:8000"):
+    def __init__(self, api_url: str = "http://localhost:7979"):
         self.api_url   = api_url
         self._configs: Dict[str, dict]        = {}
         self._pollers: Dict[str, GmailPoller] = {}
