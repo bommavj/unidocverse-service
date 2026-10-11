@@ -144,46 +144,8 @@ def _sort_by_reading_order(results, img_width):
 
 
 def extract_text_landingai_style(pdf_path: str) -> str:
-    import fitz
-    import cv2
-    import numpy as np
-
-    reader   = _get_reader()
-    doc      = fitz.open(pdf_path)
-    all_text = []
-
-    for page_num, page in enumerate(doc):
-        logger.info(f"   📄 OCR page {page_num + 1}/{len(doc)}")
-
-        pix = page.get_pixmap(dpi=200)
-        img = cv2.imdecode(
-            np.frombuffer(pix.tobytes(), np.uint8),
-            cv2.IMREAD_COLOR
-        )
-        img_width = img.shape[1]
-
-        try:
-            # Get raw results with bounding boxes
-            results = reader.readtext(img, detail=1, paragraph=False)
-
-            # Reconstruct correct reading order
-            ordered = _sort_by_reading_order(results, img_width)
-
-            # Extract text in correct order
-            page_lines = []
-            for (bbox, text, confidence) in ordered:
-                text = text.strip()
-                if text and confidence > 0.4:
-                    page_lines.append(text)
-
-            if page_lines:
-                all_text.append("\n".join(page_lines))
-                logger.info(f"   ✅ Page {page_num + 1}: {len(page_lines)} text blocks")
-
-        except Exception as e:
-            logger.warning(f"   ⚠️ OCR failed on page {page_num + 1}: {e}")
-            continue
-
-    extracted = "\n\n".join(all_text)
+    """EasyOCR PDF extraction with rotation correction and reading-order reconstruction."""
+    from app.services.ocr.ocr_utils import easyocr_ocr_pdf
+    extracted = easyocr_ocr_pdf(pdf_path)
     logger.info(f"✅ OCR complete — {len(extracted)} chars extracted")
     return extracted

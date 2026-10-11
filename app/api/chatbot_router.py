@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db, SessionLocal
 from app.core.tenant import get_current_tenant_id, DEFAULT_TENANT_ID
+from app.api.auth_router import get_current_user
 
 logger = logging.getLogger(__name__)
 

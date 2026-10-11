@@ -7,6 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.api.auth_router import get_current_user
 from app.models.personal import Note, PlannerTask
 from app.models.document import Document
 
@@ -71,12 +72,13 @@ async def get_notes(db: Session = Depends(get_db)):
 
 
 @router.post("/notes")
-async def create_note(payload: NoteCreate, db: Session = Depends(get_db)):
+async def create_note(payload: NoteCreate, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     try:
         note = Note(
             title=payload.title,
             content=payload.content,
-            doc_id=payload.doc_id
+            doc_id=payload.doc_id,
+            user_id=current_user["id"],
         )
         db.add(note)
         db.commit()
@@ -162,7 +164,7 @@ async def get_tasks(db: Session = Depends(get_db)):
 
 
 @router.post("/planner")
-async def create_task(payload: TaskCreate, db: Session = Depends(get_db)):
+async def create_task(payload: TaskCreate, db: Session = Depends(get_db), current_user: dict = Depends(get_current_user)):
     try:
         due = None
         if payload.due_date:
@@ -174,7 +176,8 @@ async def create_task(payload: TaskCreate, db: Session = Depends(get_db)):
         task = PlannerTask(
             title=payload.title,
             priority=payload.priority,
-            due_date=due
+            due_date=due,
+            user_id=current_user["id"],
         )
         db.add(task)
         db.commit()

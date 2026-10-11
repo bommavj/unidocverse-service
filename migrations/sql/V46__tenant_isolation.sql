@@ -92,6 +92,12 @@ ALTER TABLE settings
 UPDATE settings SET tenant_id = '00000000-0000-0000-0000-000000000001'
 WHERE tenant_id IS NULL;
 
+-- Deduplicate: keep only the latest row per tenant
+DELETE FROM settings s1
+USING settings s2
+WHERE s1.tenant_id = s2.tenant_id
+  AND s1.id < s2.id;
+
 ALTER TABLE settings ALTER COLUMN tenant_id SET NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_settings_tenant_unique ON settings(tenant_id);
@@ -160,23 +166,30 @@ ALTER TABLE policies          ENABLE ROW LEVEL SECURITY;
 -- RLS policies — tenant can only see its own rows
 -- Superuser/unidocverse role bypass for migrations and admin
 
+DROP POLICY IF EXISTS tenant_isolation_documents ON documents;
 CREATE POLICY tenant_isolation_documents ON documents
     USING (tenant_id = current_tenant_id() OR current_tenant_id() IS NULL);
 
+DROP POLICY IF EXISTS tenant_isolation_chunks ON document_chunks;
 CREATE POLICY tenant_isolation_chunks ON document_chunks
     USING (tenant_id = current_tenant_id() OR current_tenant_id() IS NULL);
 
+DROP POLICY IF EXISTS tenant_isolation_research ON research_sessions;
 CREATE POLICY tenant_isolation_research ON research_sessions
     USING (tenant_id = current_tenant_id() OR current_tenant_id() IS NULL);
 
+DROP POLICY IF EXISTS tenant_isolation_chatbot ON chatbot_sessions;
 CREATE POLICY tenant_isolation_chatbot ON chatbot_sessions
     USING (tenant_id = current_tenant_id() OR current_tenant_id() IS NULL);
 
+DROP POLICY IF EXISTS tenant_isolation_settings ON settings;
 CREATE POLICY tenant_isolation_settings ON settings
     USING (tenant_id = current_tenant_id() OR current_tenant_id() IS NULL);
 
+DROP POLICY IF EXISTS tenant_isolation_clients ON clients;
 CREATE POLICY tenant_isolation_clients ON clients
     USING (tenant_id = current_tenant_id() OR current_tenant_id() IS NULL);
 
+DROP POLICY IF EXISTS tenant_isolation_policies ON policies;
 CREATE POLICY tenant_isolation_policies ON policies
     USING (tenant_id = current_tenant_id() OR current_tenant_id() IS NULL);

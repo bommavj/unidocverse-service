@@ -6,6 +6,9 @@ import os
 import re
 from pathlib import Path
 from typing import Optional
+
+# Reuse the same bounded ingest pool as upload.py
+from app.api.upload import _ingest_pool
 from app.services.universal_qa_service import UniversalQAService
 from app.core.pii_redactor import redact_text, redact_metadata
 from app.core.config import settings
@@ -276,13 +279,11 @@ async def reprocess_document(doc_id: str, db: Session = Depends(get_db)):
     doc.raw_text = None
     db.commit()
 
-    import threading
     from app.services.processing_service import ProcessingService
-    threading.Thread(
-        target=ProcessingService.process_document_background,
-        args=(doc_id, doc.file_path, doc.filename),
-        daemon=True,
-    ).start()
+    _ingest_pool.submit(
+        ProcessingService.process_document_background,
+        doc_id, doc.file_path, doc.filename
+    )
 
     return {"success": True, "message": f"Reprocessing started for {doc.filename}"}
 
@@ -334,12 +335,10 @@ async def unlock_document(
     doc.doc_metadata = {}
     db.commit()
 
-    thread = threading.Thread(
-        target=ProcessingService.process_document_background,
-        args=(doc_id, doc.file_path, doc.filename),
-        daemon=True
+    _ingest_pool.submit(
+        ProcessingService.process_document_background,
+        doc_id, doc.file_path, doc.filename
     )
-    thread.start()
 
     return {"status": "processing", "message": "Document unlocked and re-queued for processing"}
 

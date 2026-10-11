@@ -1,0 +1,188 @@
+# Immigration case rules as data. Filing windows and evidence lists are general
+# guidance from USCIS practice — verify against current USCIS form instructions
+# before relying on them for a filing.
+
+statuses: [intake, preparing, ready_to_file, filed, rfe, rfe_responded, approved, denied, withdrawn]
+
+case_types:
+  h1b_extension:
+    label: "H-1B extension / amendment"
+    form: I-129
+    visa_class: H-1B
+    file_window_days: 180          # can be filed up to 6 months before the current H-1B expires
+    intake_sections: [personal, immigration, employment, education]
+    evidence:
+      - "Passport (valid at least 6 months)"
+      - "Current and prior I-797 approval notices"
+      - "Most recent I-94 record"
+      - "Certified Labor Condition Application (ETA-9035)"
+      - "Employer support letter / job description"
+      - "Recent pay stubs (last 2-3 months)"
+      - "Degree certificate and transcripts (or credential evaluation)"
+      - "Resume"
+  h1b_transfer:
+    label: "H-1B change of employer"
+    form: I-129
+    visa_class: H-1B
+    intake_sections: [personal, immigration, employment, education]
+    evidence:
+      - "Passport"
+      - "All prior I-797 approval notices"
+      - "Most recent I-94 record"
+      - "Certified Labor Condition Application (ETA-9035) from the new employer"
+      - "Offer letter from the new employer"
+      - "Last pay stubs from the current employer"
+      - "Degree certificate and transcripts (or credential evaluation)"
+      - "Resume"
+  h4_extension:
+    label: "H-4 extension (dependent)"
+    form: I-539
+    visa_class: H-4
+    file_window_days: 180
+    intake_sections: [personal, immigration, family]
+    evidence:
+      - "Passport"
+      - "Principal's I-797 approval (H-1B)"
+      - "Dependent's current I-797 and I-94"
+      - "Marriage certificate (spouse) or birth certificate (child)"
+  h4_ead:
+    label: "H-4 EAD (work authorization)"
+    form: I-765
+    visa_class: H-4
+    file_window_days: 180
+    intake_sections: [personal, immigration, family]
+    evidence:
+      - "Passport"
+      - "H-4 I-797 and I-94"
+      - "Principal's approved I-140 or H-1B extension under AC21 evidence"
+      - "Marriage certificate"
+      - "Two passport-style photos"
+      - "Prior EAD card (if renewing)"
+  ead_renewal:
+    label: "EAD renewal"
+    form: I-765
+    file_window_days: 180          # renewals can be filed up to 180 days before the card expires
+    intake_sections: [personal, immigration]
+    evidence:
+      - "Front and back of current EAD"
+      - "Passport"
+      - "Most recent I-94 record"
+      - "Two passport-style photos"
+      - "Evidence of the underlying eligibility category"
+  i140:
+    label: "Immigrant petition for alien worker"
+    form: I-140
+    intake_sections: [personal, immigration, employment, education]
+    evidence:
+      - "Approved PERM labor certification (if required)"
+      - "Employer's ability-to-pay evidence"
+      - "Degree certificates, transcripts, credential evaluation"
+      - "Experience letters from prior employers"
+      - "Passport and I-94"
+  i485:
+    label: "Adjustment of status (green card)"
+    form: I-485
+    intake_sections: [personal, immigration, employment, family, history]
+    evidence:
+      - "Birth certificate (with certified translation if not in English)"
+      - "Passport and all visas"
+      - "Most recent I-94 record"
+      - "Approval notice of the underlying petition (I-140 / I-130)"
+      - "Medical exam (Form I-693)"
+      - "Two passport-style photos"
+      - "Employment verification letter or Affidavit of Support (I-864) for family cases"
+      - "Court and police records, if any"
+  i130:
+    label: "Petition for alien relative"
+    form: I-130
+    intake_sections: [personal, family, history]
+    evidence:
+      - "Petitioner's proof of U.S. citizenship or permanent residence"
+      - "Marriage certificate or birth certificate proving the relationship"
+      - "Proof any prior marriages ended (divorce / death certificates)"
+      - "Evidence of a bona fide marriage (joint lease, bank accounts, photos)"
+      - "Passport-style photos of petitioner and beneficiary"
+  i90:
+    label: "Green card renewal / replacement"
+    form: I-90
+    file_window_days: 180          # renew within 6 months of the card's expiration
+    intake_sections: [personal, immigration]
+    evidence:
+      - "Copy of the current green card (front and back)"
+      - "Government-issued photo ID"
+  n400:
+    label: "Naturalization"
+    form: N-400
+    file_window_days: 90           # may file up to 90 days before the 5-year (or 3-year) residence anniversary
+    intake_sections: [personal, immigration, employment, family, history]
+    evidence:
+      - "Green card (front and back)"
+      - "Travel history for the statutory period"
+      - "Tax returns / transcripts for the statutory period"
+      - "Marriage certificate (3-year marriage-based filing)"
+      - "Court and police records, if any"
+  passport_renewal:
+    label: "Passport renewal (foreign passport)"
+    form: "Consulate"
+    file_window_days: 270          # many countries and visas need 6+ months of passport validity
+    intake_sections: [personal]
+    evidence:
+      - "Current passport"
+      - "Passport photos"
+      - "Proof of U.S. status (I-797 / visa / I-94)"
+
+intake_sections:
+  personal:
+    title: "About you"
+    fields:
+      - {key: full_name, label: "Full legal name (as on passport)", required: true}
+      - {key: other_names, label: "Other names used"}
+      - {key: date_of_birth, label: "Date of birth", type: date, required: true}
+      - {key: country_of_birth, label: "Country of birth", required: true}
+      - {key: citizenship, label: "Country of citizenship", required: true}
+      - {key: passport_number, label: "Passport number", sensitive: true}
+      - {key: passport_expiry, label: "Passport expiration date", type: date}
+      - {key: us_address, label: "Current U.S. address", type: textarea}
+      - {key: phone, label: "Phone"}
+      - {key: email, label: "Email", type: email}
+      - {key: marital_status, label: "Marital status", type: select, options: [Single, Married, Divorced, Widowed]}
+  immigration:
+    title: "Your immigration status"
+    fields:
+      - {key: a_number, label: "A-Number (if any)", sensitive: true}
+      - {key: current_status, label: "Current status / visa class (e.g. H-1B)"}
+      - {key: status_expiry, label: "Status expiration (I-94 / I-797 date)", type: date}
+      - {key: i94_number, label: "Most recent I-94 number", sensitive: true}
+      - {key: last_entry_date, label: "Date of last entry to the U.S.", type: date}
+      - {key: last_entry_port, label: "Port of last entry"}
+  employment:
+    title: "Employment"
+    fields:
+      - {key: employer, label: "Current employer"}
+      - {key: job_title, label: "Job title"}
+      - {key: employment_start, label: "Start date", type: date}
+      - {key: annual_salary, label: "Annual salary (USD)", type: number}
+      - {key: work_address, label: "Work site address", type: textarea}
+  education:
+    title: "Education"
+    fields:
+      - {key: highest_degree, label: "Highest degree"}
+      - {key: field_of_study, label: "Field of study"}
+      - {key: university, label: "University"}
+      - {key: graduation_year, label: "Year awarded", type: number}
+  family:
+    title: "Family"
+    fields:
+      - {key: spouse_name, label: "Spouse's full name"}
+      - {key: spouse_dob, label: "Spouse's date of birth", type: date}
+      - {key: marriage_date, label: "Date of marriage", type: date}
+      - {key: children, label: "Children (name and date of birth, one per line)", type: textarea}
+  history:
+    title: "History"
+    fields:
+      - {key: prior_denials, label: "Have you ever been denied a visa or immigration benefit?", type: select, options: ["No", "Yes"]}
+      - {key: status_violations, label: "Have you ever overstayed or violated status?", type: select, options: ["No", "Yes"]}
+      - {key: arrests, label: "Have you ever been arrested or charged with a crime?", type: select, options: ["No", "Yes"]}
+      - {key: history_details, label: "If yes to any, explain", type: textarea}
+
+languages: {en: English, es: Spanish, hi: Hindi, te: Telugu, zh: Chinese, pt: Portuguese, fr: French, vi: Vietnamese, ko: Korean, ar: Arabic}

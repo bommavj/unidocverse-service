@@ -108,6 +108,26 @@ def _save_session(result: dict, doc_id_list: list, question: str, parent_session
 router = APIRouter(prefix="/api/research", tags=["research"])
 
 
+def _pagination(result: dict, steps: list, page: int):
+    """(has_more, page) for the dashboard's "Load more" button.
+
+    The fast route pages its search results itself and reports has_more. The full multi-agent route
+    doesn't, so infer it: if the run retrieved more distinct excerpts than one page of the answer
+    covers, there is more to read on the next page.
+    """
+    if "has_more" in result:
+        return bool(result.get("has_more")), int(result.get("page", page) or 0)
+    from app.services.document_react_agent import _PAGE_SIZE
+    seen = set()
+    for s in steps or []:
+        obs = s.get("observation") or {}
+        chunks = obs if isinstance(obs, list) else (obs.get("chunks") or obs.get("results") or [])
+        for ch in chunks:
+            if isinstance(ch, dict):
+                seen.add(ch.get("id") or ch.get("chunk_id") or (ch.get("filename"), (ch.get("chunk_text") or ch.get("text") or "")[:80]))
+    return len(seen) > (page + 1) * _PAGE_SIZE, page
+
+
 class ResearchRequest(BaseModel):
     question: str
     doc_ids: Optional[List[str]] = None  # empty = search all docs
@@ -153,6 +173,25 @@ def research_ask(body: ResearchRequest, db: Session = Depends(get_db), _: dict =
         raise HTTPException(500, f"Research agent failed: {str(e)}")
 
 
+def _run_with_heartbeat(job, interval: float = 5.0):
+    """Run job in a worker thread; yield ("progress", text) every interval, then ("result", value)."""
+    import contextvars
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutTimeout
+
+    ctx = contextvars.copy_context()  # carries tenant/user context vars into the thread
+    started = time.time()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(ctx.run, job)
+        while True:
+            try:
+                value = future.result(timeout=interval)
+            except _FutTimeout:
+                yield "progress", f"Still working… {int(time.time() - started)}s"
+                continue
+            yield "result", value
+            return
+
+
 @router.get("/ask/stream")
 def research_ask_stream(
     question: str = Query(...),
@@ -162,6 +201,7 @@ def research_ask_stream(
     prior_qa: Optional[str] = Query(None),
     parent_session_id: Optional[str] = Query(None),
     session_token: Optional[str] = Query(None),
+    context_sources: Optional[str] = Query(None),
     _: dict = Depends(get_current_user_or_session),
 ):
     """SSE endpoint — streams step events then answer tokens."""
@@ -178,6 +218,7 @@ def research_ask_stream(
             prior_qa_list = []
 
     def event_stream():
+        nonlocal doc_id_list  # a follow-up may narrow it to the conversation's documents
         try:
             # Signal immediately so the frontend shows the typing indicator
             yield f"data: {json.dumps({'type': 'thinking'})}\n\n"
@@ -193,7 +234,28 @@ def research_ask_stream(
             #                   Best for: "compare spending across all merchants this quarter"
             #                   Latency: ~8-20s depending on domain count
             #
-            intent = classify_intent(question.strip(), doc_id_list)
+            # Follow-ups ("and in 2024?") become standalone questions first, so routing,
+            # structured answers and search all see the full question.
+            original_question = question.strip()
+            effective_q = original_question
+            if prior_qa_list:
+                from app.services.followup import rewrite_followup, conversation_scope
+                from app.core.tenant import get_current_tenant_id as _gtid, DEFAULT_TENANT_ID as _dtid
+                effective_q = rewrite_followup(original_question, prior_qa_list, always=True)
+                if effective_q != original_question:
+                    yield f"data: {json.dumps({'type': 'step', 'step': {'iteration': 0, 'tool': 'rewrite_followup', 'thought': f'Follow-up understood as: {effective_q}', 'args': {'original': original_question}, 'observation': {'standalone_question': effective_q}}})}\n\n"
+                # Stay on the documents this conversation has been answering from.
+                try:
+                    _ctx_sources = json.loads(context_sources) if context_sources else []
+                except Exception:
+                    _ctx_sources = []
+                if not doc_id_list and _ctx_sources:
+                    _scope = conversation_scope(effective_q, _ctx_sources, _gtid() or _dtid)
+                    if _scope:
+                        doc_id_list = _scope
+                        yield f"data: {json.dumps({'type': 'step', 'step': {'iteration': 0, 'tool': 'conversation_scope', 'thought': 'Staying on: ' + ', '.join(_ctx_sources[:5]), 'args': {}, 'observation': {'doc_ids': _scope}}})}\n\n"
+
+            intent = classify_intent(effective_q, doc_id_list)
             logger.info(
                 f"[research_router] intent={intent.route} "
                 f"complexity={intent.complexity} reason='{intent.reason}'"
@@ -254,18 +316,27 @@ def research_ask_stream(
 
             elif intent.route == "fast":
                 # Lightweight: single vector search + one LLM call, no agents
-                result = run_research_agent(
-                    question=question.strip(),
+                job = lambda: run_research_agent(
+                    question=effective_q,
                     doc_ids=doc_id_list,
                     page=page,
                     prior_qa=prior_qa_list or None,
                 )
             else:
                 # Full LangGraph: Supervisor → domain agents → merger → synthesizer
-                result = run_query_workflow(
-                    question=question.strip(),
+                job = lambda: run_query_workflow(
+                    question=effective_q,
                     doc_ids=doc_id_list,
                 )
+
+            # Keep the SSE connection visibly alive while the agent works — the
+            # dashboard treats a silent stream as a timeout.
+            result = None
+            for kind, value in _run_with_heartbeat(job):
+                if kind == "progress":
+                    yield f"data: {json.dumps({'type': 'progress', 'text': value})}\n\n"
+                else:
+                    result = value
 
             # Emit step events
             for step in (result.get("steps") or []):
@@ -287,7 +358,7 @@ def research_ask_stream(
                     yield f"data: {json.dumps({'type': 'chart', 'chart': chart_data})}\n\n"
                 matched_doc_ids = result.get("matched_doc_ids") or doc_id_list
                 session_id = _save_session(result, doc_id_list, question.strip(), parent_session_id)
-                yield f"data: {json.dumps({'type': 'done', 'session_id': session_id, 'matched_doc_ids': matched_doc_ids, 'has_more': result.get('has_more', False), 'page': result.get('page', 0)})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'session_id': session_id, 'answer': direct_answer, 'matched_doc_ids': matched_doc_ids, 'has_more': result.get('has_more', False), 'page': result.get('page', 0)})}\n\n"
                 return
 
             # Otherwise stream synthesis from vector search chunks
@@ -295,6 +366,7 @@ def research_ask_stream(
             steps = result.get("steps") or []
             chart_data = result.get("chart_data")
             synth_sources = []
+            accumulated_answer = []
 
             if chart_data:
                 # Chart was pre-built from chunks — emit a text summary instead of
@@ -315,25 +387,37 @@ def research_ask_stream(
                 if synth_sources:
                     yield f"data: {json.dumps({'type': 'sources', 'sources': synth_sources})}\n\n"
                 yield f"data: {json.dumps({'type': 'chart', 'chart': chart_data})}\n\n"
+                accumulated_answer = [summary]
             else:
                 # Stream tokens as they arrive — apply unicode decode per-token.
                 # \uXXXX sequences are always 6 chars and never span token boundaries
                 # (Ollama emits them as atomic units), so per-token decode is safe.
-                for kind, payload in _synthesize_stream(question.strip(), plan, steps, page, prior_qa=prior_qa_list or None):
+                for kind, payload in _synthesize_stream(effective_q, plan, steps, page, prior_qa=prior_qa_list or None):
                     if kind == "token":
                         clean = _decode_unicode_escapes(payload)
+                        accumulated_answer.append(clean)
                         yield f"data: {json.dumps({'type': 'token', 'text': clean})}\n\n"
                     elif kind == "sources":
                         synth_sources = payload
                         yield f"data: {json.dumps({'type': 'sources', 'sources': payload})}\n\n"
+                # Fallback: if synthesis produced no tokens, emit a not-found message
+                if not accumulated_answer:
+                    fallback = "No relevant information was found in your documents for this question."
+                    accumulated_answer.append(fallback)
+                    yield f"data: {json.dumps({'type': 'token', 'text': fallback})}\n\n"
 
-            saved_answer = summary if chart_data else ""
+            saved_answer = "".join(accumulated_answer)
             matched_doc_ids = result.get("matched_doc_ids") or doc_id_list
             session_id = _save_session({**result, "sources": synth_sources, "answer": saved_answer}, doc_id_list, question.strip(), parent_session_id)
-            yield f"data: {json.dumps({'type': 'done', 'session_id': session_id, 'matched_doc_ids': matched_doc_ids})}\n\n"
+            more, pg = _pagination(result, steps, page)
+            yield f"data: {json.dumps({'type': 'done', 'session_id': session_id, 'answer': saved_answer, 'matched_doc_ids': matched_doc_ids, 'has_more': more, 'page': pg})}\n\n"
 
         except Exception as e:
+            logger.error(f"[research_router] stream error: {e}", exc_info=True)
+            err_msg = f"Something went wrong while processing your request. Please try again."
+            yield f"data: {json.dumps({'type': 'token', 'text': err_msg})}\n\n"
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'session_id': None, 'answer': err_msg, 'matched_doc_ids': []})}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers={
         "Cache-Control": "no-cache",
@@ -342,7 +426,7 @@ def research_ask_stream(
 
 
 @router.get("/classify")
-def classify_endpoint(question: str = Query(...)):
+def classify_endpoint(question: str = Query(...), _: dict = Depends(get_current_user)):
     """Debug endpoint — shows how the supervisor would route a question."""
     domains = classify_question(question)
     intent = classify_intent(question)
@@ -358,7 +442,7 @@ def classify_endpoint(question: str = Query(...)):
 
 
 @router.get("/history")
-def research_history(limit: int = 20, offset: int = 0, db: Session = Depends(get_db)):
+def research_history(limit: int = 20, offset: int = 0, db: Session = Depends(get_db), _: dict = Depends(get_current_user)):
     safe_limit = max(1, min(limit, 100))
     safe_offset = max(0, offset)
 
@@ -422,7 +506,7 @@ def research_history(limit: int = 20, offset: int = 0, db: Session = Depends(get
 
 
 @router.get("/session/{session_id}")
-def get_research_session(session_id: str, db: Session = Depends(get_db)):
+def get_research_session(session_id: str, db: Session = Depends(get_db), _: dict = Depends(get_current_user)):
     """Return a single root session with its full thread (child follow-ups)."""
     row = db.execute(text("""
         SELECT id, question, answer, sources, steps, iterations, doc_ids,
@@ -447,7 +531,7 @@ def get_research_session(session_id: str, db: Session = Depends(get_db)):
 
 
 @router.delete("/history/{session_id}")
-def delete_research_session(session_id: str, db: Session = Depends(get_db)):
+def delete_research_session(session_id: str, db: Session = Depends(get_db), _: dict = Depends(get_current_user)):
     result = db.execute(
         text("DELETE FROM research_sessions WHERE id = :id RETURNING id"),
         {"id": session_id}
@@ -469,7 +553,7 @@ class ActionCancelRequest(BaseModel):
 
 
 @router.post("/action/confirm")
-def research_action_confirm(body: ActionConfirmRequest):
+def research_action_confirm(body: ActionConfirmRequest, _: dict = Depends(get_current_user)):
     """User approved a HITL-gated action — execute it now."""
     if body.approval_id:
         try:
@@ -490,7 +574,7 @@ def research_action_confirm(body: ActionConfirmRequest):
 
 
 @router.post("/action/cancel")
-def research_action_cancel(body: ActionCancelRequest):
+def research_action_cancel(body: ActionCancelRequest, _: dict = Depends(get_current_user)):
     """User rejected a HITL-gated action."""
     if body.approval_id:
         try:
@@ -506,7 +590,7 @@ def research_action_cancel(body: ActionCancelRequest):
 
 
 @router.get("/docs")
-def list_research_docs(db: Session = Depends(get_db)):
+def list_research_docs(db: Session = Depends(get_db), _: dict = Depends(get_current_user)):
     rows = db.execute(text("""
         SELECT d.id, d.filename, d.doc_type, d.created_at,
                COUNT(c.id) AS chunk_count

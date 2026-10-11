@@ -165,7 +165,9 @@ class PreloadManager:
 
             # Load model
             log.info(f"   ⏳ Loading model from: {EMBEDDING_MODEL_PATH}")
-            self.sentence_transformer = ST(EMBEDDING_MODEL_PATH)
+            from app.core.model_lock import MODEL_LOAD_LOCK
+            with MODEL_LOAD_LOCK:
+                self.sentence_transformer = ST(EMBEDDING_MODEL_PATH)
 
             # Warm up with a test encoding
             _ = self.sentence_transformer.encode("test", show_progress_bar=False)
@@ -228,7 +230,9 @@ class VectorService:
         if self.model is None:
             # Fallback: load model if preload failed
             from sentence_transformers import SentenceTransformer
-            self.model = SentenceTransformer(EMBEDDING_MODEL_PATH)
+            from app.core.model_lock import MODEL_LOAD_LOCK
+            with MODEL_LOAD_LOCK:
+                self.model = SentenceTransformer(EMBEDDING_MODEL_PATH)
 
     def encode(self, text: str):
         return self.model.encode(text)

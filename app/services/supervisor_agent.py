@@ -25,6 +25,8 @@ The supervisor uses a fast keyword classifier first; falls back to LLM if ambigu
 """
 import logging
 import re
+
+from app.utils.text_match import has_term, any_term
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -47,7 +49,7 @@ DOMAINS = {
         "label":      "Banking & Transactions",
         "doc_types":  ["bank_statement", "credit_card_statement", "transaction_log"],
         "keywords":   ["transaction", "spend", "merchant", "charge", "deposit",
-                       "withdrawal", "balance", "bank", "credit card", "statement",
+                       "withdrawal", "balance", "bank", "credit card", "bank statement",
                        "atm", "transfer", "payment", "debit"],
         "hint":       "You are a banking specialist. Focus on transactions, spending patterns, balances.",
     },
@@ -174,32 +176,15 @@ def get_enabled_domains() -> Set[str]:
     """
     enabled = {"general"}
     try:
+        from app.api.features_router import flags_for      # same per-organisation switches as the menu
         db = SessionLocal()
-        tenant_id = get_current_tenant_id()
-        row = db.execute(
-            __import__("sqlalchemy").text(
-                "SELECT agency_mode, legal_mode, medical_mode, finance_mode, "
-                "real_estate_mode, hr_mode, supply_chain_mode, compliance_mode, "
-                "operations_mode FROM settings WHERE tenant_id = :tid LIMIT 1"
-            ),
-            {"tid": tenant_id},
-        ).fetchone()
-        db.close()
-        if row:
-            flag_values = {
-                "agency_mode":       row.agency_mode,
-                "legal_mode":        row.legal_mode,
-                "medical_mode":      row.medical_mode,
-                "finance_mode":      row.finance_mode,
-                "real_estate_mode":  row.real_estate_mode,
-                "hr_mode":           row.hr_mode,
-                "supply_chain_mode": row.supply_chain_mode,
-                "compliance_mode":   row.compliance_mode,
-                "operations_mode":   row.operations_mode,
-            }
-            for domain, flag in DOMAIN_FLAG_MAP.items():
-                if flag is None or flag_values.get(flag):
-                    enabled.add(domain)
+        try:
+            flag_values = flags_for(db, str(get_current_tenant_id()))
+        finally:
+            db.close()
+        for domain, flag in DOMAIN_FLAG_MAP.items():
+            if flag is None or flag_values.get(flag):
+                enabled.add(domain)
     except Exception as e:
         logger.warning(f"[Supervisor] Could not read feature flags, enabling all domains: {e}")
         enabled = set(DOMAINS.keys())
@@ -220,7 +205,7 @@ def _classify_fast(question: str) -> List[str]:
         if domain == "general":
             continue
         for kw in cfg["keywords"]:
-            if kw in q:
+            if has_term(q, kw):
                 scores[domain] += 1
 
     # Return all domains with at least one keyword hit, sorted by score
@@ -280,6 +265,38 @@ Example: ["banking"] or ["payroll", "insurance"]"""
     return _classify_fast(question)
 
 
+# Short natural descriptions the zero-shot model reads. Keyword-list
+# descriptions biased it toward whichever label had the broadest words.
+# "general" lets it say "none of these" (e.g. passports have no specialist).
+_DOMAIN_ZS_LABELS: Dict[str, str] = {
+    "banking":      "bank account, card transactions or spending",
+    "insurance":    "insurance policy, coverage or claim",
+    "payroll":      "pay stub, salary or payroll",
+    "legal":        "contract, lease or legal matter",
+    "medical":      "doctor visit, prescription or medical record",
+    "financial":    "company financial statements, profit and loss or balance sheet",
+    "real_estate":  "mortgage, home loan or property",
+    "supply_chain": "purchase order, shipping or vendor invoice",
+    "compliance":   "audit, regulation or compliance risk",
+    "operations":   "work order, maintenance or operations report",
+    "general":      "hello, thanks, small talk or personal ID documents",
+}
+
+
+def _classify_zero_shot(question: str, enabled: Set[str]) -> List[str]:
+    from app.services.classifiers import zero_shot_router as zsr
+
+    labels = {d: desc for d, desc in _DOMAIN_ZS_LABELS.items() if d == "general" or d in enabled}
+    ranked = zsr.score(question, labels, decision="domain")
+    single = zsr.pick(ranked)
+    if single:
+        return [single]
+    multi = [d for d in zsr.pick_multi(ranked) if d != "general"]
+    if multi:
+        logger.info(f"[Supervisor] zero-shot multi-domain: {multi}")
+    return multi
+
+
 def classify_question(
     question: str,
     available_doc_types: Optional[List[str]] = None,
@@ -296,7 +313,18 @@ def classify_question(
     # Filter to enabled domains only
     fast_enabled = [d for d in fast if d in enabled]
 
-    if not use_llm or (len(fast_enabled) == 1 and fast_enabled[0] != "general"):
+    if len(fast_enabled) == 1 and fast_enabled[0] != "general":
+        return fast_enabled
+
+    # Keywords found nothing → let the zero-shot model decide.
+    # (Multi-domain keyword hits are kept as-is; they are usually right.)
+    # Zero-shot is unreliable on 1-2 word inputs ("hello", "thanks")
+    if (not fast_enabled or fast_enabled == ["general"]) and len(question.split()) >= 3:
+        zs = _classify_zero_shot(question, enabled)
+        if zs:
+            return zs
+
+    if not use_llm:
         return fast_enabled or ["general"]
 
     llm_domains = _classify_llm(question, available_doc_types or [])
@@ -328,6 +356,7 @@ _SIMPLE_SIGNALS = {
     "what is", "what's", "who is", "when did", "when was", "where is",
     "define", "explain", "tell me about", "what does",
     "what are my", "show me my", "what's my",
+    "read the", "read my", "let me know", "tell me the", "give me the details of",
     "thanks", "thank you", "ok", "okay", "got it", "understood",
     "yes", "no", "hello", "hi",
 }
@@ -359,13 +388,12 @@ _DOMAIN_ANCHOR_KWS = {
     "mortgage", "deed", "lease", "property", "closing",
     # supply chain / compliance
     "invoice", "purchase order", "vendor", "audit", "compliance",
-}
-
-# Generic "give me stuff" phrases with no domain — these are vague
-_VAGUE_PATTERNS = {
-    "give me", "get me", "show me", "pull up", "fetch",
-    "get the", "show the", "give the", "find the",
-    "details", "information", "data", "info",
+    # personal identity documents
+    "passport", "birth certificate", "visa", "id card", "driver", "license",
+    "social security", "immigration", "green card", "uscis", "i-94",
+    "vaccination", "vaccine", "marriage certificate", "death certificate",
+    # general document reads (user explicitly names a document type)
+    "receipt", "utility bill", "tax", "w2", "1099", "rent", "hoa",
 }
 
 
@@ -384,18 +412,17 @@ def classify_intent(question: str, doc_ids: List[str] = None) -> IntentResult:
     words = q.split()
     word_count = len(words)
 
-    # 0. Vague check — no domain anchor + generic retrieval phrase → ask to clarify
-    #    Only applies to mid-length queries (very short handled below, long goes LangGraph)
-    #    Skip entirely when doc_ids are provided: the user has already scoped the question
-    #    to specific documents, so "vague phrasing" is irrelevant — we know what to search.
-    _has_domain = any(kw in q for kw in _DOMAIN_ANCHOR_KWS)
-    _has_vague  = any(pat in q for pat in _VAGUE_PATTERNS)
-    if not doc_ids and not _has_domain and _has_vague and 3 <= word_count <= 15:
-        return IntentResult("clarify", "vague", "no domain anchor with vague retrieval phrase")
+    # 0. Vague check — only fire when the query has NO content at all (≤3 words, no nouns).
+    #    "details", "information", "show me" appear in nearly every natural query, so
+    #    broad vague-pattern matching kills legitimate queries. Only clarify when the
+    #    entire query is a bare retrieval phrase with zero subject matter.
+    _BARE_VAGUE = {"documents", "files", "stuff", "things", "data", "information", "details"}
+    if not doc_ids and word_count <= 3 and all(w in _BARE_VAGUE or len(w) <= 3 for w in words):
+        return IntentResult("clarify", "vague", "bare retrieval phrase with no subject")
 
     # 1. Analytical signals always win — check before any word-count shortcuts
     for sig in _ANALYTICAL_SIGNALS:
-        if sig in q:
+        if has_term(q, sig):
             return IntentResult("langgraph", "analytical", f"analytical signal: '{sig}'")
 
     # 2. Very short or conversational → fast

@@ -25,7 +25,7 @@ from app.services.agent_tools import TOOL_DESCRIPTIONS, call_tool
 logger = logging.getLogger(__name__)
 
 OLLAMA_MODEL = "phi3:mini"
-MAX_ITERATIONS = 10
+MAX_ITERATIONS = 6
 
 SYSTEM_PROMPT = """You are a JSON-only ReAct agent. Output ONLY a single JSON object. No markdown, no backticks, no explanation text.
 
@@ -74,6 +74,8 @@ def _parse_llm_json(raw: str) -> Optional[Dict]:
     phi3 sometimes uses {action:{toolName:...}, input:{...}} instead of {tool:..., args:{...}}.
     """
     raw = raw.strip()
+    # Strip qwen3 <think>...</think> reasoning blocks before parsing
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
     raw = re.sub(r"```[a-z]*\s*", "", raw)
     raw = re.sub(r"```\s*", "", raw)
 
@@ -164,7 +166,7 @@ def run_agent(run_id: str):
                 response = client.chat(
                     model=OLLAMA_MODEL,
                     messages=messages,
-                    options={"temperature": 0.1, "num_predict": 512}
+                    options={"temperature": 0.1, "num_predict": 512, "think": False}
                 )
                 latency = int((datetime.utcnow() - t0).total_seconds() * 1000)
                 raw_content = response["message"]["content"]

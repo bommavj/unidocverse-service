@@ -1,0 +1,196 @@
+# Tax rules as data — the LLM never supplies a rate, limit, or date.
+# Update every January; each value carries its year. Sources: SSA wage-base
+# announcements, IRS Pub 15, CA EDD SDI rates. CA SDI and FICA rates below were
+# also confirmed against real pay stubs (1.2% in 2025, 1.3% in 2026).
+
+payroll:
+  social_security:
+    rate: 0.062
+    wage_base: {2025: 176100, 2026: 184500}
+  medicare:
+    rate: 0.0145
+    additional_rate: 0.009          # employee-only, on wages over the threshold
+    additional_threshold: 200000
+  ca_sdi:
+    rate: {2025: 0.012, 2026: 0.013}
+    wage_base: null                 # no cap since 2024
+  # Section 125 (cafeteria plan) deductions reduce FICA and SDI wages.
+  # 401(k) deferrals do NOT — they only reduce federal/state income-tax wages.
+  pre_tax_for_fica: [medical, dental, vision, hsa, fsa, dependent care, health]
+
+# Recurring deadlines. month/day are the statutory due date; dates falling on a
+# weekend move to the next business day (holidays are not modelled — verify).
+calendar:
+  - {id: fed_1040, name: "Federal income tax return (Form 1040) and balance due", authority: IRS, topics: [income, federal, return], month: 4, day: 15, tax_year_offset: -1}
+  - {id: ca_540, name: "California income tax return (Form 540) and balance due", authority: FTB, topics: [income, california, return], month: 4, day: 15, tax_year_offset: -1}
+  - {id: fed_est_q1, name: "Federal estimated tax, 1st payment", authority: IRS, topics: [estimated, federal], month: 4, day: 15}
+  - {id: fed_est_q2, name: "Federal estimated tax, 2nd payment", authority: IRS, topics: [estimated, federal], month: 6, day: 15}
+  - {id: fed_est_q3, name: "Federal estimated tax, 3rd payment", authority: IRS, topics: [estimated, federal], month: 9, day: 15}
+  - {id: fed_est_q4, name: "Federal estimated tax, 4th payment", authority: IRS, topics: [estimated, federal], month: 1, day: 15, tax_year_offset: -1}
+  - {id: ca_est_1, name: "California estimated tax, 1st payment (30%)", authority: FTB, topics: [estimated, california], month: 4, day: 15}
+  - {id: ca_est_2, name: "California estimated tax, 2nd payment (40%)", authority: FTB, topics: [estimated, california], month: 6, day: 15}
+  - {id: ca_est_4, name: "California estimated tax, final payment (30%)", authority: FTB, topics: [estimated, california], month: 1, day: 15, tax_year_offset: -1}
+  - {id: w2_1099nec, name: "W-2 and 1099-NEC due to employees/contractors and the IRS/SSA", authority: IRS, topics: [w2, 1099, employer, payroll], month: 1, day: 31, tax_year_offset: -1}
+  - {id: prop_tax_1, name: "CA property tax 1st installment (due Nov 1, delinquent after Dec 10)", authority: County, topics: [property], month: 12, day: 10}
+  - {id: prop_tax_2, name: "CA property tax 2nd installment (due Feb 1, delinquent after Apr 10)", authority: County, topics: [property], month: 4, day: 10}
+  - {id: cdtfa_q1, name: "CDTFA sales & use tax return, Q1 (Jan–Mar)", authority: CDTFA, topics: [sales, business], month: 4, day: 30}
+  - {id: cdtfa_q2, name: "CDTFA sales & use tax return, Q2 (Apr–Jun)", authority: CDTFA, topics: [sales, business], month: 7, day: 31}
+  - {id: cdtfa_q3, name: "CDTFA sales & use tax return, Q3 (Jul–Sep)", authority: CDTFA, topics: [sales, business], month: 10, day: 31}
+  - {id: cdtfa_q4, name: "CDTFA sales & use tax return, Q4 (Oct–Dec)", authority: CDTFA, topics: [sales, business], month: 1, day: 31, tax_year_offset: -1}
+  - {id: f941_q1, name: "Employer payroll returns Q1 (IRS 941, CA DE 9)", authority: "IRS/EDD", topics: [payroll, employer], month: 4, day: 30}
+  - {id: f941_q2, name: "Employer payroll returns Q2 (IRS 941, CA DE 9)", authority: "IRS/EDD", topics: [payroll, employer], month: 7, day: 31}
+  - {id: f941_q3, name: "Employer payroll returns Q3 (IRS 941, CA DE 9)", authority: "IRS/EDD", topics: [payroll, employer], month: 10, day: 31}
+  - {id: f941_q4, name: "Employer payroll returns Q4 (IRS 941, CA DE 9)", authority: "IRS/EDD", topics: [payroll, employer], month: 1, day: 31, tax_year_offset: -1}
+
+# ── Sales & use tax on PURCHASES (reverse audit) ─────────────────────────────
+# Combined rates by jurisdiction and effective date. Statewide base is 7.25%
+# (6% state + 1.25% Bradley-Burns local). District rates change often —
+# verify against CDTFA's "Tax Rates by City/County" before filing a claim.
+sales_tax:
+  ca_base_rate: 0.0725
+  # city (lower-case) → list of {from: YYYY-MM-DD, rate}
+  ca_rates:
+    sacramento:    [{from: 2019-04-01, rate: 0.0875}]
+    san francisco: [{from: 2020-10-01, rate: 0.08625}]
+    los angeles:   [{from: 2017-07-01, rate: 0.095}, {from: 2025-04-01, rate: 0.0975}]
+    san diego:     [{from: 2017-04-01, rate: 0.0775}]
+    san jose:      [{from: 2019-10-01, rate: 0.09375}]
+    fresno:        [{from: 2019-04-01, rate: 0.08350}]
+    oakland:       [{from: 2023-04-01, rate: 0.1025}]
+  # R&TC 6377.1 partial exemption for qualifying manufacturing / R&D equipment:
+  # the 3.9375% state General Fund share is exempt (in effect through 2030).
+  manufacturing_partial_exemption: 0.039375
+  # Purchase categories (ledger "Category" column, lower-case substring match)
+  exempt_categories:
+    resale:   [resale, inventory, "for resale", merchandise for resale]
+    nontaxable: [software download, electronically delivered, saas, subscription service,
+                 consulting, professional services, repair labor, maintenance service, training]
+    manufacturing: [manufacturing equipment, production equipment, machinery, r&d equipment]
+  # Separately stated charges that are not taxable (Reg. 1628 delivery by common
+  # carrier direct to the purchaser; Reg. 1546 installation labor).
+  nontaxable_separately_stated: [freight, delivery, shipping, installation, labor]
+  # R&TC 6902: refund claim within 3 years of the return due date for the period.
+  refund_window_years: 3
+
+# ── Information returns (W-2 / 1099 / K-1) ───────────────────────────────────
+info_returns:
+  # 1099-NEC / 1099-MISC filing threshold by payment year. OBBBA raised it from
+  # $600 to $2,000 for payments made after 2025, inflation-indexed from 2027.
+  nec_threshold: {2024: 600, 2025: 600, 2026: 2000}
+  backup_withholding_rate: 0.24        # IRC 3406, on reportable payments without a valid TIN
+  # AP ledger categories/descriptions that are services (1099-NEC reportable).
+  # Payments for goods/merchandise are not reportable.
+  service_words: [service, consulting, consultant, contractor, legal, attorney, law, accounting,
+                  janitorial, cleaning, design, labor, repair, maintenance, professional, freelance,
+                  marketing, staffing, training, installation, landscaping, security, it support]
+  # Names that usually mean a corporation (exempt from 1099-NEC except legal
+  # and medical payments) — confirm with W-9 line 3.
+  corporate_suffix: ['\binc\b', '\bincorporated\b', '\bcorp\b', '\bcorporation\b', '\bco\.? inc\b']
+  corp_exception_words: [legal, attorney, law, medical, health]
+  tolerance: 1.00                      # dollars, for cross-document comparisons
+  # Date (month-day, following year) the payer must furnish the form to the recipient.
+  furnish_by:
+    w2: "01-31"
+    1099_nec: "01-31"
+    1099_misc: "01-31"     # Feb 15 when box 8 or 10 is reported
+    1099_int: "01-31"
+    1099_div: "01-31"
+    1099_r: "01-31"
+    1099_g: "01-31"
+    1099_k: "01-31"
+    1098: "01-31"
+    1098_t: "01-31"
+    1098_e: "01-31"
+    1099_b: "02-15"
+    1099_da: "02-15"
+    1095: "03-02"
+    k1: "03-15"            # with the partnership / S-corp return (later if extended)
+  # Forms that bring a schedule or form onto the individual return
+  needs_schedule:
+    1099_nec: "Schedule C (profit or loss) and Schedule SE (self-employment tax)"
+    k1: "Schedule E, Part II (partnership / S-corp income)"
+    1099_b: "Form 8949 and Schedule D (capital gains)"
+    1099_da: "Form 8949 and Schedule D (digital asset sales)"
+    1099_misc: "Schedule E (rents/royalties) or Schedule 1 (other income)"
+    1098: "Schedule A, if itemizing (mortgage interest)"
+    1098_t: "Form 8863 (education credits)"
+    1095: "Form 8962 if a 1095-A shows advance premium credit"
+
+# ── Federal individual income tax (planning) ─────────────────────────────────
+# 2025: Rev. Proc. 2024-40 as amended by OBBBA (standard deduction, SALT cap).
+# 2026: Rev. Proc. 2025-32. Verify against the IRS before relying on a figure.
+# Brackets: list of [upper bound of the bracket, rate]; last bound null = no cap.
+federal:
+  brackets:
+    2025:
+      single: [[11925, 0.10], [48475, 0.12], [103350, 0.22], [197300, 0.24], [250525, 0.32], [626350, 0.35], [null, 0.37]]
+      mfj:    [[23850, 0.10], [96950, 0.12], [206700, 0.22], [394600, 0.24], [501050, 0.32], [751600, 0.35], [null, 0.37]]
+      hoh:    [[17000, 0.10], [64850, 0.12], [103350, 0.22], [197300, 0.24], [250500, 0.32], [626350, 0.35], [null, 0.37]]
+    2026:
+      single: [[12400, 0.10], [50400, 0.12], [105700, 0.22], [201775, 0.24], [256225, 0.32], [640600, 0.35], [null, 0.37]]
+      mfj:    [[24800, 0.10], [100800, 0.12], [211400, 0.22], [403550, 0.24], [512450, 0.32], [768700, 0.35], [null, 0.37]]
+      hoh:    [[17700, 0.10], [67450, 0.12], [105700, 0.22], [201750, 0.24], [256200, 0.32], [640600, 0.35], [null, 0.37]]
+  standard_deduction:
+    2025: {single: 15750, mfj: 31500, hoh: 23625}
+    2026: {single: 16100, mfj: 32200, hoh: 24150}
+  # Long-term capital gains / qualified dividends: taxable income where 0% ends and 20% starts
+  ltcg:
+    2025: {single: [48350, 533400], mfj: [96700, 600050], hoh: [64750, 566700]}
+    2026: {single: [49450, 545500], mfj: [98900, 613700], hoh: [66200, 579600]}
+  niit: {rate: 0.038, threshold: {single: 200000, mfj: 250000, hoh: 200000}}        # not inflation-indexed
+  additional_medicare: {rate: 0.009, threshold: {single: 200000, mfj: 250000, hoh: 200000}}
+  se_tax: {net_factor: 0.9235, ss_rate: 0.124, medicare_rate: 0.029}
+  capital_loss_limit: 3000
+  # OBBBA SALT cap: $40,000 (2025), $40,400 (2026); reduced by 30% of MAGI over the threshold, floor $10,000
+  salt_cap:
+    2025: {cap: 40000, threshold: 500000, floor: 10000}
+    2026: {cap: 40400, threshold: 505000, floor: 10000}
+  limits:
+    401k:        {2025: 23500, 2026: 24500}
+    401k_catchup: {2025: 7500, 2026: 8000}
+    hsa_self:    {2025: 4300, 2026: 4400}
+    hsa_family:  {2025: 8550, 2026: 8750}
+    ira:         {2025: 7000, 2026: 7500}
+  # Estimated tax safe harbor: pay 90% of this year's tax or 100% of last year's (110% if last year's AGI > $150k)
+  safe_harbor: {current: 0.90, prior: 1.00, prior_high: 1.10, high_agi: 150000}
+
+# ── Vendor TIN / W-9 checks (format only — IRS TIN Matching confirms name/TIN pairs) ──
+tin:
+  # EIN prefixes (first two digits) the IRS assigns; others are invalid. Verify against
+  # the IRS "Valid EIN Prefixes" page.
+  ein_valid_prefixes: ["01","02","03","04","05","06","10","11","12","13","14","15","16","20","21","22","23","24",
+                       "25","26","27","30","31","32","33","34","35","36","37","38","39","40","41","42","43","44",
+                       "45","46","47","48","50","51","52","53","54","55","56","57","58","59","60","61","62","63",
+                       "64","65","66","67","68","71","72","73","74","75","76","77","80","81","82","83","84","85",
+                       "86","87","88","90","91","92","93","94","95","98","99"]
+  # SSN: area 000, 666 and 900-999 are never issued; group 00 and serial 0000 are invalid.
+  # 9xx with group 50-65, 70-88, 90-92, 94-99 is an ITIN (valid for individuals).
+  itin_groups: [[50, 65], [70, 88], [90, 92], [94, 99]]
+  placeholders: ["123456789", "111111111", "999999999", "000000000", "078051120", "219099999"]
+  # Entity types that must use an EIN, not an SSN
+  ein_required: ["C corporation", "S corporation", "Partnership", "Trust/estate"]
+w9:
+  current_revision: "March 2024"
+  stale_before_year: 2017      # revisions older than this are flagged for re-collection
+
+# Information-return penalties per return (IRC 6721 filing with the IRS, 6722 payee
+# statement), keyed by the year the returns are DUE (payments in 2025 → due 2026).
+# Tiers: corrected within 30 days, by Aug 1, after Aug 1 / never, intentional disregard.
+# Verify against the IRS "Information Return Penalties" page each year.
+info_return_penalties:
+  2025: {within_30_days: 60, by_aug_1: 130, after_aug_1: 330, intentional: 660}
+  2026: {within_30_days: 60, by_aug_1: 130, after_aug_1: 340, intentional: 680}
+# Staff time to resolve an exception (hours) — defaults, override per client
+remediation_hours:
+  "Missing W-9": 0.75
+  "Missing TIN": 0.5
+  "Invalid TIN format": 0.5
+  "TIN type doesn't fit the entity": 0.5
+  "Conflicting TINs for one vendor": 0.75
+  "Duplicate TIN across vendors": 0.5
+  "Name doesn't match vendor master": 0.25
+  "IRS: name/TIN mismatch": 1.0
+  "IRS: TIN not issued": 1.0
+  "IRS: TIN missing or malformed": 0.75
+  default: 0.25
+remediation_hourly_rate: 45

@@ -65,6 +65,7 @@ def should_reprocess(state: DocumentState) -> str:
     return "continue"
 
 
+import asyncio
 import logging
 from langgraph.graph import StateGraph, END
 from app.agents.state import DocumentState
@@ -88,34 +89,49 @@ from app.agents.extract_archive_node import extract_archive_node
 logger = logging.getLogger(__name__)
 
 
+def _async_node(fn):
+    """
+    Wrap a sync node function so LangGraph runs it in a thread pool via
+    asyncio.to_thread().  This lets the event loop schedule multiple parallel
+    branches concurrently instead of blocking on each one sequentially.
+    """
+    async def _wrapper(state):
+        return await asyncio.to_thread(fn, state)
+    _wrapper.__name__ = fn.__name__
+    return _wrapper
+
+
 def create_workflow() -> StateGraph:
     """
-    Create linear workflow with Specialist Router Architecture
+    Create workflow with parallel fan-out after cleanup.
 
-    Flow: ingest → parse → cleanup → classify → specific_analysis →
-          analyze → math_analysis → search_prep → quality_check →
-          insight → analytics → calculate_metrics → entity_linking → finalize
+    Flow: ingest → precheck → parse → cleanup
+            ├─ specific_analysis → analyze → insight ─┐
+            ├─ chunk_and_embed (heavy)                  ├─ entity_linking → finalize
+            ├─ search_prep                              │
+            ├─ quality_check                            │
+            └─ calculate_metrics ──────────────────────┘
     """
 
     workflow = StateGraph(DocumentState)
 
-    # Add nodes
+    # Sequential nodes (no benefit from threading — either trivial or must be serial)
     workflow.add_node("ingest", ingest_node)
     workflow.add_node("precheck", precheck_node)
     workflow.add_node("extract_archive", extract_archive_node)
     workflow.add_node("parse", parse_node)
     workflow.add_node("cleanup", cleanup_node)
-    #workflow.add_node("classify", classify_node)
-    workflow.add_node("specific_analysis", document_specific_analysis_node)
-    workflow.add_node("analyze", analyze_node)
-    #workflow.add_node("math_analysis", math_analysis_node)  # Math Path
-    workflow.add_node("search_prep", search_prep_node)
-    workflow.add_node("chunk_and_embed", chunk_and_embed_node)
-    workflow.add_node("quality_check", quality_check_node)
-    workflow.add_node("insight", insight_node)
-    workflow.add_node("calculate_metrics", metrics_node)
-    workflow.add_node("entity_linking", entity_linking_node)  # Link documents
     workflow.add_node("finalize", finalize_node)
+
+    # Parallel branches — wrapped so ainvoke can run them concurrently
+    workflow.add_node("specific_analysis", _async_node(document_specific_analysis_node))
+    workflow.add_node("analyze",           _async_node(analyze_node))
+    workflow.add_node("insight",           _async_node(insight_node))
+    workflow.add_node("chunk_and_embed",   _async_node(chunk_and_embed_node))
+    workflow.add_node("search_prep",       _async_node(search_prep_node))
+    workflow.add_node("quality_check",     _async_node(quality_check_node))
+    workflow.add_node("calculate_metrics", _async_node(metrics_node))
+    workflow.add_node("entity_linking",    _async_node(entity_linking_node))
 
     # Set entry point
     workflow.set_entry_point("ingest")
@@ -134,21 +150,47 @@ def create_workflow() -> StateGraph:
         {"finalize": "finalize", "parse": "parse"}
     )
     workflow.add_edge("parse", "cleanup")
-    #workflow.add_edge("cleanup", "classify")
-    workflow.add_edge("cleanup", "specific_analysis")  # Document-specific analyzers
-    workflow.add_edge("specific_analysis", "analyze")  # AI summary/key points
-    workflow.add_edge("analyze", "search_prep")  # ✅ Math Path (Pandas calculations)
-    #workflow.add_edge("math_analysis", "search_prep")  # ✅ Then embeddings
-    workflow.add_edge("search_prep", "chunk_and_embed")
-    workflow.add_edge("chunk_and_embed", "quality_check")
-    workflow.add_edge("quality_check", "insight")
-    workflow.add_edge("insight", "calculate_metrics")
-    workflow.add_edge("calculate_metrics", "entity_linking")  # ✅ Entity linking & document relationships
-    workflow.add_edge("entity_linking", "finalize")
 
+    # ── Parallel fan-out from cleanup ────────────────────────────────────────
+    # cleanup produces: cleaned_text, doc_metadata, classification
+    #
+    # Branch 1 (LLM chain):  cleanup → specific_analysis → analyze → insight
+    #                                 → entity_linking → finalize → END
+    # Branch 2 (embedding):  cleanup → chunk_and_embed → END  (~37s, stores to DB directly)
+    # Branch 3 (keywords):   cleanup → search_prep     → END  (~0s, pure Python)
+    # Branch 4 (quality):    cleanup → quality_check   → END  (~0s, pure Python)
+    # Branch 5 (metrics):    cleanup → calculate_metrics → END (~0s, pure Python)
+    #
+    # Branches 2-5 write their state keys immediately and terminate at END.
+    # LangGraph merges their state into the shared state graph; entity_linking
+    # and finalize (on branch 1) read those keys from the merged state without
+    # needing a formal edge from each branch. This eliminates the double-fire
+    # of entity_linking that happens when LangGraph 0.2.x triggers a fan-in
+    # node once per arriving super-step rather than once after all arrive.
+    #
+    # Net effect: chunk_and_embed (~37s) and the LLM chain (~46s) run
+    # concurrently; finalize sees all branch outputs because the fast branches
+    # always complete before the LLM chain does.
+
+    # Branch 1 — LLM chain (sequential; only path to finalize)
+    workflow.add_edge("cleanup", "specific_analysis")
+    workflow.add_edge("specific_analysis", "analyze")
+    workflow.add_edge("analyze", "insight")
+    workflow.add_edge("insight", "entity_linking")
+    workflow.add_edge("entity_linking", "finalize")
     workflow.add_edge("finalize", END)
 
-    logger.info("✅ Specialist Router workflow created: 14 nodes, 0 conditionals")
+    # Branches 2-5 — terminate at END after writing their state keys
+    workflow.add_edge("cleanup", "chunk_and_embed")
+    workflow.add_edge("cleanup", "search_prep")
+    workflow.add_edge("cleanup", "quality_check")
+    workflow.add_edge("cleanup", "calculate_metrics")
+    workflow.add_edge("chunk_and_embed", END)
+    workflow.add_edge("search_prep", END)
+    workflow.add_edge("quality_check", END)
+    workflow.add_edge("calculate_metrics", END)
+
+    logger.info("✅ Specialist Router workflow created: 14 nodes, 1 critical path + 4 independent branches")
     logger.info("   📊 Math Path: math_analysis (Pandas)")
     logger.info("   🤖 Logic Path: analyze (AI)")
     logger.info("   🔗 Entity Linking: entity_linking")

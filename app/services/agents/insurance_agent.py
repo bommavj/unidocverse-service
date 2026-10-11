@@ -32,6 +32,17 @@ class InsuranceAgent(BaseAgent):
 You analyze insurance policies, declarations pages, and claims documents.
 Focus on: coverage limits, premiums, deductibles, exclusions, renewal dates, claim status.
 
+AVAILABLE TOOLS (you may ONLY call these exact tool names):
+- search_policy_terms: search policy text for terms, conditions, exclusions
+- get_coverage_summary: get coverage amounts, limits, premiums, deductibles
+- list_claims: list claims and claim status
+- finish: return final answer to user
+
+STRICT RULES:
+1. You MUST only call tools from the list above. Never call ask_user, search, or any other tool name.
+2. If information is not found after searching, call finish with what you know.
+3. Never ask the user for clarification — infer intent from the query and proceed.
+
 When asked about coverage or terms, use search_policy_terms.
 When asked about amounts or limits, use get_coverage_summary.
 When asked about claims, use list_claims.
@@ -57,7 +68,16 @@ When done: {"thought": "...", "tool": "finish", "args": {"answer": "..."}}
             self._db,
         )
         chunks = result if isinstance(result, list) else (result or {}).get("chunks", [])
-        if not chunks:
+        if not chunks and doc_ids:
+            # Vector search returned nothing — fall back to direct chunk fetch from specified docs
+            placeholders = ", ".join(f":did_{i}" for i in range(len(doc_ids)))
+            raw = self._db.execute(text(f"""
+                SELECT chunk_text, page_number FROM document_chunks
+                WHERE document_id IN ({placeholders})
+                ORDER BY page_number, chunk_index LIMIT 20
+            """), {f"did_{i}": d for i, d in enumerate(doc_ids)}).fetchall()
+            if raw:
+                return "\n\n".join(f"[p.{r.page_number}] {r.chunk_text[:500]}" for r in raw)
             return "No relevant policy text found."
         return "\n\n".join(
             f"[{c.get('filename','')} p.{c.get('page_number','')}] {c.get('chunk_text','')[:500]}"
@@ -94,10 +114,30 @@ When done: {"thought": "...", "tool": "finish", "args": {"answer": "..."}}
 
         try:
             rows = self._db.execute(sql, params).fetchall()
-            if not rows:
-                return "No insurance coverage data found in extracted facts."
+            # Filter to rows with at least some extracted fact
+            useful = [r for r in rows if any([r.insurer, r.policy_number, r.premium, r.deductible, r.coverage_limit])]
+            if not useful:
+                # Fall back: read raw chunks from the doc(s) and return them for the LLM
+                chunk_filter = "WHERE document_id IS NOT NULL"
+                chunk_params: Dict = {}
+                if doc_ids:
+                    placeholders = ", ".join(f":did_{i}" for i in range(len(doc_ids)))
+                    chunk_filter = f"WHERE document_id IN ({placeholders})"
+                    for i, did in enumerate(doc_ids):
+                        chunk_params[f"did_{i}"] = did
+                chunks = self._db.execute(text(f"""
+                    SELECT chunk_text, page_number FROM document_chunks
+                    {chunk_filter}
+                    ORDER BY page_number, chunk_index
+                    LIMIT 30
+                """), chunk_params).fetchall()
+                if not chunks:
+                    return "No insurance coverage data found."
+                return "Raw document text (use this to answer the question):\n\n" + "\n\n".join(
+                    f"[p.{c.page_number}] {c.chunk_text[:600]}" for c in chunks
+                )
             lines = []
-            for r in rows:
+            for r in useful:
                 lines.append(f"**{r.filename}**")
                 if r.insurer:        lines.append(f"  Insurer: {r.insurer}")
                 if r.policy_number:  lines.append(f"  Policy #: {r.policy_number}")

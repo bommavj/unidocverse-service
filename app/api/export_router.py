@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 from app.core.database import get_db
+from app.core.tenant_scope import scope_sql, tenant_params, current_tenant
 
 router = APIRouter(prefix="/api/export", tags=["export"])
 logger = logging.getLogger(__name__)
@@ -78,6 +79,11 @@ def _ts() -> str:
 
 # ── Documents ─────────────────────────────────────────────────────────────────
 
+def scoped(sql: str, params=None):
+    """Tenant-scoped query: domain tables are filtered to the current tenant's documents."""
+    return text(scope_sql(sql)), tenant_params(params)
+
+
 @router.get("/documents")
 def export_documents(
     fmt: str = Query("xlsx", regex="^(xlsx|csv)$"),
@@ -85,10 +91,11 @@ def export_documents(
     folder: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
-    q = "SELECT filename, doc_type, folder_name, file_size, status, created_at FROM documents WHERE 1=1"
-    p: dict = {}
+    q = ("SELECT filename, doc_type, NULL AS folder_name, file_size, status, created_at FROM documents "
+         "WHERE tenant_id = :tenant_id")         # documents has no folder column
+    p: dict = {"tenant_id": current_tenant()}
     if doc_type: q += " AND doc_type=:dt"; p["dt"] = doc_type
-    if folder:   q += " AND folder_name=:fn"; p["fn"] = folder
+    # `folder` is accepted for compatibility; documents has no folder column to filter on
     q += " ORDER BY created_at DESC"
     rows = db.execute(text(q), p).fetchall()
 
@@ -107,7 +114,7 @@ def export_documents(
 
 @router.get("/legal")
 def export_legal(fmt: str = Query("xlsx", regex="^(xlsx|csv)$"), db: Session = Depends(get_db)):
-    contracts = db.execute(text("""
+    contracts = db.execute(*scoped("""
         SELECT lc.contract_name, lc.counterparty, lc.notice_period,
                lc.expiry_date, lc.risk_rating, lc.status,
                COALESCE(d.doc_type,'contract') AS doc_type
@@ -115,7 +122,7 @@ def export_legal(fmt: str = Query("xlsx", regex="^(xlsx|csv)$"), db: Session = D
         LEFT JOIN documents d ON d.id = lc.document_id
         ORDER BY lc.created_at DESC
     """)).fetchall()
-    clauses = db.execute(text(
+    clauses = db.execute(*scoped(
         "SELECT clause_type, clause_name, clause_text, is_deviation, governing_law FROM legal_clauses ORDER BY created_at DESC"
     )).fetchall()
 
@@ -134,10 +141,10 @@ def export_legal(fmt: str = Query("xlsx", regex="^(xlsx|csv)$"), db: Session = D
 
 @router.get("/healthcare")
 def export_healthcare(fmt: str = Query("xlsx", regex="^(xlsx|csv)$"), db: Session = Depends(get_db)):
-    patients = db.execute(text(
+    patients = db.execute(*scoped(
         "SELECT patient_name, patient_dob, chart_score, consent_signed, insurance_verified FROM patient_charts ORDER BY created_at DESC"
     )).fetchall()
-    biomarkers = db.execute(text(
+    biomarkers = db.execute(*scoped(
         "SELECT biomarker_name, biomarker_value, unit, reference_range, is_abnormal, physician FROM patient_biomarkers ORDER BY created_at DESC"
     )).fetchall()
 
@@ -156,10 +163,10 @@ def export_healthcare(fmt: str = Query("xlsx", regex="^(xlsx|csv)$"), db: Sessio
 
 @router.get("/finance")
 def export_finance(fmt: str = Query("xlsx", regex="^(xlsx|csv)$"), db: Session = Depends(get_db)):
-    matches = db.execute(text(
+    matches = db.execute(*scoped(
         "SELECT invoice_id, vendor_name, invoice_val, po_val, receipt_val, match_status, is_approved FROM finance_matches ORDER BY created_at DESC"
     )).fetchall()
-    anomalies = db.execute(text(
+    anomalies = db.execute(*scoped(
         "SELECT anomaly_type, title, ref_code, amount FROM finance_anomalies ORDER BY created_at DESC"
     )).fetchall()
 
@@ -179,10 +186,10 @@ def export_finance(fmt: str = Query("xlsx", regex="^(xlsx|csv)$"), db: Session =
 
 @router.get("/real-estate")
 def export_real_estate(fmt: str = Query("xlsx", regex="^(xlsx|csv)$"), db: Session = Depends(get_db)):
-    props = db.execute(text(
+    props = db.execute(*scoped(
         "SELECT address, buyer_name, price, progress, has_appraisal, has_clear_title, is_escrow_funded FROM real_estate_properties ORDER BY created_at DESC"
     )).fetchall()
-    milestones = db.execute(text("""
+    milestones = db.execute(*scoped("""
         SELECT p.address, m.name, m.due_date, m.is_completed
         FROM real_estate_milestones m
         JOIN real_estate_properties p ON p.id = m.property_id
@@ -204,10 +211,10 @@ def export_real_estate(fmt: str = Query("xlsx", regex="^(xlsx|csv)$"), db: Sessi
 
 @router.get("/hr")
 def export_hr(fmt: str = Query("xlsx", regex="^(xlsx|csv)$"), db: Session = Depends(get_db)):
-    candidates = db.execute(text(
+    candidates = db.execute(*scoped(
         "SELECT candidate_name, role, experience_years, match_score, skills, feedback FROM hr_candidates ORDER BY created_at DESC"
     )).fetchall()
-    onboarding = db.execute(text(
+    onboarding = db.execute(*scoped(
         "SELECT employee_name, title, due_date, is_done FROM hr_onboarding_tasks ORDER BY due_date"
     )).fetchall()
 
@@ -226,10 +233,10 @@ def export_hr(fmt: str = Query("xlsx", regex="^(xlsx|csv)$"), db: Session = Depe
 
 @router.get("/supply-chain")
 def export_supply_chain(fmt: str = Query("xlsx", regex="^(xlsx|csv)$"), db: Session = Depends(get_db)):
-    shipments = db.execute(text(
+    shipments = db.execute(*scoped(
         "SELECT bol_number, carrier_name, origin, destination, customs_status, is_reconciled FROM supply_chain_shipments ORDER BY created_at DESC"
     )).fetchall()
-    suppliers = db.execute(text(
+    suppliers = db.execute(*scoped(
         "SELECT name, type, expiry_date, sanctions_status FROM supply_chain_suppliers ORDER BY created_at DESC"
     )).fetchall()
 
@@ -248,12 +255,13 @@ def export_supply_chain(fmt: str = Query("xlsx", regex="^(xlsx|csv)$"), db: Sess
 
 @router.get("/agency")
 def export_agency(fmt: str = Query("xlsx", regex="^(xlsx|csv)$"), db: Session = Depends(get_db)):
+    t = {"tenant_id": current_tenant()}
     clients = db.execute(text(
-        "SELECT name, email, phone, status, city, state FROM clients ORDER BY created_at DESC LIMIT 1000"
-    )).fetchall()
+        "SELECT name, email, phone, status, city, state FROM clients WHERE tenant_id = :tenant_id "
+        "ORDER BY created_at DESC LIMIT 1000"), t).fetchall()
     policies = db.execute(text(
-        "SELECT policy_number, line_of_business, carrier_name, premium_amount, effective_date, expiry_date, status FROM policies ORDER BY created_at DESC LIMIT 1000"
-    )).fetchall()
+        "SELECT policy_number, line_of_business, carrier_name, premium_amount, effective_date, expiry_date, status "
+        "FROM policies WHERE tenant_id = :tenant_id ORDER BY created_at DESC LIMIT 1000"), t).fetchall()
 
     clh = ["Name", "Email", "Phone", "Status", "City", "State"]
     cld = [(r.name, r.email, r.phone, r.status, r.city, r.state) for r in clients]
@@ -272,9 +280,9 @@ def export_agency(fmt: str = Query("xlsx", regex="^(xlsx|csv)$"), db: Session = 
 
 @router.get("/automation-log")
 def export_automation_log(fmt: str = Query("xlsx", regex="^(xlsx|csv)$"), db: Session = Depends(get_db)):
-    rows = db.execute(text(
-        "SELECT rule_name, entity_type, entity_id, action_taken, result, detail, error, triggered_at FROM insurance_automation_log ORDER BY triggered_at DESC LIMIT 5000"
-    )).fetchall()
+    rows = db.execute(*scoped(
+        "SELECT rule_name, entity_type, entity_id, action_taken, result, detail, error, triggered_at "
+        "FROM insurance_automation_log ORDER BY triggered_at DESC LIMIT 5000")).fetchall()
 
     h = ["Rule", "Entity Type", "Entity ID", "Action", "Result", "Detail", "Error", "Triggered At"]
     d = [(r.rule_name, r.entity_type, r.entity_id, r.action_taken, r.result,

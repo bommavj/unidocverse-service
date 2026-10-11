@@ -13,15 +13,16 @@ def _safe_ocr(parsed: Dict[str, Any]) -> str:
     if parsed.get("ocr_text"):
         return parsed["ocr_text"].lower()
     try:
-        import pytesseract
+        from app.services.ocr.ocr_utils import ocr_image_best_effort, ocr_image_file
         from PIL import Image
         if parsed.get("image_path"):
-            text = pytesseract.image_to_string(Image.open(parsed["image_path"]))
+            text, _ = ocr_image_file(parsed["image_path"])
             return text.lower()
         if parsed.get("image_bytes"):
             from io import BytesIO
             img = Image.open(BytesIO(parsed["image_bytes"]))
-            return pytesseract.image_to_string(img).lower()
+            text, _ = ocr_image_best_effort(img)
+            return text.lower()
     except Exception as e:
         logger.debug("OCR not available or failed: %s", e)
     return ""

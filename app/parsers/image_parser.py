@@ -202,38 +202,12 @@ class ImageParser:
         return metadata
 
     def _extract_text_ocr(self, image: Image.Image) -> tuple[str, float]:
-        """Extract text from image using OCR"""
-
+        """Extract text from image using OCR with auto-rotation and preprocessing."""
         try:
-            # Convert to RGB if necessary
-            if image.mode not in ('RGB', 'L'):
-                image = image.convert('RGB')
-
-            # Run OCR
-            ocr_data = pytesseract.image_to_data(
-                image,
-                output_type=pytesseract.Output.DICT,
-                lang='eng'
-            )
-
-            # Extract text and confidence
-            text_parts = []
-            confidences = []
-
-            for i, text in enumerate(ocr_data['text']):
-                if text.strip():
-                    text_parts.append(text)
-                    conf = ocr_data['conf'][i]
-                    if conf != -1:  # -1 means no confidence
-                        confidences.append(conf)
-
-            full_text = ' '.join(text_parts)
-            avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
-
-            logger.info(f"📝 OCR extracted {len(full_text)} chars (confidence: {avg_confidence:.1f}%)")
-
-            return full_text, avg_confidence / 100.0
-
+            from app.services.ocr.ocr_utils import ocr_image_best_effort
+            text, conf = ocr_image_best_effort(image)
+            logger.info(f"📝 OCR extracted {len(text)} chars (confidence: {conf:.2f})")
+            return text, conf
         except Exception as e:
             logger.error(f"❌ OCR error: {e}")
             return "", 0.0

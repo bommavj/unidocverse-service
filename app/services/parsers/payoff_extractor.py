@@ -98,20 +98,12 @@ def extract_tables_with_plumber(path: str) -> str:
 # ---------- layer 3: OCR fallback ----------
 
 def ocr_full_document(path: str) -> str:
-    if not (pytesseract and convert_from_path):
-        return ""
     try:
-        pages = convert_from_path(path)
+        from app.services.ocr.ocr_utils import ocr_any
+        return ocr_any(path)
     except Exception as e:
-        logger.warning(f"OCR image conversion failed: {e}")
+        logger.warning(f"OCR failed: {e}")
         return ""
-    out: list[str] = []
-    for img in pages:
-        try:
-            out.append(pytesseract.image_to_string(img))
-        except Exception as e:
-            logger.warning(f"OCR page failed: {e}")
-    return "\n".join(out)
 
 
 # ---------- parsing from text blob ----------

@@ -39,28 +39,17 @@ def _clean(val) -> str:
 
 def sanitize_unicode(val) -> str:
     """
-    Convert Unicode escape sequences to actual characters, then strip non-ASCII.
-    Handles \\u2019, \\n, \\t, etc. safely for SQL_ASCII databases.
+    Make text safe for Postgres (UTF-8) without losing content: drop NULs and
+    turn literal \\uXXXX escapes and /uniXXXX glyph names into characters. Non-ASCII is kept - stripping
+    it turned "3-6 months" into "36 months" and erased non-English text.
     """
     if val is None:
         return ""
-
-    val = str(val)
-
-    # Remove null characters
-    val = val.replace("\x00", "").replace("\u0000", "")
-
-    # Decode Unicode escape sequences (e.g., \u2019 → ')
-    try:
-        val = val.encode('utf-8').decode('unicode_escape')
-    except (UnicodeDecodeError, UnicodeEncodeError):
-        # Fallback: remove unknown escapes
-        val = re.sub(r'\\u[0-9a-fA-F]{4}', '', val)
-
-    # Strip non-ASCII characters (SQL_ASCII can't handle them)
-    val = val.encode('ascii', 'ignore').decode('ascii')
-
-    return val.strip()
+    val = str(val).replace("\x00", "")
+    val = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), val)
+    # Some PDF fonts (e.g. Chase statements) extract as glyph names: "Dep/uni006Fsits" → "Deposits"
+    val = re.sub(r"/uni([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), val)
+    return val.replace("\x00", "").strip()
 
 
 def sanitize_nan_to_none(obj):
@@ -212,8 +201,32 @@ class ProcessingService:
 
             # Store results FIRST — doc_type must be in DB before PostProcessingRegistry
             doc = db.query(Document).filter(Document.id == doc_id).first()
-            ProcessingService._store_results(db, doc, final_state, filename)
+            try:
+                ProcessingService._store_results(db, doc, final_state, filename)
+            except Exception as store_err:
+                logger.error(f"❌ [StoreResults] Failed: {store_err}")
+                db.rollback()
+                # Re-fetch and mark status so the document isn't stuck in 'processing'
+                doc = db.query(Document).filter(Document.id == doc_id).first()
+                if doc and doc.processing_stage == "enriching":
+                    doc.processing_stage = "enrichment_failed"
+                    db.commit()
+                elif doc:
+                    doc.status = "failed"
+                    doc.processing_stage = "error"
+                    doc.doc_metadata = {"error": f"store_results: {store_err}"}
+                    db.commit()
+                raise  # re-raise so outer handler logs it too
             db.refresh(doc)
+
+            # Structured facts (transactions, amounts, dates) → documents.extracted_facts.
+            # The research agent's exact SQL path (counts/totals) reads only this.
+            if doc.raw_text:
+                try:
+                    from app.services.facts_extractor import extract_and_store
+                    extract_and_store(str(doc.id), doc.doc_type or "general", doc.raw_text)
+                except Exception as facts_err:
+                    logger.warning(f"⚠ [Facts] Non-fatal: {facts_err}")
 
             # Post-processing hooks (AMS workflow, agents, etc.)
             try:
@@ -221,6 +234,7 @@ class ProcessingService:
                 PostProcessingRegistry.run(doc_id, db)
             except Exception as pp_err:
                 logger.warning(f"⚠ [PostProc] Non-fatal: {pp_err}")
+                db.rollback()  # reset aborted transaction before continuing
 
             # Immigration writeback — if doc linked to a client and is immigration type
             try:
@@ -245,7 +259,10 @@ class ProcessingService:
                         )
             except Exception as imm_err:
                 logger.warning(f"⚠ [Immigration] Non-fatal: {imm_err}")
+                db.rollback()  # reset aborted transaction before continuing
 
+            # Re-fetch doc after potential rollbacks so commit sees a clean state
+            doc = db.query(Document).filter(Document.id == doc_id).first()
             doc.processing_stage = "done"
             db.commit()
             _total = _time.perf_counter() - _t0_pipeline
@@ -256,12 +273,20 @@ class ProcessingService:
             import traceback
             logger.error(traceback.format_exc())
             try:
-                doc.status = "failed"
-                doc.processing_stage = "error"
-                doc.doc_metadata = {"error": str(e)}
-                db.commit()
-            except Exception:
-                pass
+                db.rollback()  # clear any aborted transaction before writing failure status
+                doc = db.query(Document).filter(Document.id == doc_id).first()
+                if doc and doc.processing_stage == "enriching":
+                    # Already searchable — keep it; only enrichment failed.
+                    doc.processing_stage = "enrichment_failed"
+                    doc.doc_metadata = {**(doc.doc_metadata or {}), "enrichment_error": str(e)}
+                    db.commit()
+                elif doc:
+                    doc.status = "failed"
+                    doc.processing_stage = "error"
+                    doc.doc_metadata = {"error": str(e)}
+                    db.commit()
+            except Exception as commit_err:
+                logger.error(f"❌ [Background] Could not write failure status: {commit_err}")
         finally:
             db.close()
 

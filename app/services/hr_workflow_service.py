@@ -32,20 +32,21 @@ class HRWorkflowService:
             # 1. Extract Name
             name = scanner.find_regex(r'Name:\s*(.*)') or \
                    scanner.find_regex(r'Candidate:\s*(.*)') or \
-                   scanner.find_regex(r'Employee:\s*(.*)') or \
-                   "Sarah M. Jenkins"
+                   scanner.find_regex(r'Employee:\s*(.*)')
             name = self._clean_str(name)
+            # Required field not in the document: write nothing rather than a placeholder
+            if not name:
+                return state
 
             role = scanner.find_regex(r'Role:\s*(.*)') or \
                    scanner.find_regex(r'Position:\s*(.*)') or \
                    scanner.find_regex(r'Target\s+Job:\s*(.*)') or \
-                   "Lead Architect"
+                   None
             role = self._clean_str(role)
 
             experience_years = int(self._parse_number(
                 scanner.find_regex(r'Experience:\s*(\d+)\s*(?:years|yrs)') or \
-                scanner.find_regex(r'(\d+)\s+Years\s+of\s+Experience') or \
-                "8"
+                scanner.find_regex(r'(\d+)\s+Years\s+of\s+Experience') or "0"
             ))
 
             # 2. Match target skills against resume text
@@ -55,8 +56,6 @@ class HRWorkflowService:
                 if re.search(r'\b' + re.escape(s) + r'\b', txt, re.IGNORECASE):
                     found_skills.append(s)
 
-            if not found_skills:
-                found_skills = ["JavaScript", "HTML", "CSS"]
 
             # Compute match score based on skill count and experience
             match_score = min(100, 60 + (len(found_skills) * 5) + (experience_years * 2))

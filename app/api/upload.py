@@ -1,5 +1,6 @@
-import threading
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Request
@@ -11,13 +12,18 @@ from app.core.database import get_db
 from app.core.tenant import get_current_tenant_id, DEFAULT_TENANT_ID
 from app.models.document import Document
 from app.schemas.document import DocumentUploadResponse
-#from app.services.processing_service import ProcessingService
 from app.core.paths import UPLOADS_DIR
 from app.services.processing_service import ProcessingService
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["upload"])
+
+# Bounded worker pool — prevents unbounded thread creation on bulk uploads.
+# max_workers = CPU count capped at 4; queue is unlimited (futures just wait).
+_INGEST_WORKERS = min(4, os.cpu_count() or 2)
+_ingest_pool = ThreadPoolExecutor(max_workers=_INGEST_WORKERS, thread_name_prefix="ingest")
+logger.info(f"🔧 Ingest pool: {_INGEST_WORKERS} workers")
 
 
 storage_path = UPLOADS_DIR
@@ -94,15 +100,13 @@ async def upload_document(
 
         logger.info(f"💾 File saved: {file.filename} ({len(content)} bytes)")
 
-        # Start background processing
-        thread = threading.Thread(
-            target=ProcessingService.process_document_background,
-            args=(doc_id, str(final_file_path), file.filename),
-            daemon=True
+        # Submit to bounded ingest pool — no unbounded thread creation
+        _ingest_pool.submit(
+            ProcessingService.process_document_background,
+            doc_id, str(final_file_path), file.filename
         )
-        thread.start()
 
-        logger.info(f"🚀 Background processing started for: {file.filename}")
+        logger.info(f"🚀 Background processing queued for: {file.filename} (pool workers={_INGEST_WORKERS})")
 
         return DocumentUploadResponse(
             id=doc_id,

@@ -6,11 +6,12 @@ Runs on a schedule and on key events (quote created, stage changed, etc.)
 import uuid, json, logging
 from datetime import datetime, timedelta, date
 from typing import Optional
-from fastapi import APIRouter, Depends, BackgroundTasks
+from fastapi import HTTPException, APIRouter, Depends, BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.core.database import get_db
+from app.core.tenant_scope import scope_sql, tenant_params
 from app.core.tenant import get_current_tenant_id, DEFAULT_TENANT_ID
 
 logger = logging.getLogger(__name__)
@@ -165,12 +166,14 @@ def ensure_tables(db: Session):
             action_type TEXT NOT NULL,
             action_config JSONB DEFAULT '{}',
             enabled BOOLEAN DEFAULT TRUE,
+            tenant_id UUID NOT NULL REFERENCES tenants(id),
             run_count INTEGER DEFAULT 0,
             last_run_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT NOW(),
             updated_at TIMESTAMP DEFAULT NOW()
         )
     """))
+    db.execute(text("ALTER TABLE insurance_automation_rules ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id)"))
     db.execute(text("""
         CREATE TABLE IF NOT EXISTS insurance_automation_log (
             id TEXT PRIMARY KEY,
@@ -200,6 +203,28 @@ def ensure_tables(db: Session):
     db.commit()
 
 def r2d(row): return dict(row._mapping) if row else None
+
+
+def _tid() -> str:
+    return str(get_current_tenant_id() or DEFAULT_TENANT_ID)
+
+
+def _own_rule(rid: str, db: Session):
+    """The current tenant's rule, or 404 — another tenant's rule id looks the same as a missing one."""
+    row = db.execute(text("SELECT * FROM insurance_automation_rules WHERE id=:id AND tenant_id = :tid"),
+                     {"id": rid, "tid": _tid()}).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    return row
+
+
+def _enabled_rules(db: Session, all_tenants: bool = False) -> list:
+    """Enabled rules of the current tenant (the scheduler passes all_tenants; each rule still only
+    touches its own tenant's quotes and policies)."""
+    sql = "SELECT * FROM insurance_automation_rules WHERE enabled=TRUE"
+    if all_tenants:
+        return [r2d(r) for r in db.execute(text(sql)).fetchall()]
+    return [r2d(r) for r in db.execute(text(sql + " AND tenant_id = :tid"), {"tid": _tid()}).fetchall()]
 
 def log_run(rule_id: str, rule_name: str, entity_type: str, entity_id: str,
             action: str, result: str, detail: str, db: Session, error: str = None):
@@ -271,7 +296,7 @@ def exec_create_renewal_quote(rule: dict, policy: dict, db: Session):
     new_num = f"QT-{new_id[:8].upper()}"
     eff = policy.get("expiry_date")
     exp = str((datetime.strptime(eff, "%Y-%m-%d") + timedelta(days=365)).date()) if eff else None
-    _tid = get_current_tenant_id() or DEFAULT_TENANT_ID
+    _tid = str(rule.get("tenant_id") or policy.get("tenant_id") or get_current_tenant_id() or DEFAULT_TENANT_ID)
     db.execute(text("""
         INSERT INTO quotes (id, quote_number, client_id, lob, state, country,
                             effective_date, expiry_date, notes, assigned_agent, risk_data, tenant_id)
@@ -331,12 +356,12 @@ def eval_quote_rules(rules: list, db: Session) -> list:
                 cutoff = now - timedelta(days=days)
                 rows = db.execute(text("""
                     SELECT q.* FROM quotes q
-                    WHERE q.stage='sent' AND q.updated_at < :cutoff
+                    WHERE q.tenant_id = :tid AND q.stage='sent' AND q.updated_at < :cutoff
                     AND NOT EXISTS (
                         SELECT 1 FROM quote_carriers qc
                         WHERE qc.quote_id=q.id AND qc.annual_premium IS NOT NULL
                     )
-                """), {"cutoff": cutoff}).fetchall()
+                """), {"cutoff": cutoff, "tid": rule["tenant_id"]}).fetchall()
                 for row in rows:
                     e = r2d(row)
                     detail = dispatch_action(rule, e, "quote", db)
@@ -348,8 +373,8 @@ def eval_quote_rules(rules: list, db: Session) -> list:
                 target = (now + timedelta(days=days)).date()
                 rows = db.execute(text("""
                     SELECT * FROM quotes
-                    WHERE expiry_date::date = :target AND stage NOT IN ('bound','lost','expired')
-                """), {"target": str(target)}).fetchall()
+                    WHERE tenant_id = :tid AND expiry_date::date = :target AND stage NOT IN ('bound','lost','expired')
+                """), {"target": str(target), "tid": rule["tenant_id"]}).fetchall()
                 for row in rows:
                     e = r2d(row)
                     if cond.get("stage_not") and e.get("stage") == cond["stage_not"]:
@@ -363,8 +388,8 @@ def eval_quote_rules(rules: list, db: Session) -> list:
                     SELECT q.* FROM quotes q
                     LEFT JOIN insurance_automation_log l
                       ON l.rule_id=:rid AND l.entity_id=q.id::text
-                    WHERE q.stage='comparing' AND l.id IS NULL
-                """), {"rid": rule["id"]}).fetchall()
+                    WHERE q.tenant_id = :tid AND q.stage='comparing' AND l.id IS NULL
+                """), {"rid": rule["id"], "tid": rule["tenant_id"]}).fetchall()
                 for row in rows:
                     e = r2d(row)
                     carriers = db.execute(text(
@@ -385,9 +410,9 @@ def eval_quote_rules(rules: list, db: Session) -> list:
                     SELECT q.* FROM quotes q
                     LEFT JOIN insurance_automation_log l
                       ON l.rule_id=:rid AND l.entity_id=q.id::text
-                    WHERE l.id IS NULL
+                    WHERE q.tenant_id = :tid AND l.id IS NULL
                     ORDER BY q.created_at DESC
-                """), {"rid": rule["id"]}).fetchall()
+                """), {"rid": rule["id"], "tid": rule["tenant_id"]}).fetchall()
                 for row in rows:
                     e = r2d(row)
                     detail = dispatch_action(rule, e, "quote", db)
@@ -399,11 +424,12 @@ def eval_quote_rules(rules: list, db: Session) -> list:
                     SELECT q.* FROM quotes q
                     LEFT JOIN insurance_automation_log l
                       ON l.rule_id=:rid AND l.entity_id=q.id::text
-                    WHERE q.stage='bound' AND l.id IS NULL
-                """), {"rid": rule["id"]}).fetchall()
+                    WHERE q.tenant_id = :tid AND q.stage='bound' AND l.id IS NULL
+                """), {"rid": rule["id"], "tid": rule["tenant_id"]}).fetchall()
                 for row in rows:
                     e = r2d(row)
-                    pol = db.execute(text("SELECT * FROM policies WHERE id=:id"), {"id": e.get("bound_policy_id")}).fetchone()
+                    pol = db.execute(text("SELECT * FROM policies WHERE id=:id AND tenant_id = :tid"),
+                                     {"id": e.get("bound_policy_id"), "tid": rule["tenant_id"]}).fetchone()
                     if pol: e.update(r2d(pol))
                     detail = dispatch_action(rule, e, "quote", db)
                     log_run(rule["id"], rule["name"], "quote", e["id"], rule["action_type"], "ok", detail, db)
@@ -417,8 +443,8 @@ def eval_quote_rules(rules: list, db: Session) -> list:
                     JOIN quote_carriers qc ON qc.quote_id=q.id
                     LEFT JOIN insurance_automation_log l
                       ON l.rule_id=:rid AND l.entity_id=qc.id::text
-                    WHERE qc.annual_premium IS NOT NULL AND l.id IS NULL
-                """), {"rid": rule["id"]}).fetchall()
+                    WHERE q.tenant_id = :tid AND qc.annual_premium IS NOT NULL AND l.id IS NULL
+                """), {"rid": rule["id"], "tid": rule["tenant_id"]}).fetchall()
                 for row in rows:
                     e = r2d(row)
                     mins = e.get("jurisdiction_minimums") or {}
@@ -455,10 +481,10 @@ def eval_policy_rules(rules: list, db: Session) -> list:
                     SELECT p.* FROM policies p
                     LEFT JOIN insurance_automation_log l
                       ON l.rule_id=:rid AND l.entity_id=p.id::text
-                    WHERE p.expiry_date::date = :target
+                    WHERE p.tenant_id = :tid AND p.expiry_date::date = :target
                       AND p.status IN ('active','renewal_due')
                       AND l.id IS NULL
-                """), {"rid": rule["id"], "target": str(target)}).fetchall()
+                """), {"rid": rule["id"], "target": str(target), "tid": rule["tenant_id"]}).fetchall()
                 for row in rows:
                     e = r2d(row)
                     if cond.get("status") and e.get("status") not in (cond["status"] if isinstance(cond["status"], list) else [cond["status"]]):
@@ -489,16 +515,17 @@ def seed_templates(db: Session = Depends(get_db)):
     ensure_tables(db)
     seeded = []
     for t in TEMPLATES:
-        existing = db.execute(text("SELECT id FROM insurance_automation_rules WHERE name=:n"), {"n": t["name"]}).fetchone()
+        existing = db.execute(text("SELECT id FROM insurance_automation_rules WHERE name=:n AND tenant_id = :tid"),
+                              {"n": t["name"], "tid": _tid()}).fetchone()
         if not existing:
             rid = str(uuid.uuid4())
             db.execute(text("""
                 INSERT INTO insurance_automation_rules
                   (id, name, description, trigger_type, trigger_config, condition_config,
-                   action_type, action_config, enabled)
-                VALUES (:id,:name,:desc,:trigger,CAST(:tc AS jsonb),CAST(:cc AS jsonb),:action,CAST(:ac AS jsonb),:enabled)
+                   action_type, action_config, enabled, tenant_id)
+                VALUES (:id,:name,:desc,:trigger,CAST(:tc AS jsonb),CAST(:cc AS jsonb),:action,CAST(:ac AS jsonb),:enabled,:tid)
             """), {
-                "id": rid, "name": t["name"], "desc": t.get("description"),
+                "id": rid, "tid": _tid(), "name": t["name"], "desc": t.get("description"),
                 "trigger": t["trigger"], "tc": json.dumps(t.get("trigger_config", {})),
                 "cc": json.dumps(t.get("condition", {})),
                 "action": t["action"], "ac": json.dumps(t.get("action_config", {})),
@@ -511,7 +538,8 @@ def seed_templates(db: Session = Depends(get_db)):
 @router.get("")
 def list_rules(db: Session = Depends(get_db)):
     ensure_tables(db)
-    rows = db.execute(text("SELECT * FROM insurance_automation_rules ORDER BY created_at")).fetchall()
+    rows = db.execute(text("SELECT * FROM insurance_automation_rules WHERE tenant_id = :tid ORDER BY created_at"),
+                      {"tid": _tid()}).fetchall()
     return [r2d(r) for r in rows]
 
 @router.post("")
@@ -520,10 +548,10 @@ def create_rule(body: dict, db: Session = Depends(get_db)):
     rid = str(uuid.uuid4())
     db.execute(text("""
         INSERT INTO insurance_automation_rules
-          (id, name, description, trigger_type, trigger_config, condition_config, action_type, action_config, enabled)
-        VALUES (:id,:name,:desc,:trigger,CAST(:tc AS jsonb),CAST(:cc AS jsonb),:action,CAST(:ac AS jsonb),:enabled)
+          (id, name, description, trigger_type, trigger_config, condition_config, action_type, action_config, enabled, tenant_id)
+        VALUES (:id,:name,:desc,:trigger,CAST(:tc AS jsonb),CAST(:cc AS jsonb),:action,CAST(:ac AS jsonb),:enabled,:tid)
     """), {
-        "id": rid, "name": body["name"], "desc": body.get("description"),
+        "id": rid, "tid": _tid(), "name": body["name"], "desc": body.get("description"),
         "trigger": body["trigger_type"],
         "tc":      json.dumps(body.get("trigger_config", {})),
         "cc":      json.dumps(body.get("condition_config", {})),
@@ -532,29 +560,39 @@ def create_rule(body: dict, db: Session = Depends(get_db)):
         "enabled": body.get("enabled", True),
     })
     db.commit()
-    return r2d(db.execute(text("SELECT * FROM insurance_automation_rules WHERE id=:id"), {"id": rid}).fetchone())
+    return r2d(_own_rule(rid, db))
+
+_EDITABLE = {"name", "description", "trigger_type", "trigger_config", "condition_config",
+             "action_type", "action_config", "enabled"}
+
 
 @router.patch("/{rid}")
 def update_rule(rid: str, body: dict, db: Session = Depends(get_db)):
     ensure_tables(db)
-    updates = {k: v for k, v in body.items() if k not in ("id", "created_at")}
+    _own_rule(rid, db)
+    unknown = set(body) - _EDITABLE - {"id", "created_at", "updated_at", "tenant_id", "run_count", "last_run_at"}
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown field(s): {', '.join(sorted(unknown))}")
+    updates = {k: v for k, v in body.items() if k in _EDITABLE}   # column names come only from this list
     if not updates: return {"ok": True}
     set_parts = []
     for k in updates:
         if k in ("trigger_config", "condition_config", "action_config"):
-            set_parts.append(f"{k}=:{k}::jsonb")
-            updates[k] = json.dumps(updates[k]) if isinstance(updates[k], dict) else updates[k]
+            set_parts.append(f"{k}=CAST(:{k} AS jsonb)")
+            updates[k] = json.dumps(updates[k]) if isinstance(updates[k], (dict, list)) else updates[k]
         else:
             set_parts.append(f"{k}=:{k}")
-    updates["id"] = rid
-    db.execute(text(f"UPDATE insurance_automation_rules SET {', '.join(set_parts)}, updated_at=NOW() WHERE id=:id"), updates)
+    updates.update({"id": rid, "tid": _tid()})
+    db.execute(text(f"UPDATE insurance_automation_rules SET {', '.join(set_parts)}, updated_at=NOW() "
+                    f"WHERE id=:id AND tenant_id = :tid"), updates)
     db.commit()
     return {"ok": True}
 
 @router.delete("/{rid}")
 def delete_rule(rid: str, db: Session = Depends(get_db)):
     ensure_tables(db)
-    db.execute(text("DELETE FROM insurance_automation_rules WHERE id=:id"), {"id": rid})
+    _own_rule(rid, db)
+    db.execute(text("DELETE FROM insurance_automation_rules WHERE id=:id AND tenant_id = :tid"), {"id": rid, "tid": _tid()})
     db.commit()
     return {"ok": True}
 
@@ -562,9 +600,7 @@ def delete_rule(rid: str, db: Session = Depends(get_db)):
 def run_automations(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """Trigger all enabled automation rules. Called by scheduler or manually."""
     ensure_tables(db)
-    rules = [r2d(r) for r in db.execute(text(
-        "SELECT * FROM insurance_automation_rules WHERE enabled=TRUE"
-    )).fetchall()]
+    rules = _enabled_rules(db)
 
     def _run():
         quote_triggers  = {"carrier_no_response","quote_expiring","quote_comparing","quote_bound","quote_below_minimum"}
@@ -582,9 +618,7 @@ def run_automations(background_tasks: BackgroundTasks, db: Session = Depends(get
 def run_automations_sync(db: Session = Depends(get_db)):
     """Synchronous run for testing."""
     ensure_tables(db)
-    rules = [r2d(r) for r in db.execute(text(
-        "SELECT * FROM insurance_automation_rules WHERE enabled=TRUE"
-    )).fetchall()]
+    rules = _enabled_rules(db)
     quote_triggers  = {"carrier_no_response","quote_expiring","quote_comparing","quote_bound","quote_below_minimum"}
     policy_triggers = {"policy_expiring","renewal_due"}
     results = (
@@ -597,11 +631,7 @@ def run_automations_sync(db: Session = Depends(get_db)):
 def run_single_rule(rule_id: str, db: Session = Depends(get_db)):
     """Run a single automation rule by ID (synchronous)."""
     ensure_tables(db)
-    row = db.execute(text("SELECT * FROM insurance_automation_rules WHERE id=:id"), {"id": rule_id}).fetchone()
-    if not row:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail="Rule not found")
-    rule = r2d(row)
+    rule = r2d(_own_rule(rule_id, db))
     quote_triggers  = {"carrier_no_response","quote_expiring","quote_comparing","quote_bound","quote_below_minimum","quote_created"}
     policy_triggers = {"policy_expiring","renewal_due"}
     results = []
@@ -614,9 +644,9 @@ def run_single_rule(rule_id: str, db: Session = Depends(get_db)):
 @router.get("/log")
 def get_log(limit: int = 100, db: Session = Depends(get_db)):
     ensure_tables(db)
-    rows = db.execute(text(
-        "SELECT * FROM insurance_automation_log ORDER BY triggered_at DESC LIMIT :lim"
-    ), {"lim": limit}).fetchall()
+    rows = db.execute(text(scope_sql(
+        "SELECT * FROM insurance_automation_log ORDER BY triggered_at DESC LIMIT :lim")),
+        tenant_params({"lim": limit})).fetchall()
     return [r2d(r) for r in rows]
 
 @router.get("/notifications")
@@ -627,13 +657,15 @@ def get_notifications(agent: Optional[str] = None, unread_only: bool = False, db
     if agent: q += " AND (agent=:agent OR agent='all')"; p["agent"] = agent
     if unread_only: q += " AND read=FALSE"
     q += " ORDER BY created_at DESC LIMIT 50"
-    rows = db.execute(text(q), p).fetchall()
+    rows = db.execute(text(scope_sql(q)), tenant_params(p)).fetchall()
     return [r2d(r) for r in rows]
 
 @router.post("/notifications/{nid}/read")
 def mark_read(nid: str, db: Session = Depends(get_db)):
     ensure_tables(db)
-    db.execute(text("UPDATE insurance_notifications SET read=TRUE WHERE id=:id"), {"id": nid})
+    db.execute(text(scope_sql(
+        "UPDATE insurance_notifications SET read=TRUE WHERE id=:id "
+        "AND id IN (SELECT n.id FROM insurance_notifications n)")), tenant_params({"id": nid}))
     db.commit()
     return {"ok": True}
 
@@ -642,13 +674,13 @@ def mark_read(nid: str, db: Session = Depends(get_db)):
 async def on_quote_event(event: str, quote_id: str, db: Session):
     """Called on quote_created, quote_bound. Fires matching instant-trigger rules."""
     ensure_tables(db)
-    rules = [r2d(r) for r in db.execute(text("""
-        SELECT * FROM insurance_automation_rules
-        WHERE trigger_type=:event AND enabled=TRUE
-    """), {"event": event}).fetchall()]
-    if not rules: return
     quote = r2d(db.execute(text("SELECT * FROM quotes WHERE id=:id"), {"id": quote_id}).fetchone())
     if not quote: return
+    rules = [r2d(r) for r in db.execute(text("""
+        SELECT * FROM insurance_automation_rules
+        WHERE trigger_type=:event AND enabled=TRUE AND tenant_id = :tid
+    """), {"event": event, "tid": quote.get("tenant_id")}).fetchall()]
+    if not rules: return
     for rule in rules:
         try:
             detail = dispatch_action(rule, quote, "quote", db)

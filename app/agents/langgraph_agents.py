@@ -256,6 +256,57 @@ def _parse_fast(file_path: str, fmt: str) -> dict:
                 }
             }
 
+        # ── MARKDOWN / XML / YAML / HTML / JSONL ─────────────────
+        elif fmt in ("md", "markdown", "xml", "yaml", "yml", "html", "htm",
+                     "mhtml", "jsonl", "rst", "ini", "cfg", "toml", "sql", "log"):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            return {
+                "text": text[:50_000],
+                "tables": [],
+                "sheets": [],
+                "metadata": {"format": fmt, "char_count": len(text), "fast_parse": True}
+            }
+
+        # ── PARQUET / AVRO ────────────────────────────────────────
+        elif fmt in ("parquet", "avro"):
+            try:
+                import pyarrow.parquet as pq
+                table = pq.read_table(file_path)
+                df_pq = table.to_pandas()
+                text = (
+                    f"Parquet file: {path.name}\n"
+                    f"Rows: {len(df_pq):,} | Columns: {len(df_pq.columns)}\n\n"
+                    + df_pq.head(20).to_string(index=False)
+                )
+                tbl = {
+                    "name": path.stem,
+                    "columns": list(df_pq.columns),
+                    "data": df_pq.head(500).values.tolist(),
+                    "rows": len(df_pq),
+                }
+            except Exception as _pq_err:
+                logger.warning(f"Parquet read failed: {_pq_err}")
+                text = ""
+                tbl = {}
+            return {
+                "text": text,
+                "tables": [tbl] if tbl else [],
+                "sheets": [tbl] if tbl else [],
+                "metadata": {"format": fmt, "fast_parse": True}
+            }
+
+        # ── EML / MSG / MBOX / RTF — delegate to ocr_any ─────────
+        elif fmt in ("eml", "msg", "mbox", "rtf", "epub", "svg",
+                     "zip", "tar", "gz"):
+            from app.services.ocr.ocr_utils import ocr_any
+            text = ocr_any(file_path)
+            return {
+                "text": text[:50_000],
+                "tables": [],
+                "sheets": [],
+                "metadata": {"format": fmt, "char_count": len(text), "fast_parse": True}
+            }
+
     except Exception as e:
         logger.error(f"❌ [_parse_fast] {fmt} parse failed: {e}", exc_info=True)
         # Fall back to an empty result — parse_node will handle it
@@ -266,7 +317,14 @@ def _parse_fast(file_path: str, fmt: str) -> dict:
             "metadata": {"format": fmt, "error": str(e), "fast_parse": True}
         }
 
-    # Fallback for any unhandled fmt in the set
+    # Fallback for any unhandled fmt — delegate to ocr_any rather than silently returning empty
+    try:
+        from app.services.ocr.ocr_utils import ocr_any
+        text = ocr_any(file_path)
+        if text:
+            return {"text": text[:50_000], "tables": [], "sheets": [], "metadata": {"format": fmt}}
+    except Exception:
+        pass
     return {"text": "", "tables": [], "sheets": [], "metadata": {"format": fmt}}
 
 
@@ -310,7 +368,13 @@ def parse_node(state: DocumentState) -> Dict[str, Any]:
         # -------------------------------
         # Stage 1: Universal parsing
         # -------------------------------
-        _FAST_FORMATS = {"csv", "tsv", "xlsx", "xls", "xlsm", "xlsb", "json", "txt"}
+        _FAST_FORMATS = {
+            "csv", "tsv", "xlsx", "xls", "xlsm", "xlsb", "json", "txt",
+            "md", "markdown", "xml", "yaml", "yml", "html", "htm", "mhtml",
+            "jsonl", "rst", "ini", "cfg", "toml", "sql", "log",
+            "parquet", "avro",
+            "eml", "msg", "mbox", "rtf", "epub", "svg", "zip", "tar", "gz",
+        }
         fmt_clean = fmt.lstrip(".")
 
         if fmt_clean in _FAST_FORMATS:
@@ -330,33 +394,35 @@ def parse_node(state: DocumentState) -> Dict[str, Any]:
         def _is_garbled(t: str) -> bool:
             if not t or len(t) < 20: return False
             import re as _re
-            # Strip HTML entities — &lt; &amp; etc contain letters but aren't real text
-            clean = _re.sub(r'&[a-z]+;|&#\d+;|<!--.*?-->', ' ', t)
-            # Also strip HTML tags
+            # &lt; is the MRZ filler character '<' encoded by Docling — NOT garble.
+            # Remove MRZ-filler entities before counting so passports don't false-fire.
+            t_no_mrz = _re.sub(r'&lt;', '', t)
+            # Strip remaining HTML entities and tags
+            clean = _re.sub(r'&[a-z]+;|&#\d+;|<!--.*?-->', ' ', t_no_mrz)
             clean = _re.sub(r'<[^>]+>', ' ', clean)
             real = sum(1 for c in clean if c.isalpha() or c.isdigit())
             ratio = real / max(len(clean), 1)
-            # Also flag if text is mostly HTML entities (original had many &)
-            entity_count = len(_re.findall(r'&[a-z]+;', t))
-            entity_ratio = entity_count * 5 / max(len(t), 1)  # avg entity is 5 chars
+            # Flag HTML-entity–heavy text (mainframe / CrawfordTech PDFs) but
+            # only if the entities are NOT the MRZ filler we already stripped.
+            entity_count = len(_re.findall(r'&[a-z]+;', t_no_mrz))
+            entity_ratio = entity_count * 5 / max(len(t_no_mrz), 1)
             return ratio < 0.25 or entity_ratio > 0.15
 
         if fmt_clean == "pdf" and _is_garbled(text[:500]):
-            logger.warning("⚠️ Garbled text detected — running Tesseract OCR before classification")
+            logger.warning("⚠️ Garbled text detected — running OCR before classification")
             try:
-                from pdf2image import convert_from_path
-                import pytesseract
-                tess_bin = os.getenv("TESSERACT_PATH", os.getenv("TESSERACT_BINARY", "tesseract"))
-                pytesseract.pytesseract.tesseract_cmd = tess_bin
-                pages = convert_from_path(file_path, dpi=200)
-                ocr_pages = [pytesseract.image_to_string(p) for p in pages]
-                ocr_text = "".join(ocr_pages).strip()
-                if ocr_text and len(ocr_text) > 100:
+                from app.services.ocr.ocr_utils import ocr_pdf_best_effort
+                ocr_text = ocr_pdf_best_effort(file_path)
+                # Only replace Docling's extraction if OCR actually got more text.
+                # Never discard a longer Docling result for a shorter OCR result.
+                if ocr_text and len(ocr_text) > len(text):
                     text = ocr_text
                     parsed_data["text"] = ocr_text
-                    logger.info(f"✅ Pre-classification OCR: {len(ocr_text)} chars extracted")
+                    logger.info(f"✅ Pre-classification OCR: {len(ocr_text)} chars (replaced Docling)")
+                elif ocr_text:
+                    logger.info(f"⏭️ Pre-classification OCR ({len(ocr_text)} chars) shorter than Docling ({len(text)}) — keeping Docling")
                 else:
-                    logger.warning("⚠️ OCR returned insufficient text")
+                    logger.warning("⚠️ OCR returned no text")
             except Exception as _ocr_pre_err:
                 logger.error(f"❌ Pre-classification OCR failed: {_ocr_pre_err}")
 
@@ -458,11 +524,14 @@ def parse_node(state: DocumentState) -> Dict[str, Any]:
 
         def _is_garbled(t: str) -> bool:
             """Detect CrawfordTech/custom-font encoded PDFs that produce garbage text.
-            Uses letter+digit ratio — garbled text has <20% real characters."""
+            Uses letter+digit ratio — garbled text has <20% real characters.
+            MRZ filler &lt; (passport zone) is stripped first so passports don't false-fire."""
             if not t or len(t) < 20:
                 return False
-            real_chars = sum(1 for c in t if c.isalpha() or c.isdigit())
-            return (real_chars / len(t)) < 0.2
+            import re as _re2
+            t_clean = _re2.sub(r'&lt;', '', t)  # strip MRZ filler before ratio check
+            real_chars = sum(1 for c in t_clean if c.isalpha() or c.isdigit())
+            return (real_chars / max(len(t_clean), 1)) < 0.2
 
         text_is_garbled = _is_garbled(text[:500] if text else "")
         if text_is_garbled:
@@ -488,25 +557,11 @@ def parse_node(state: DocumentState) -> Dict[str, Any]:
         if (OCR_ENABLED and has_any_images(file_path) and not text_sufficient) or text_is_garbled:
             logger.info("🧠 OCR triggered — extracting text from rendered page images")
             try:
-                from pdf2image import convert_from_path
-                import pytesseract
-                tess_bin = os.getenv("TESSERACT_PATH", "tesseract")
-                pytesseract.pytesseract.tesseract_cmd = tess_bin
-                pages = convert_from_path(file_path, dpi=200)
-                ocr_pages = []
-                for i, page_img in enumerate(pages):
-                    page_text = pytesseract.image_to_string(page_img)
-                    ocr_pages.append(page_text)
-                    logger.info(f"   ✅ Tesseract page {i+1}: {len(page_text)} chars")
-                ocr_text = "\n\n".join(ocr_pages)
+                from app.services.ocr.ocr_utils import ocr_pdf_best_effort
+                ocr_text = ocr_pdf_best_effort(file_path)
             except Exception as _ocr_err:
-                logger.warning(f"⚠️ Tesseract failed: {_ocr_err} — trying EasyOCR")
-                try:
-                    from app.services.ocr.landingai_style import extract_text_landingai_style
-                    ocr_text = extract_text_landingai_style(file_path)
-                except Exception as _easy_err:
-                    logger.error(f"❌ All OCR failed: {_easy_err}")
-                    ocr_text = ""
+                logger.error(f"❌ All OCR failed: {_ocr_err}")
+                ocr_text = ""
 
             if ocr_text:
                 if text_is_garbled:
@@ -846,14 +901,57 @@ def classify_node(state: Dict[str, Any]) -> Dict[str, Any]:
     logger.info(f"🔍 Classifying format={fmt}, has_sheets={has_sheets}, has_text={has_text}")
     results = []
 
-    if fmt in (".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".webp", ".svg", ".heic", ".heif"):
-        logger.info("📸 Image format detected - using image classification")
-        classification.update({
-            "type": "image",
-            "confidence": 0.9,
-            "method": "format_detection"
-        })
+    # ── Format-based pre-classification shortcuts ──────────────────────────
+    _fmt_clean = fmt.lstrip(".")
+
+    _IMAGE_FMTS = {"jpg", "jpeg", "png", "gif", "bmp", "tiff", "tif", "webp",
+                   "heic", "heif"}
+    _EMAIL_FMTS = {"eml", "msg", "mbox"}
+    _ARCHIVE_FMTS = {"zip", "tar", "gz", "7z", "rar"}
+    _DATA_FMTS = {"parquet", "avro", "sqlite", "db"}
+    _CODE_FMTS = {"py", "js", "ts", "java", "cpp", "c", "cs", "go", "rb",
+                  "sh", "bash", "sql"}
+
+    if _fmt_clean in _IMAGE_FMTS or fmt in (".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".webp", ".svg", ".heic", ".heif"):
+        # Try filename-first: a birth cert / passport / ID uploaded as image should be classified correctly
+        from app.services.classifiers.document_classifier import DocumentClassifier
+        _dc_img = DocumentClassifier()
+        _img_parsed = parsed if isinstance(parsed, dict) else {"metadata": {}, "tables": [], "text": ""}
+        if isinstance(_img_parsed.get("metadata"), dict) and not _img_parsed["metadata"].get("filename"):
+            _img_parsed["metadata"]["filename"] = state.get("filename", "")
+        fn_type, fn_conf = _dc_img._classify_by_filename(_img_parsed)
+        if fn_conf >= 0.85:
+            classification.update({"type": fn_type, "confidence": fn_conf, "reasoning": "filename_priority",
+                                    "matched_keywords": [], "rule_scores": {}, "ml_scores": {}})
+            logger.info(f"📄 Image-format doc reclassified by filename: {fn_type} ({fn_conf:.2f})")
+        else:
+            logger.info("📸 Image format detected - using image classification")
+            classification.update({"type": "image", "confidence": 0.9, "method": "format_detection"})
         logger.info(f"✅ Final: {classification['type']} ({classification['confidence']:.2f})")
+        state["classification"] = classification
+        return state
+
+    if _fmt_clean in _EMAIL_FMTS:
+        classification.update({"type": "email", "confidence": 0.95, "method": "format_detection"})
+        logger.info(f"✉️ Email format {_fmt_clean!r} → type=email")
+        state["classification"] = classification
+        return state
+
+    if _fmt_clean in _ARCHIVE_FMTS:
+        classification.update({"type": "archive", "confidence": 0.95, "method": "format_detection"})
+        logger.info(f"📦 Archive format {_fmt_clean!r} → type=archive")
+        state["classification"] = classification
+        return state
+
+    if _fmt_clean in _DATA_FMTS:
+        classification.update({"type": "dataset", "confidence": 0.95, "method": "format_detection"})
+        logger.info(f"📊 Data format {_fmt_clean!r} → type=dataset")
+        state["classification"] = classification
+        return state
+
+    if _fmt_clean in _CODE_FMTS:
+        classification.update({"type": "code", "confidence": 0.95, "method": "format_detection"})
+        logger.info(f"💻 Code format {_fmt_clean!r} → type=code")
         state["classification"] = classification
         return state
 
@@ -861,6 +959,9 @@ def classify_node(state: Dict[str, Any]) -> Dict[str, Any]:
         try:
             from app.services.classifiers.document_classifier import DocumentClassifier
             dc = DocumentClassifier()
+            # Inject original filename so _classify_by_filename can use it
+            if isinstance(parsed.get("metadata"), dict) and not parsed["metadata"].get("filename"):
+                parsed["metadata"]["filename"] = state.get("filename", "")
             if len(parsed["tables"]) > 0:
                 result = dc.classify(parsed["tables"][0], parsed, fmt)
             else:
@@ -1823,11 +1924,53 @@ def chunk_and_embed_node(state: DocumentState) -> Dict[str, Any]:
     from app.models.document import DocumentChunk
 
     document_id = state["document_id"]
+
+    # Delete any existing chunks first — reprocess must not create duplicates
+    _del_db = SessionLocal()
+    try:
+        _del_db.execute(
+            text("DELETE FROM document_chunks WHERE document_id = :id"),
+            {"id": document_id}
+        )
+        _del_db.commit()
+    except Exception as _del_err:
+        logger.warning(f"⚠️ Could not clear old chunks for {document_id}: {_del_err}")
+    finally:
+        _del_db.close()
+
     doc_text = extract_clean_or_raw_text(state)
 
     if not doc_text:
         logger.warning("⚠️ [ChunkNode] No text available for chunking")
+        # Flag as low-quality so the user knows this document is unsearchable
+        try:
+            from app.core.database import SessionLocal as _SL_flag
+            _db_flag = _SL_flag()
+            _db_flag.execute(
+                text("UPDATE documents SET doc_metadata = jsonb_set(COALESCE(doc_metadata,'{}')::jsonb, '{ocr_quality}', '\"empty\"') WHERE id = :id"),
+                {"id": document_id}
+            )
+            _db_flag.commit()
+            _db_flag.close()
+        except Exception:
+            pass
         return {"chunk_count": 0, "chunks": []}
+
+    # Flag low-text documents so users know search quality may be poor
+    _text_len = len(doc_text.strip())
+    if _text_len < 100:
+        logger.warning(f"⚠️ [ChunkNode] Very short text ({_text_len} chars) — OCR may have failed")
+        try:
+            from app.core.database import SessionLocal as _SL_flag2
+            _db_flag2 = _SL_flag2()
+            _db_flag2.execute(
+                text("UPDATE documents SET doc_metadata = jsonb_set(COALESCE(doc_metadata,'{}')::jsonb, '{ocr_quality}', '\"low\"') WHERE id = :id"),
+                {"id": document_id}
+            )
+            _db_flag2.commit()
+            _db_flag2.close()
+        except Exception:
+            pass
 
     # Update stage: chunking
     try:
@@ -1915,6 +2058,18 @@ def chunk_and_embed_node(state: DocumentState) -> Dict[str, Any]:
 
         _t0_dbwrite = time.perf_counter()
         db.commit()
+
+        # Searchable-first: chunks are in, so the document can be searched now.
+        # Summaries/insights/facts keep running and are filled in afterwards.
+        if chunk_records:
+            db.execute(text("""
+                UPDATE documents
+                   SET status = 'completed', processing_stage = 'enriching',
+                       raw_text = COALESCE(raw_text, :raw)
+                 WHERE id = :id AND status = 'processing'
+            """), {"id": document_id, "raw": redact_text(doc_text.replace("\x00", ""))})
+            db.commit()
+            logger.info(f"🔎 Document {document_id} searchable — enrichment continues in background")
         logger.info(
             f"✅ Stored {len(chunk_records)} chunks for document {document_id} "
             f"(DB write {time.perf_counter() - _t0_dbwrite:.1f}s, "
@@ -1966,8 +2121,7 @@ def search_prep_node(state: DocumentState) -> Dict[str, Any]:
 
         if not text or len(text) < 50:
             logger.warning("⚠️ Text too short for keyword extraction")
-            state["keywords"] = []
-            return state
+            return {"keywords": []}
 
         stop_words = {
             'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
@@ -1982,21 +2136,18 @@ def search_prep_node(state: DocumentState) -> Dict[str, Any]:
 
         logger.info(f"✅ [SearchPrepNode] Extracted {len(keywords)} keywords")
 
-        # ⭐ DO NOT RETURN NEW DICT — mutate state
-        state["keywords"] = keywords
-        return state
+        return {"keywords": keywords}
 
     except Exception as e:
         logger.error(f"❌ [SearchPrepNode] Error: {e}")
-
-        # ⭐ Preserve state even on error
-        state["keywords"] = []
-        state["errors"] = state.get("errors", []) + [{
-            "node": "search_prep",
-            "error": str(e),
-            "timestamp": datetime.utcnow().isoformat()
-        }]
-        return state
+        return {
+            "keywords": [],
+            "errors": [{
+                "node": "search_prep",
+                "error": str(e),
+                "timestamp": datetime.utcnow().isoformat()
+            }]
+        }
 
 
 # def search_prep_node(state: DocumentState) -> Dict[str, Any]:
@@ -2679,8 +2830,6 @@ def document_specific_analysis_node(state: DocumentState) -> Dict[str, Any]:
         result = {
             "analyzed_data": analysis_results,
             "doc_metadata": updated_metadata,
-            "classification": classification,
-            "format": state.get("format"),
         }
 
         # Only override phi3:mini insights if specialist produced something
@@ -2713,9 +2862,7 @@ def document_specific_analysis_node(state: DocumentState) -> Dict[str, Any]:
                 "has_advanced_analytics": False
             },
             "doc_metadata": state.get("doc_metadata", {}),
-            "classification": classification,
-            "format": state.get("format"),
-            "errors": state.get("errors", []) + [{
+            "errors": [{
                 "node": "document_analysis",
                 "error": str(e),
                 "timestamp": datetime.utcnow().isoformat()

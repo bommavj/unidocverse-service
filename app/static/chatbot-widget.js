@@ -173,11 +173,13 @@
   const panel = document.createElement('div');
   panel.id = 'udv-panel';
 
-  const _q = new URLSearchParams({ title: TITLE, color: COLOR, icon: ICON, embedded: '1' });
+  const _q = new URLSearchParams({ title: TITLE, color: COLOR, icon: ICON, embedded: '1', api: API });
   if (SUBTITLE) _q.set('subtitle', SUBTITLE);
   if (WELCOME)  _q.set('welcome',  WELCOME);
   if (HINT)     _q.set('hint',     HINT);
-  _q.set('v', '2');
+  _q.set('v', '4');
+  const _tok = localStorage.getItem('udv_access_token') || '';
+  if (_tok) _q.set('jwt', _tok);
   const chatUrl = `${API}/chatbot?${_q}`;
   const iframe  = document.createElement('iframe');
   iframe.src    = chatUrl;
@@ -210,16 +212,28 @@
     panel.style.display = 'flex';
     requestAnimationFrame(() => panel.classList.add('open'));
   }
-  function closeChat() {
-    open = false;
-    fab.textContent = '💬';
-    panel.classList.remove('open');
-    setTimeout(() => { panel.style.display = 'none'; }, 220);
-  }
 
   fab.addEventListener('click', () => open ? closeChat() : openChat());
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && open) closeChat();
+  });
+
+  // ── Clear iframe content on close ───────────────────────────────────────────
+  function closeChat() {
+    open = false;
+    fab.textContent = '💬';
+    panel.classList.remove('open');
+    setTimeout(() => {
+      panel.style.display = 'none';
+      iframe.src = chatUrl; // reset iframe so next open starts fresh
+    }, 220);
+  }
+
+  // ── Remove widget on logout ─────────────────────────────────────────────────
+  window.addEventListener('udv-logout', () => {
+    panel.remove();
+    wrap.remove();
+    style.remove();
   });
 })();

@@ -89,23 +89,14 @@ class ImageAnalyzer(BaseAnalyzer):
         except Exception as e:
             logger.debug(f"Method 1 (parse_image) failed: {e}")
 
-        # Method 2 — Direct pytesseract
+        # Method 2 — universal OCR (auto-rotate, best engine)
         try:
-            import pytesseract
-            from PIL import Image as PILImage
-            img = PILImage.open(file_path)
-            text = pytesseract.image_to_string(img)
-            return text
+            from app.services.ocr.ocr_utils import ocr_any
+            text = ocr_any(file_path)
+            if text:
+                return text
         except Exception as e:
-            logger.debug(f"Method 2 (pytesseract) failed: {e}")
-
-        # Method 3 — Use pdf OCR function (works for images too)
-        try:
-            from app.parsers.pdf_table_extractor import ocr_pdf_to_text
-            text = ocr_pdf_to_text(file_path)
-            return text
-        except Exception as e:
-            logger.debug(f"Method 3 (ocr_pdf_to_text) failed: {e}")
+            logger.debug(f"Method 2 (ocr_any) failed: {e}")
 
         logger.warning("All OCR methods failed - no text extracted")
         return ""

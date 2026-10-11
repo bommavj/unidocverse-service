@@ -12,7 +12,6 @@ Morning briefing for immigration/HR teams:
 import logging
 from datetime import date
 from typing import Any
-from sqlalchemy import text
 from app.services.domain_agents.base_domain_agent import BaseDomainAgent
 
 logger = logging.getLogger(__name__)
@@ -23,110 +22,41 @@ class ImmigrationAgent(BaseDomainAgent):
     task_name  = "Immigration Daily Report"
 
     def collect(self) -> dict[str, Any]:
-        db   = self.db
-        data: dict[str, Any] = {}
+        """The run's tenant only — the same records the Visa Tracker shows (client-linked + uploaded documents)."""
+        from collections import Counter
+        from app.core.tenant import DEFAULT_TENANT_ID, get_current_tenant_id
+        from app.services.immigration_tracker import tenant_records
+        recs = tenant_records(self.db, str(get_current_tenant_id() or DEFAULT_TENANT_ID))
 
-        # ── 1. Portfolio snapshot ─────────────────────────────────────────────
-        try:
-            rows = db.execute(text("""
-                SELECT
-                    COUNT(*)                                                              AS total,
-                    COUNT(*) FILTER (WHERE status = 'active')                            AS active,
-                    COUNT(*) FILTER (WHERE status = 'expired')                           AS expired,
-                    COUNT(*) FILTER (WHERE COALESCE(valid_until, authorized_stay_until)
-                                          <= CURRENT_DATE + 30
-                                      AND COALESCE(valid_until, authorized_stay_until)
-                                          >= CURRENT_DATE)                               AS critical_30d,
-                    COUNT(*) FILTER (WHERE COALESCE(valid_until, authorized_stay_until)
-                                          <= CURRENT_DATE + 90
-                                      AND COALESCE(valid_until, authorized_stay_until)
-                                          >= CURRENT_DATE)                               AS expiring_90d
-                FROM client_immigration
-            """)).fetchone()
-            data["portfolio_snapshot"] = {
-                "total_cases":        int(rows[0] or 0),
-                "active":             int(rows[1] or 0),
-                "already_expired":    int(rows[2] or 0),
-                "critical_30d":       int(rows[3] or 0),
-                "expiring_90d":       int(rows[4] or 0),
-            }
-        except Exception as e:
-            logger.warning(f"⚠️ [ImmigrationAgent] portfolio snapshot failed: {e}")
-            db.rollback()
-            data["portfolio_snapshot"] = {}
+        def row(r, **extra):
+            return {"person": r.get("beneficiary_name") or r.get("source_file") or "—", "doc_type": r.get("doc_type"),
+                    "label": r.get("doc_label") or "—", "visa_class": r.get("visa_class") or "—",
+                    "employer": r.get("employer_sponsor") or "—", **extra}
 
-        # ── 2. Already expired — immediate action required ────────────────────
-        try:
-            rows = db.execute(text("""
-                SELECT beneficiary_name, doc_type, doc_label,
-                       COALESCE(valid_until, authorized_stay_until) AS expiry,
-                       CURRENT_DATE - COALESCE(valid_until, authorized_stay_until) AS days_expired,
-                       visa_class, employer_sponsor, status
-                FROM client_immigration
-                WHERE COALESCE(valid_until, authorized_stay_until) < CURRENT_DATE
-                ORDER BY expiry DESC
-            """)).fetchall()
-            data["already_expired"] = [{
-                "person":        r[0] or "—",
-                "doc_type":      r[1],
-                "label":         r[2] or "—",
-                "expired_on":    r[3].isoformat() if r[3] else "—",
-                "days_expired":  int(r[4] or 0),
-                "visa_class":    r[5] or "—",
-                "employer":      r[6] or "—",
-            } for r in rows]
-        except Exception as e:
-            logger.warning(f"⚠️ [ImmigrationAgent] already expired failed: {e}")
-            db.rollback()
-            data["already_expired"] = []
+        def expiry(r):
+            dates = [d for d in (r.get("valid_until"), r.get("authorized_stay_until")) if d]
+            return min(dates) if dates else "—"
 
-        # ── 3. Expiring ≤90 days ──────────────────────────────────────────────
-        try:
-            rows = db.execute(text("""
-                SELECT beneficiary_name, doc_type, doc_label,
-                       COALESCE(valid_until, authorized_stay_until) AS expiry,
-                       COALESCE(valid_until, authorized_stay_until) - CURRENT_DATE AS days_left,
-                       visa_class, employer_sponsor
-                FROM client_immigration
-                WHERE COALESCE(valid_until, authorized_stay_until) >= CURRENT_DATE
-                  AND COALESCE(valid_until, authorized_stay_until) <= CURRENT_DATE + 90
-                ORDER BY expiry
-            """)).fetchall()
-            data["expiring_90d"] = [{
-                "person":     r[0] or "—",
-                "doc_type":   r[1],
-                "label":      r[2] or "—",
-                "expires_on": r[3].isoformat() if r[3] else "—",
-                "days_left":  int(r[4] or 0),
-                "visa_class": r[5] or "—",
-                "employer":   r[6] or "—",
-            } for r in rows]
-        except Exception as e:
-            logger.warning(f"⚠️ [ImmigrationAgent] expiring 90d failed: {e}")
-            db.rollback()
-            data["expiring_90d"] = []
-
-        # ── 4. Cases by visa class ────────────────────────────────────────────
-        try:
-            rows = db.execute(text("""
-                SELECT COALESCE(visa_class, 'Unknown') AS visa_class,
-                       COUNT(*) AS cnt,
-                       COUNT(*) FILTER (WHERE status = 'active') AS active
-                FROM client_immigration
-                WHERE visa_class IS NOT NULL
-                GROUP BY visa_class ORDER BY cnt DESC
-            """)).fetchall()
-            data["by_visa_class"] = [{
-                "visa_class": r[0],
-                "total":      int(r[1] or 0),
-                "active":     int(r[2] or 0),
-            } for r in rows]
-        except Exception as e:
-            logger.warning(f"⚠️ [ImmigrationAgent] visa class breakdown failed: {e}")
-            db.rollback()
-            data["by_visa_class"] = []
-
-        return data
+        days = lambda r: r.get("days_to_expiry")
+        expired = [r for r in recs if days(r) is not None and days(r) < 0]
+        soon = [r for r in recs if days(r) is not None and 0 <= days(r) <= 90]
+        classes = Counter(r["visa_class"] for r in recs if r.get("visa_class"))
+        current_classes = Counter(r["visa_class"] for r in recs if r.get("visa_class") and (days(r) or -1) >= 0)
+        return {
+            "portfolio_snapshot": {
+                "total_cases": len(recs),
+                "active": sum(1 for r in recs if days(r) is None or days(r) >= 0),
+                "already_expired": len(expired),
+                "critical_30d": sum(1 for r in soon if days(r) <= 30),
+                "expiring_90d": len(soon),
+                "expiry_unreadable": sum(1 for r in recs if days(r) is None),
+            },
+            "already_expired": [row(r, expired_on=expiry(r), days_expired=-days(r))
+                                for r in sorted(expired, key=lambda r: days(r), reverse=True)],
+            "expiring_90d": [row(r, expires_on=expiry(r), days_left=days(r)) for r in soon],
+            "by_visa_class": [{"visa_class": c, "total": n, "active": current_classes.get(c, 0)}
+                              for c, n in classes.most_common()],
+        }
 
     def build_report(self, data: dict[str, Any]) -> dict[str, Any]:
         today    = date.today().isoformat()

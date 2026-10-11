@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.api.auth_router import get_current_user
 from app.models.client import Client
 from app.models.client_immigration import ClientImmigration
 from app.services.immigration_service import serialize, scan_expiry_alerts, URGENCY_LABEL
@@ -42,6 +43,30 @@ class ImmigrationUpdate(ImmigrationCreate):
     doc_type: Optional[str] = None
 
 
+def _tenant() -> str:
+    from app.core.tenant_scope import current_tenant
+    return str(current_tenant())
+
+
+def _own_client(db: Session, client_id: str):
+    """The current tenant's client, or 404 — another tenant's client looks the same as a missing one."""
+    client = db.query(Client).filter(Client.id == client_id, Client.tenant_id == _tenant()).first()
+    if not client:
+        raise HTTPException(404, "Client not found")
+    return client
+
+
+def _tenant_client_ids(db: Session) -> list:
+    return [str(c.id) for c in db.query(Client.id).filter(Client.tenant_id == _tenant()).all()]
+
+
+def _own_record(db: Session, record_id: str) -> ClientImmigration:
+    rec = db.query(ClientImmigration).filter_by(id=record_id).first()
+    if not rec or str(rec.client_id) not in _tenant_client_ids(db):
+        raise HTTPException(404, "Record not found")
+    return rec
+
+
 def _parse(s: Optional[str]) -> Optional[date]:
     if not s:
         return None
@@ -55,9 +80,7 @@ def _parse(s: Optional[str]) -> Optional[date]:
 
 @router.get("/client/{client_id}")
 def list_client_immigration(client_id: str, db: Session = Depends(get_db)):
-    client = db.query(Client).filter_by(id=client_id).first()
-    if not client:
-        raise HTTPException(404, "Client not found")
+    client = _own_client(db, client_id)
 
     records = (
         db.query(ClientImmigration)
@@ -94,8 +117,9 @@ def create_immigration(
     client_id: str,
     body: ImmigrationCreate,
     db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
 ):
-    if not db.query(Client).filter_by(id=client_id).first():
+    if not _own_client(db, client_id):
         raise HTTPException(404, "Client not found")
 
     rec = ClientImmigration(
@@ -131,9 +155,7 @@ def update_immigration(
     body: ImmigrationUpdate,
     db: Session = Depends(get_db),
 ):
-    rec = db.query(ClientImmigration).filter_by(id=record_id).first()
-    if not rec:
-        raise HTTPException(404, "Record not found")
+    rec = _own_record(db, record_id)
 
     fields = body.model_dump(exclude_unset=True)
     date_fields = {"issue_date", "valid_from", "valid_until",
@@ -153,9 +175,7 @@ def update_immigration(
 
 @router.delete("/{record_id}", status_code=204)
 def delete_immigration(record_id: str, db: Session = Depends(get_db)):
-    rec = db.query(ClientImmigration).filter_by(id=record_id).first()
-    if not rec:
-        raise HTTPException(404, "Record not found")
+    rec = _own_record(db, record_id)
     db.delete(rec)
     db.commit()
 
@@ -164,23 +184,18 @@ def delete_immigration(record_id: str, db: Session = Depends(get_db)):
 
 @router.get("/expiry-dashboard")
 def expiry_dashboard(db: Session = Depends(get_db)):
-    """All active records grouped by urgency — for the agency-wide expiry view."""
-    records = (
-        db.query(ClientImmigration)
-        .filter(ClientImmigration.status == "active")
-        .order_by(ClientImmigration.valid_until.asc().nullslast())
-        .all()
-    )
+    """
+    The signed-in tenant's immigration expiries, grouped by urgency: client-linked records
+    plus the tenant's own uploaded passports / USCIS notices read directly from the documents.
+    """
+    from app.core.tenant_scope import current_tenant
+    from app.services.immigration_tracker import tenant_records
+    rows = tenant_records(db, str(current_tenant()))
 
     buckets = {"expired": [], "critical": [], "high": [], "medium": [], "low": [], "unknown": []}
-    for r in records:
-        buckets.setdefault(r.urgency, []).append(serialize(r))
-
-    return {
-        "buckets": buckets,
-        "counts":  {k: len(v) for k, v in buckets.items()},
-        "total":   len(records),
-    }
+    for r in rows:
+        buckets.setdefault(r["urgency"], []).append(r)
+    return {"buckets": buckets, "counts": {k: len(v) for k, v in buckets.items()}, "total": len(rows)}
 
 
 # ── POST /api/immigration/run-scan ───────────────────────────────────────────
@@ -196,6 +211,7 @@ def trigger_scan(db: Session = Depends(get_db)):
 
 @router.get("/cross-link/{client_id}")
 def cross_link(client_id: str, db: Session = Depends(get_db)):
+    _own_client(db, client_id)
     """
     Cross-document immigration reasoning for a client.
     Groups all immigration records by beneficiary, then reasons across
@@ -249,9 +265,14 @@ def cross_link_by_doc(document_id: str, db: Session = Depends(get_db)):
     beneficiary (across any client) and return cross-linked analysis.
     Useful when docs are not yet linked to a client.
     """
+    from app.models.document import Document
+    if not db.query(Document).filter(Document.id == document_id, Document.tenant_id == _tenant()).first():
+        raise HTTPException(404, "Document not found")
+    own_clients = _tenant_client_ids(db)
     anchor = db.query(ClientImmigration).filter(
-        ClientImmigration.linked_document_id == document_id
-    ).first()
+        ClientImmigration.linked_document_id == document_id,
+        ClientImmigration.client_id.in_(own_clients or [None]),
+    ).first() if own_clients else None
 
     if not anchor:
         # Try to find any records with matching beneficiary from documents table
@@ -274,7 +295,7 @@ def cross_link_by_doc(document_id: str, db: Session = Depends(get_db)):
 
         # Find immigration records with same beneficiary name
         bene_upper = bene_name.strip().upper()
-        all_recs = db.query(ClientImmigration).all()
+        all_recs = db.query(ClientImmigration).filter(ClientImmigration.client_id.in_(own_clients)).all() if own_clients else []
         matched = [r for r in all_recs if (r.beneficiary_name or "").strip().upper() == bene_upper]
 
         return {
