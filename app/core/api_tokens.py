@@ -26,7 +26,7 @@ def _hash(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def create(db, tenant_id: str, user_id: int, name: str, scope: str = "read", expires_days: Optional[int] = None) -> Dict:
+def create(db, tenant_id: str, user_id: str, name: str, scope: str = "read", expires_days: Optional[int] = None) -> Dict:
     if scope not in ("read", "write"):
         raise ValueError("scope must be 'read' or 'write'")
     name = (name or "").strip()[:80]

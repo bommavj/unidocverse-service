@@ -43,7 +43,7 @@ def get_request_language(request: Request, db: Session) -> str:
         try:
             payload = jwt.decode(token, secret, algorithms=[algo])
             if payload and "sub" in payload:
-                user_id = int(payload["sub"])
+                user_id = str(payload["sub"])
                 user = db.execute(text("""
                     SELECT language FROM users WHERE id = :uid
                 """), {"uid": user_id}).fetchone()

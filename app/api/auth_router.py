@@ -63,7 +63,7 @@ def _verify_password(p: str, h: str) -> bool:
     except Exception:
         return False
 
-def _create_token(user_id: int, username: str, role: str, expires: timedelta, tenant_id=None) -> str:
+def _create_token(user_id, username: str, role: str, expires: timedelta, tenant_id=None) -> str:
     return jwt.encode({
         "sub":      str(user_id),
         "username": username,
@@ -73,7 +73,7 @@ def _create_token(user_id: int, username: str, role: str, expires: timedelta, te
         "iat":      datetime.utcnow(),
     }, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
-def _user_tenant(user_id: int) -> Optional[str]:
+def _user_tenant(user_id) -> Optional[str]:
     from app.core.database import SessionLocal
     db = SessionLocal()
     try:
@@ -110,7 +110,7 @@ def get_current_user(
     user = db.execute(text("""
         SELECT id, username, full_name, role, is_active, avatar_color, language, tenant_id
         FROM users WHERE id = :uid AND is_active = TRUE
-    """), {"uid": int(payload["sub"])}).fetchone()
+    """), {"uid": str(payload["sub"])}).fetchone()
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     return {
@@ -142,7 +142,7 @@ def get_current_user_or_session(
             user = db.execute(text("""
                 SELECT id, username, full_name, role, is_active
                 FROM users WHERE id = :uid AND is_active = TRUE
-            """), {"uid": int(payload["sub"])}).fetchone()
+            """), {"uid": str(payload["sub"])}).fetchone()
             if user:
                 return {"id": user.id, "username": user.username, "role": user.role}
     if session_token:
@@ -257,8 +257,8 @@ def refresh_token(credentials: HTTPAuthorizationCredentials = Depends(security))
         raise HTTPException(status_code=401, detail="Invalid refresh token")
     return {
         "access_token": _create_token(
-            int(payload["sub"]), payload["username"], payload["role"], ACCESS_EXPIRE,
-            payload.get("tenant_id") or _user_tenant(int(payload["sub"]))
+            str(payload["sub"]), payload["username"], payload["role"], ACCESS_EXPIRE,
+            payload.get("tenant_id") or _user_tenant(str(payload["sub"]))
         ),
         "token_type": "bearer"
     }

@@ -29,117 +29,123 @@ ON CONFLICT DO NOTHING;
 
 -- ── 2. Add tenant_id to users ─────────────────────────────────────────────────
 
-ALTER TABLE users
-    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE;
+DO $$ BEGIN IF to_regclass('public.users') IS NOT NULL THEN EXECUTE $q$ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE$q$; END IF; END $$;
 
 -- Assign all existing users to the default tenant
-UPDATE users SET tenant_id = '00000000-0000-0000-0000-000000000001'
-WHERE tenant_id IS NULL;
+DO $$ BEGIN IF to_regclass('public.users') IS NOT NULL THEN EXECUTE $q$UPDATE users SET tenant_id = '00000000-0000-0000-0000-000000000001'
+WHERE tenant_id IS NULL$q$; END IF; END $$;
 
-ALTER TABLE users ALTER COLUMN tenant_id SET NOT NULL;
+DO $$ BEGIN IF to_regclass('public.users') IS NOT NULL THEN EXECUTE $q$ALTER TABLE users ALTER COLUMN tenant_id SET NOT NULL$q$; END IF; END $$;
 
 -- ── 3. Core document tables ───────────────────────────────────────────────────
 
-ALTER TABLE documents
-    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE;
+DO $$ BEGIN IF to_regclass('public.documents') IS NOT NULL THEN EXECUTE $q$ALTER TABLE documents
+    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE$q$; END IF; END $$;
 
-UPDATE documents SET tenant_id = '00000000-0000-0000-0000-000000000001'
-WHERE tenant_id IS NULL;
+DO $$ BEGIN IF to_regclass('public.documents') IS NOT NULL THEN EXECUTE $q$UPDATE documents SET tenant_id = '00000000-0000-0000-0000-000000000001'
+WHERE tenant_id IS NULL$q$; END IF; END $$;
 
-ALTER TABLE documents ALTER COLUMN tenant_id SET NOT NULL;
+DO $$ BEGIN IF to_regclass('public.documents') IS NOT NULL THEN EXECUTE $q$ALTER TABLE documents ALTER COLUMN tenant_id SET NOT NULL$q$; END IF; END $$;
 
-CREATE INDEX IF NOT EXISTS idx_documents_tenant_id ON documents(tenant_id);
+DO $$ BEGIN IF to_regclass('public.documents') IS NOT NULL THEN EXECUTE $q$CREATE INDEX IF NOT EXISTS idx_documents_tenant_id ON documents(tenant_id)$q$; END IF; END $$;
 
 -- ── 4. document_chunks ────────────────────────────────────────────────────────
 
-ALTER TABLE document_chunks
-    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE;
+DO $$ BEGIN IF to_regclass('public.document_chunks') IS NOT NULL THEN EXECUTE $q$ALTER TABLE document_chunks
+    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE$q$; END IF; END $$;
 
-UPDATE document_chunks SET tenant_id = '00000000-0000-0000-0000-000000000001'
-WHERE tenant_id IS NULL;
+DO $$ BEGIN IF to_regclass('public.document_chunks') IS NOT NULL THEN EXECUTE $q$UPDATE document_chunks SET tenant_id = '00000000-0000-0000-0000-000000000001'
+WHERE tenant_id IS NULL$q$; END IF; END $$;
 
-ALTER TABLE document_chunks ALTER COLUMN tenant_id SET NOT NULL;
+DO $$ BEGIN IF to_regclass('public.document_chunks') IS NOT NULL THEN EXECUTE $q$ALTER TABLE document_chunks ALTER COLUMN tenant_id SET NOT NULL$q$; END IF; END $$;
 
-CREATE INDEX IF NOT EXISTS idx_document_chunks_tenant_id ON document_chunks(tenant_id);
+DO $$ BEGIN IF to_regclass('public.document_chunks') IS NOT NULL THEN EXECUTE $q$CREATE INDEX IF NOT EXISTS idx_document_chunks_tenant_id ON document_chunks(tenant_id)$q$; END IF; END $$;
 
 -- ── 5. research_sessions ──────────────────────────────────────────────────────
 
-ALTER TABLE research_sessions
-    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE;
+DO $$ BEGIN IF to_regclass('public.research_sessions') IS NOT NULL THEN EXECUTE $q$ALTER TABLE research_sessions
+    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE$q$; END IF; END $$;
 
-UPDATE research_sessions SET tenant_id = '00000000-0000-0000-0000-000000000001'
-WHERE tenant_id IS NULL;
+DO $$ BEGIN IF to_regclass('public.research_sessions') IS NOT NULL THEN EXECUTE $q$UPDATE research_sessions SET tenant_id = '00000000-0000-0000-0000-000000000001'
+WHERE tenant_id IS NULL$q$; END IF; END $$;
 
-ALTER TABLE research_sessions ALTER COLUMN tenant_id SET NOT NULL;
+DO $$ BEGIN IF to_regclass('public.research_sessions') IS NOT NULL THEN EXECUTE $q$ALTER TABLE research_sessions ALTER COLUMN tenant_id SET NOT NULL$q$; END IF; END $$;
 
-CREATE INDEX IF NOT EXISTS idx_research_sessions_tenant_id ON research_sessions(tenant_id);
+DO $$ BEGIN IF to_regclass('public.research_sessions') IS NOT NULL THEN EXECUTE $q$CREATE INDEX IF NOT EXISTS idx_research_sessions_tenant_id ON research_sessions(tenant_id)$q$; END IF; END $$;
 
 -- ── 6. chatbot_sessions ───────────────────────────────────────────────────────
 
-ALTER TABLE chatbot_sessions
-    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE;
+DO $$ BEGIN IF to_regclass('public.chatbot_sessions') IS NOT NULL THEN EXECUTE $q$ALTER TABLE chatbot_sessions
+    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE$q$; END IF; END $$;
 
-UPDATE chatbot_sessions SET tenant_id = '00000000-0000-0000-0000-000000000001'
-WHERE tenant_id IS NULL;
+DO $$ BEGIN IF to_regclass('public.chatbot_sessions') IS NOT NULL THEN EXECUTE $q$UPDATE chatbot_sessions SET tenant_id = '00000000-0000-0000-0000-000000000001'
+WHERE tenant_id IS NULL$q$; END IF; END $$;
 
-ALTER TABLE chatbot_sessions ALTER COLUMN tenant_id SET NOT NULL;
+DO $$ BEGIN IF to_regclass('public.chatbot_sessions') IS NOT NULL THEN EXECUTE $q$ALTER TABLE chatbot_sessions ALTER COLUMN tenant_id SET NOT NULL$q$; END IF; END $$;
 
 -- ── 7. settings becomes per-tenant ───────────────────────────────────────────
 
-ALTER TABLE settings
-    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE;
+DO $$ BEGIN IF to_regclass('public.settings') IS NOT NULL THEN EXECUTE $q$ALTER TABLE settings
+    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE$q$; END IF; END $$;
 
-UPDATE settings SET tenant_id = '00000000-0000-0000-0000-000000000001'
-WHERE tenant_id IS NULL;
+DO $$ BEGIN IF to_regclass('public.settings') IS NOT NULL THEN EXECUTE $q$UPDATE settings SET tenant_id = '00000000-0000-0000-0000-000000000001'
+WHERE tenant_id IS NULL$q$; END IF; END $$;
 
 -- Deduplicate: keep only the latest row per tenant
-DELETE FROM settings s1
+DO $$ BEGIN IF to_regclass('public.settings') IS NOT NULL THEN EXECUTE $q$DELETE FROM settings s1
 USING settings s2
 WHERE s1.tenant_id = s2.tenant_id
-  AND s1.id < s2.id;
+  AND s1.id < s2.id$q$; END IF; END $$;
 
-ALTER TABLE settings ALTER COLUMN tenant_id SET NOT NULL;
+DO $$ BEGIN IF to_regclass('public.settings') IS NOT NULL THEN EXECUTE $q$ALTER TABLE settings ALTER COLUMN tenant_id SET NOT NULL$q$; END IF; END $$;
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_settings_tenant_unique ON settings(tenant_id);
+DO $$ BEGIN IF to_regclass('public.settings') IS NOT NULL THEN EXECUTE $q$CREATE UNIQUE INDEX IF NOT EXISTS idx_settings_tenant_unique ON settings(tenant_id)$q$; END IF; END $$;
 
 -- ── 8. Other operational tables ───────────────────────────────────────────────
 
-ALTER TABLE clients
-    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE;
-UPDATE clients SET tenant_id = '00000000-0000-0000-0000-000000000001' WHERE tenant_id IS NULL;
-ALTER TABLE clients ALTER COLUMN tenant_id SET NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_clients_tenant_id ON clients(tenant_id);
+DO $$ BEGIN IF to_regclass('public.clients') IS NOT NULL THEN EXECUTE $q$ALTER TABLE clients
+    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.clients') IS NOT NULL THEN EXECUTE $q$UPDATE clients SET tenant_id = '00000000-0000-0000-0000-000000000001' WHERE tenant_id IS NULL$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.clients') IS NOT NULL THEN EXECUTE $q$ALTER TABLE clients ALTER COLUMN tenant_id SET NOT NULL$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.clients') IS NOT NULL THEN EXECUTE $q$CREATE INDEX IF NOT EXISTS idx_clients_tenant_id ON clients(tenant_id)$q$; END IF; END $$;
 
-ALTER TABLE policies
-    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE;
-UPDATE policies SET tenant_id = '00000000-0000-0000-0000-000000000001' WHERE tenant_id IS NULL;
-ALTER TABLE policies ALTER COLUMN tenant_id SET NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_policies_tenant_id ON policies(tenant_id);
+DO $$ BEGIN IF to_regclass('public.policies') IS NOT NULL THEN EXECUTE $q$ALTER TABLE policies
+    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.policies') IS NOT NULL THEN EXECUTE $q$UPDATE policies SET tenant_id = '00000000-0000-0000-0000-000000000001' WHERE tenant_id IS NULL$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.policies') IS NOT NULL THEN EXECUTE $q$ALTER TABLE policies ALTER COLUMN tenant_id SET NOT NULL$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.policies') IS NOT NULL THEN EXECUTE $q$CREATE INDEX IF NOT EXISTS idx_policies_tenant_id ON policies(tenant_id)$q$; END IF; END $$;
 
-ALTER TABLE matters
-    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE;
-UPDATE matters SET tenant_id = '00000000-0000-0000-0000-000000000001' WHERE tenant_id IS NULL;
-ALTER TABLE matters ALTER COLUMN tenant_id SET NOT NULL;
+-- matters is created at runtime by matters_router; skip on a fresh database
+DO $$
+BEGIN
+    IF to_regclass('public.matters') IS NOT NULL THEN
+        ALTER TABLE matters
+            ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE;
+        UPDATE matters SET tenant_id = '00000000-0000-0000-0000-000000000001' WHERE tenant_id IS NULL;
+        ALTER TABLE matters ALTER COLUMN tenant_id SET NOT NULL;
+    END IF;
+END $$;
 
-ALTER TABLE quotes
-    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE;
-UPDATE quotes SET tenant_id = '00000000-0000-0000-0000-000000000001' WHERE tenant_id IS NULL;
-ALTER TABLE quotes ALTER COLUMN tenant_id SET NOT NULL;
+DO $$ BEGIN IF to_regclass('public.quotes') IS NOT NULL THEN EXECUTE $q$ALTER TABLE quotes
+    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.quotes') IS NOT NULL THEN EXECUTE $q$UPDATE quotes SET tenant_id = '00000000-0000-0000-0000-000000000001' WHERE tenant_id IS NULL$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.quotes') IS NOT NULL THEN EXECUTE $q$ALTER TABLE quotes ALTER COLUMN tenant_id SET NOT NULL$q$; END IF; END $$;
 
-ALTER TABLE agent_runs
-    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE;
-UPDATE agent_runs SET tenant_id = '00000000-0000-0000-0000-000000000001' WHERE tenant_id IS NULL;
-ALTER TABLE agent_runs ALTER COLUMN tenant_id SET NOT NULL;
+DO $$ BEGIN IF to_regclass('public.agent_runs') IS NOT NULL THEN EXECUTE $q$ALTER TABLE agent_runs
+    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.agent_runs') IS NOT NULL THEN EXECUTE $q$UPDATE agent_runs SET tenant_id = '00000000-0000-0000-0000-000000000001' WHERE tenant_id IS NULL$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.agent_runs') IS NOT NULL THEN EXECUTE $q$ALTER TABLE agent_runs ALTER COLUMN tenant_id SET NOT NULL$q$; END IF; END $$;
 
-ALTER TABLE audit_log
-    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE;
-UPDATE audit_log SET tenant_id = '00000000-0000-0000-0000-000000000001' WHERE tenant_id IS NULL;
-ALTER TABLE audit_log ALTER COLUMN tenant_id SET NOT NULL;
+DO $$ BEGIN IF to_regclass('public.audit_log') IS NOT NULL THEN EXECUTE $q$ALTER TABLE audit_log
+    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.audit_log') IS NOT NULL THEN EXECUTE $q$UPDATE audit_log SET tenant_id = '00000000-0000-0000-0000-000000000001' WHERE tenant_id IS NULL$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.audit_log') IS NOT NULL THEN EXECUTE $q$ALTER TABLE audit_log ALTER COLUMN tenant_id SET NOT NULL$q$; END IF; END $$;
 
-ALTER TABLE notifications
-    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE;
-UPDATE notifications SET tenant_id = '00000000-0000-0000-0000-000000000001' WHERE tenant_id IS NULL;
-ALTER TABLE notifications ALTER COLUMN tenant_id SET NOT NULL;
+DO $$ BEGIN IF to_regclass('public.notifications') IS NOT NULL THEN EXECUTE $q$ALTER TABLE notifications
+    ADD COLUMN IF NOT EXISTS tenant_id UUID REFERENCES tenants(id) ON DELETE CASCADE$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.notifications') IS NOT NULL THEN EXECUTE $q$UPDATE notifications SET tenant_id = '00000000-0000-0000-0000-000000000001' WHERE tenant_id IS NULL$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.notifications') IS NOT NULL THEN EXECUTE $q$ALTER TABLE notifications ALTER COLUMN tenant_id SET NOT NULL$q$; END IF; END $$;
 
 -- ── 9. Row-Level Security ─────────────────────────────────────────────────────
 -- RLS enforces tenant isolation at DB level regardless of application logic.
@@ -155,41 +161,41 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- Enable RLS on core tables
-ALTER TABLE documents         ENABLE ROW LEVEL SECURITY;
-ALTER TABLE document_chunks   ENABLE ROW LEVEL SECURITY;
-ALTER TABLE research_sessions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE chatbot_sessions  ENABLE ROW LEVEL SECURITY;
-ALTER TABLE settings          ENABLE ROW LEVEL SECURITY;
-ALTER TABLE clients           ENABLE ROW LEVEL SECURITY;
-ALTER TABLE policies          ENABLE ROW LEVEL SECURITY;
+DO $$ BEGIN IF to_regclass('public.documents') IS NOT NULL THEN EXECUTE $q$ALTER TABLE documents         ENABLE ROW LEVEL SECURITY$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.document_chunks') IS NOT NULL THEN EXECUTE $q$ALTER TABLE document_chunks   ENABLE ROW LEVEL SECURITY$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.research_sessions') IS NOT NULL THEN EXECUTE $q$ALTER TABLE research_sessions ENABLE ROW LEVEL SECURITY$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.chatbot_sessions') IS NOT NULL THEN EXECUTE $q$ALTER TABLE chatbot_sessions  ENABLE ROW LEVEL SECURITY$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.settings') IS NOT NULL THEN EXECUTE $q$ALTER TABLE settings          ENABLE ROW LEVEL SECURITY$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.clients') IS NOT NULL THEN EXECUTE $q$ALTER TABLE clients           ENABLE ROW LEVEL SECURITY$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.policies') IS NOT NULL THEN EXECUTE $q$ALTER TABLE policies          ENABLE ROW LEVEL SECURITY$q$; END IF; END $$;
 
 -- RLS policies — tenant can only see its own rows
 -- Superuser/unidocverse role bypass for migrations and admin
 
-DROP POLICY IF EXISTS tenant_isolation_documents ON documents;
-CREATE POLICY tenant_isolation_documents ON documents
-    USING (tenant_id = current_tenant_id() OR current_tenant_id() IS NULL);
+DO $$ BEGIN IF to_regclass('public.documents') IS NOT NULL THEN EXECUTE $q$DROP POLICY IF EXISTS tenant_isolation_documents ON documents$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.documents') IS NOT NULL THEN EXECUTE $q$CREATE POLICY tenant_isolation_documents ON documents
+    USING (tenant_id = current_tenant_id() OR current_tenant_id() IS NULL)$q$; END IF; END $$;
 
-DROP POLICY IF EXISTS tenant_isolation_chunks ON document_chunks;
-CREATE POLICY tenant_isolation_chunks ON document_chunks
-    USING (tenant_id = current_tenant_id() OR current_tenant_id() IS NULL);
+DO $$ BEGIN IF to_regclass('public.document_chunks') IS NOT NULL THEN EXECUTE $q$DROP POLICY IF EXISTS tenant_isolation_chunks ON document_chunks$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.document_chunks') IS NOT NULL THEN EXECUTE $q$CREATE POLICY tenant_isolation_chunks ON document_chunks
+    USING (tenant_id = current_tenant_id() OR current_tenant_id() IS NULL)$q$; END IF; END $$;
 
-DROP POLICY IF EXISTS tenant_isolation_research ON research_sessions;
-CREATE POLICY tenant_isolation_research ON research_sessions
-    USING (tenant_id = current_tenant_id() OR current_tenant_id() IS NULL);
+DO $$ BEGIN IF to_regclass('public.research_sessions') IS NOT NULL THEN EXECUTE $q$DROP POLICY IF EXISTS tenant_isolation_research ON research_sessions$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.research_sessions') IS NOT NULL THEN EXECUTE $q$CREATE POLICY tenant_isolation_research ON research_sessions
+    USING (tenant_id = current_tenant_id() OR current_tenant_id() IS NULL)$q$; END IF; END $$;
 
-DROP POLICY IF EXISTS tenant_isolation_chatbot ON chatbot_sessions;
-CREATE POLICY tenant_isolation_chatbot ON chatbot_sessions
-    USING (tenant_id = current_tenant_id() OR current_tenant_id() IS NULL);
+DO $$ BEGIN IF to_regclass('public.chatbot_sessions') IS NOT NULL THEN EXECUTE $q$DROP POLICY IF EXISTS tenant_isolation_chatbot ON chatbot_sessions$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.chatbot_sessions') IS NOT NULL THEN EXECUTE $q$CREATE POLICY tenant_isolation_chatbot ON chatbot_sessions
+    USING (tenant_id = current_tenant_id() OR current_tenant_id() IS NULL)$q$; END IF; END $$;
 
-DROP POLICY IF EXISTS tenant_isolation_settings ON settings;
-CREATE POLICY tenant_isolation_settings ON settings
-    USING (tenant_id = current_tenant_id() OR current_tenant_id() IS NULL);
+DO $$ BEGIN IF to_regclass('public.settings') IS NOT NULL THEN EXECUTE $q$DROP POLICY IF EXISTS tenant_isolation_settings ON settings$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.settings') IS NOT NULL THEN EXECUTE $q$CREATE POLICY tenant_isolation_settings ON settings
+    USING (tenant_id = current_tenant_id() OR current_tenant_id() IS NULL)$q$; END IF; END $$;
 
-DROP POLICY IF EXISTS tenant_isolation_clients ON clients;
-CREATE POLICY tenant_isolation_clients ON clients
-    USING (tenant_id = current_tenant_id() OR current_tenant_id() IS NULL);
+DO $$ BEGIN IF to_regclass('public.clients') IS NOT NULL THEN EXECUTE $q$DROP POLICY IF EXISTS tenant_isolation_clients ON clients$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.clients') IS NOT NULL THEN EXECUTE $q$CREATE POLICY tenant_isolation_clients ON clients
+    USING (tenant_id = current_tenant_id() OR current_tenant_id() IS NULL)$q$; END IF; END $$;
 
-DROP POLICY IF EXISTS tenant_isolation_policies ON policies;
-CREATE POLICY tenant_isolation_policies ON policies
-    USING (tenant_id = current_tenant_id() OR current_tenant_id() IS NULL);
+DO $$ BEGIN IF to_regclass('public.policies') IS NOT NULL THEN EXECUTE $q$DROP POLICY IF EXISTS tenant_isolation_policies ON policies$q$; END IF; END $$;
+DO $$ BEGIN IF to_regclass('public.policies') IS NOT NULL THEN EXECUTE $q$CREATE POLICY tenant_isolation_policies ON policies
+    USING (tenant_id = current_tenant_id() OR current_tenant_id() IS NULL)$q$; END IF; END $$;
