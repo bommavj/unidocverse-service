@@ -1593,7 +1593,77 @@ _DOMAIN_QUERY_SEEDS: Dict[str, List[str]] = {
     "general":          [],
 }
 
-_SIMILARITY_CONFIDENCE_THRESHOLD = 0.45  # below this → warn about low confidence
+# Confidence is checked on the answer, not on search scores: reranker scores for
+# short questions against table rows sit at 0.3-0.4 even when the right row was
+# found, so a score threshold flagged correct answers as "low confidence".
+_NUMBER_RE    = re.compile(r"-?\$?\d[\d,]*(?:\.\d+)?")
+_NOT_FOUND_RE = re.compile(r"\[NOT FOUND\]|\bnot (?:found|mentioned|provided|available)\b|"
+                           r"\bdo(?:es)? not (?:contain|include|mention)\b|\bno information\b", re.I)
+
+
+def _digits(s: str) -> str:
+    return re.sub(r"[^\d.\-]", "", s).strip(".")
+
+
+def _strip_citations(answer: str) -> str:
+    """Numbers inside [filename] citations (072-4230-…-2025.pdf) aren't answer values."""
+    return re.sub(r"\[[^\]\n]*\]", " ", answer)
+
+
+def _has_number(num: str, body: str) -> bool:
+    """Whole-number match: 97.98 must not match inside 1297.98."""
+    return re.search(r"(?<![\d.])-?" + re.escape(num.lstrip("-")) + r"(?![\d])", body) is not None
+
+
+def _grounding_note(answer: str, context: str) -> str:
+    """Empty when every figure in the answer appears in the source text."""
+    if not answer or answer.startswith("Error generating answer"):
+        return ""
+    if _NOT_FOUND_RE.search(answer):
+        return ("\n\n---\n⚠️ *Not found in the documents that were read. If you know which "
+                "document has it, select that document and ask again.*")
+    source = re.sub(r"(?<=\d),(?=\d)", "", context)          # 1,673.01 → 1673.01
+    missing = []
+    for raw in dict.fromkeys(_NUMBER_RE.findall(_strip_citations(answer))):
+        num = _digits(raw)
+        if len(num.replace("-", "").replace(".", "")) < 2:   # skip list markers, single digits
+            continue
+        if not _has_number(num, source):
+            missing.append(raw.strip())
+    if missing:
+        return ("\n\n---\n⚠️ *Check these values — they don't appear in the source documents: "
+                + ", ".join(missing[:5]) + "*")
+    return _citation_check(answer, context)
+
+
+_DOC_HEADER_RE = re.compile(r"^\[([^\]\n]+)\]:?\s*$|^\[([^\]\n]+)\]:", re.M)
+
+
+def _citation_check(answer: str, context: str) -> str:
+    """Streamed answers can't be edited: name the right source after the text."""
+    fix = _citation_fix(answer, context)
+    return f"\n\n📄 *Source: [{fix[1]}]*" if fix else ""
+
+
+def _citation_fix(answer: str, context: str):
+    """(wrong_cited, right_doc) when the answer's figures are only in an uncited document."""
+    heads = list(_DOC_HEADER_RE.finditer(context))
+    if len(heads) < 2:
+        return None
+    docs: Dict[str, str] = {}
+    for i, h in enumerate(heads):
+        name = h.group(1) or h.group(2)
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(context)
+        docs[name] = docs.get(name, "") + re.sub(r"(?<=\d),(?=\d)", "", context[h.end():end])
+    nums = [n for n in (_digits(x) for x in dict.fromkeys(_NUMBER_RE.findall(_strip_citations(answer))))
+            if len(n.replace("-", "").replace(".", "")) >= 2]
+    if not nums:
+        return None
+    cited = [d for d in docs if d in answer]
+    has_all = [d for d, body in docs.items() if all(_has_number(n, body) for n in nums)]
+    if cited and not any(d in has_all for d in cited) and len(has_all) == 1:
+        return cited[0], has_all[0]
+    return None
 
 # Maps query keywords → doc_type values in the DB.
 # When the query explicitly names a document type, we do a direct doc_type SQL
@@ -1780,9 +1850,14 @@ def _multi_search(plan: Dict, doc_ids: List[str], prefer_doc_ids: Optional[List[
     # on top of that only hides them (CDTFA report is government_form, not tax_form).
     doc_types = _doctype_family(explicit_doctype) if explicit_doctype and not doc_ids else None
     scope = list(doc_ids or []) or list(prefer_doc_ids or [])
-    results = hybrid_search(q, queries, doc_ids=scope or None, doc_types=doc_types, top_n=8)
-    if not results and doc_types:
-        results = hybrid_search(q, queries, doc_ids=scope or None, top_n=8)
+    # Documents whose filename shares words with the question ("Sacramento County
+    # property tax bill" → Sacramento-County-Property-Tax-….pdf) rank first.
+    by_name = [] if scope else _filename_matches(q)
+    # A type named in the question ranks those documents first but never hides the
+    # rest: "mortgage statement" mapped to mortgage_document and hid the statement
+    # stored as mortgage_statement. Stored types are guesses too.
+    results = hybrid_search(q, queries, doc_ids=scope or None, prefer_doc_ids=by_name or None,
+                            prefer_doc_types=doc_types, top_n=8)
     if not results and scope and not doc_ids:
         results = hybrid_search(q, queries, top_n=8)   # filter's guess was wrong; never drop a chosen scope
     elif doc_types and results:
@@ -1802,6 +1877,99 @@ def _multi_search(plan: Dict, doc_ids: List[str], prefer_doc_ids: Optional[List[
     logger.info(f"Hybrid search: {len(results)} passages (doc_types={doc_types}) "
                 f"top={[(r['filename'][:30], r['similarity']) for r in results[:3]]}")
     return results
+
+
+_NAME_STOP = {"what", "when", "where", "which", "does", "with", "from", "that", "this", "have", "were",
+              "much", "many", "amount", "total", "show", "tell", "give", "about", "document", "documents",
+              "file", "pdf", "statement", "form", "bill", "report", "2023", "2024", "2025", "2026"}
+
+
+def _filename_matches(question: str) -> List[str]:
+    """Doc ids whose filename shares ≥2 distinctive words with the question."""
+    words = {w for w in re.findall(r"[a-z0-9]{4,}", question.lower()) if w not in _NAME_STOP}
+    if len(words) < 2:
+        return []
+    try:
+        from sqlalchemy import text
+        from app.core.database import SessionLocal
+        from app.core.tenant import get_current_tenant_id
+        db = SessionLocal()
+        try:
+            rows = db.execute(text("SELECT id::text AS id, filename FROM documents "
+                                   "WHERE tenant_id = :t AND status = 'completed'"),
+                              {"t": get_current_tenant_id()}).fetchall()
+        finally:
+            db.close()
+    except Exception:
+        return []
+    hits = []
+    for r in rows:
+        name_words = set(re.findall(r"[a-z0-9]{4,}", (r.filename or "").lower()))
+        overlap = len(words & name_words)
+        if overlap >= 2:
+            hits.append((overlap, r.id))
+    return [i for _, i in sorted(hits, reverse=True)[:3]]
+
+
+# Whole-document reading. Search picks the documents; the model then reads each
+# one in full instead of a few ranked fragments. Fragments lose table rows and
+# let a keyword match in an unrelated document ("PARCEL NUMBER" on a tax bill)
+# outrank the real answer ("Parcels 97.98" on an invoice).
+# NUM_CTX 8192 tokens ≈ 14k chars of document text after prompt + answer room.
+_FULL_DOC_BUDGET_CHARS = int(os.getenv("FULL_DOC_BUDGET_CHARS", "14000"))
+_FULL_DOC_MAX_DOCS     = 3
+
+
+def _expand_to_full_documents(results: List[Dict], plan: Dict) -> List[Dict]:
+    if not results:
+        return results
+    ranked_ids: List[str] = []
+    for r in results:
+        did = str(r.get("doc_id") or "")
+        if did and did not in ranked_ids:
+            ranked_ids.append(did)
+    if not ranked_ids:
+        return results
+
+    try:
+        from sqlalchemy import text
+        from app.core.database import SessionLocal
+        db = SessionLocal()
+        try:
+            rows = db.execute(text("""
+                SELECT id::text AS id, filename, doc_type, raw_text
+                FROM documents WHERE id::text = ANY(:ids)
+            """), {"ids": ranked_ids[:6]}).fetchall()
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning(f"Full-document expansion skipped: {e}")
+        return results
+    by_id = {r.id: r for r in rows}
+
+    full: List[Dict] = []
+    used = 0
+    for did in ranked_ids:
+        doc = by_id.get(did)
+        body = (doc.raw_text or "").strip() if doc else ""
+        if not body or len(body) > _FULL_DOC_BUDGET_CHARS - used:
+            continue                     # too big for the budget: keep its passages instead
+        best = max(float(r.get("similarity") or 0) for r in results if str(r.get("doc_id")) == did)
+        full.append({"doc_id": did, "filename": doc.filename, "doc_type": doc.doc_type,
+                     "text": body, "similarity": best, "chunk_index": -1, "full_document": True})
+        used += len(body)
+        if len(full) >= _FULL_DOC_MAX_DOCS:
+            break
+    if not full:
+        return results
+
+    kept = {f["doc_id"] for f in full}
+    # Passages from documents too large to include whole still go in, after the full ones
+    extra = [r for r in results if str(r.get("doc_id")) not in kept]
+    plan["_full_docs"] = True
+    logger.info(f"Full-document context: {[f['filename'][:30] for f in full]} ({used:,} chars) "
+                f"+ {len(extra)} passages from larger documents")
+    return full + extra
 
 
 # ── Ask single document ───────────────────────────────────────────────────────
@@ -2382,9 +2550,10 @@ def _synthesize(question: str, plan: Dict, steps: List[Dict], page: int = 0) -> 
                 fn  = item.get("filename", "")
                 txt = item.get("text", "")
                 sim = float(item.get("similarity", 0))
+                full = bool(item.get("full_document"))
                 if fn and txt:
                     by_doc.setdefault(fn, []).append({"fn": fn, "txt": txt, "sim": sim})
-                    raw_chunks.append({"fn": fn, "txt": txt, "sim": sim})
+                    raw_chunks.append({"fn": fn, "txt": txt, "sim": sim, "full": full})
         elif isinstance(obs, str) and len(obs) > 20:
             raw_chunks.append({"fn": "", "txt": obs, "sim": 0.0})
 
@@ -2421,7 +2590,10 @@ def _synthesize(question: str, plan: Dict, steps: List[Dict], page: int = 0) -> 
         if fn and fn not in admitted_docs:
             continue
         clean_txt = _CITATION_NOISE_RE.sub('', txt)
-        context_parts.append(f"[{fn}]: {clean_txt[:5000]}" if fn else clean_txt[:5000])  # search already budgets
+        # Whole documents were budgeted by _expand_to_full_documents; passages cap at 5k
+        if not item.get("full"):
+            clean_txt = clean_txt[:5000]
+        context_parts.append(f"[{fn}]: {clean_txt}" if fn else clean_txt)
         if fn:
             sources.add(fn)
         all_similarities.append(sim)
@@ -2484,15 +2656,7 @@ def _synthesize(question: str, plan: Dict, steps: List[Dict], page: int = 0) -> 
             "sources": [],
         }
 
-    # ── 3. Confidence signal ────────────────────────────────────────────────
-    # Reranked passages: the best one decides confidence (weaker extras are expected).
-    best_sim = max(all_similarities) if all_similarities else 0
-    confidence_note = ""
-    if all_similarities and best_sim < _SIMILARITY_CONFIDENCE_THRESHOLD:
-        confidence_note = (
-            "\n\n---\n⚠️ *Low confidence — the retrieved passages have weak relevance scores. "
-            "The answer may be incomplete. Consider uploading more specific documents.*"
-        )
+    # ── 3. Confidence is judged on the answer itself (see _grounding_note) ──
 
     # ── 4. Build prompt layers ───────────────────────────────────────────────
 
@@ -2540,7 +2704,9 @@ def _synthesize(question: str, plan: Dict, steps: List[Dict], page: int = 0) -> 
 
     # ── 5. Assemble and call LLM ────────────────────────────────────────────
     context = "\n\n".join(context_parts[:18])
-    key_lines = _key_lines(question, context_parts[:18])
+    # Highlighting helps inside long passage lists; with whole documents it only
+    # pulls the model toward a keyword match in the wrong document.
+    key_lines = "" if plan.get("_full_docs") else _key_lines(question, context_parts[:18])
     if key_lines:
         context = "KEY LINES (exact matches for names in the question — read these first):\n" + key_lines + "\n\n" + context
 
@@ -2572,7 +2738,15 @@ Answer ({"cite [filename] once after the list" if "EVERY entry" in format_str el
         )
         logger.info(f"Synthesis: prompt={resp.get('prompt_eval_count')} tok, "
                     f"answer={resp.get('eval_count')} tok, stop={resp.get('done_reason')}")
-        answer = _decode_llm_text(resp["message"]["content"].strip()) + confidence_note
+        answer = _decode_llm_text(resp["message"]["content"].strip())
+        # Non-streamed answer can be corrected in place: a figure cited to the wrong
+        # document gets the right citation, and Sources lists only that document.
+        fix = _citation_fix(answer, context)
+        if fix:
+            answer = answer.replace(fix[0], fix[1])
+            sources = {fix[1]}
+        else:
+            answer += _grounding_note(answer, context)
     except Exception as e:
         answer = f"Error generating answer: {e}"
 
@@ -3286,7 +3460,7 @@ def _synthesize_stream(question: str, plan: Dict, steps: List[Dict], page: int =
         context_parts.append(f"[{fn}]\n{_CITATION_NOISE_RE.sub('', raw_txt)}")
 
     context = "\n\n".join(context_parts[:20]) or "No relevant document excerpts found."
-    key_lines = _key_lines(question, [p.replace("]\n", "]: ", 1) for p in context_parts[:20]])
+    key_lines = "" if plan.get("_full_docs") else _key_lines(question, [p.replace("]\n", "]: ", 1) for p in context_parts[:20]])
     if key_lines:
         context = "KEY LINES (exact matches for names in the question — read these first):\n" + key_lines + "\n\n" + context
     _intent = plan.get("intent", "")
@@ -3331,10 +3505,15 @@ Answer:"""
             options={"num_ctx": NUM_CTX, "num_predict": num_predict, "temperature": 0.10},
             stream=True,
         )
+        answer_parts: List[str] = []
         for chunk in stream:
             token = (chunk.get("message") or {}).get("content") or ""
             if token:
+                answer_parts.append(token)
                 yield ("token", token)
+        note = _grounding_note("".join(answer_parts), context)
+        if note:
+            yield ("token", note)
     except Exception as e:
         yield ("token", f"Error generating answer: {e}")
 
@@ -4979,6 +5158,10 @@ def run_research_agent(
             logger.warning(f"Direct chunk fallback failed: {_fb_err}")
         finally:
             _fb_db.close()
+
+    # First page: read the chosen documents whole; "load more" pages keep passages
+    if page == 0:
+        search_results = _expand_to_full_documents(search_results, plan)
 
     # Paginate: slice the chunk window for this page, expose has_more
     chunk_start = page * _PAGE_SIZE

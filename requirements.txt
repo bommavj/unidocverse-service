@@ -111,6 +111,10 @@ apscheduler
 # OCR / Images
 Pillow==11.0.0
 pytesseract==0.3.13
+# OCRmyPDF — deskew + Tesseract text layer for scanned PDFs before Docling
+# pikepdf<10: 10.x has no macOS 14 arm64 wheel
+ocrmypdf==16.11.1
+pikepdf==9.11.0
 pillow-heif==0.18.0
 
 # EasyOCR — primary OCR engine

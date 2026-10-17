@@ -346,9 +346,17 @@ class DoclingParser:
         fname = Path(file_path).name
         logger.info(f"📄 [DoclingParser] Parsing: {fname}")
 
+        searchable = None
         try:
             if ext == ".pdf":
                 ocr_tier  = _detect_ocr_tier(file_path)
+                if ocr_tier == "scanned":
+                    # Deskew + Tesseract text layer, then parse as a text PDF
+                    from app.services.ocr.ocrmypdf_layer import make_searchable
+                    searchable = make_searchable(file_path)
+                    if searchable:
+                        file_path = searchable
+                        ocr_tier  = "text_native"
                 if ocr_tier in ("text_native", "rich_with_images"):
                     fast = self._fast_pdf_text(file_path)
                     if fast is not None:
@@ -412,6 +420,9 @@ class DoclingParser:
             if ext == ".pdf":
                 return self._pdfplumber_fallback(file_path, ext)
             return self._empty(ext)
+        finally:
+            if searchable:
+                Path(searchable).unlink(missing_ok=True)
 
     # ── pdfplumber safety net ─────────────────────────────────────────────────
     def _pdfplumber_fallback(self, file_path: str, ext: str) -> dict[str, Any]:
