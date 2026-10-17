@@ -1605,6 +1605,14 @@ def _digits(s: str) -> str:
     return re.sub(r"[^\d.\-]", "", s).strip(".")
 
 
+_REDACTION_RE = re.compile(r"\[([A-Z0-9#][A-Z0-9#/ \-]{0,30} REDACTED)\]")
+
+
+def _unbracket_redactions(txt: str) -> str:
+    """[PHONE REDACTED] looks like a [filename] citation; the model cited it as a source."""
+    return _REDACTION_RE.sub(r"‹\1›", txt)
+
+
 def _strip_citations(answer: str) -> str:
     """Numbers inside [filename] citations (072-4230-…-2025.pdf) aren't answer values."""
     return re.sub(r"\[[^\]\n]*\]", " ", answer)
@@ -1785,11 +1793,36 @@ def _mentions(text: str, names: List[str]) -> bool:
 
 
 def _doctype_family(doc_type: str) -> List[str]:
-    """A generic type covers the specific ones the classifier now stores (tax_form → form_1099_int, …)."""
+    """A generic type covers the specific ones the classifier now stores (tax_form → form_1099_int, …),
+    and siblings sharing a stem (mortgage_document ↔ mortgage_statement, pay_stub ↔ payroll)."""
     if doc_type == "tax_form":
         from app.services.tax.irs_forms import FORM_DOC_TYPES
         return ["tax_form"] + sorted({t for t in FORM_DOC_TYPES.values() if t != "w2"})
-    return [doc_type]
+    stem = doc_type.split("_")[0]
+    family = {doc_type} | {t for t in _known_doc_types() if t.split("_")[0] == stem}
+    if stem in ("pay", "payroll", "paystub"):
+        family |= {"pay_stub", "payroll", "payroll_report"}
+    return sorted(family)
+
+
+_DOC_TYPES_CACHE: Dict[str, Any] = {"at": 0.0, "types": set()}
+
+
+def _known_doc_types() -> set:
+    if time.time() - _DOC_TYPES_CACHE["at"] > 300:
+        try:
+            from sqlalchemy import text
+            from app.core.database import SessionLocal
+            db = SessionLocal()
+            try:
+                _DOC_TYPES_CACHE["types"] = {r[0] for r in db.execute(text(
+                    "SELECT DISTINCT doc_type FROM documents WHERE doc_type IS NOT NULL"))}
+            finally:
+                db.close()
+            _DOC_TYPES_CACHE["at"] = time.time()
+        except Exception:
+            pass
+    return _DOC_TYPES_CACHE["types"]
 
 
 def _multi_search(plan: Dict, doc_ids: List[str], prefer_doc_ids: Optional[List[str]] = None) -> List[Dict]:
@@ -1852,12 +1885,15 @@ def _multi_search(plan: Dict, doc_ids: List[str], prefer_doc_ids: Optional[List[
     scope = list(doc_ids or []) or list(prefer_doc_ids or [])
     # Documents whose filename shares words with the question ("Sacramento County
     # property tax bill" → Sacramento-County-Property-Tax-….pdf) rank first.
-    by_name = [] if scope else _filename_matches(q)
+    by_name = _filename_matches(q)
+    plan["_named_docs"] = by_name
+    if scope and not doc_ids and by_name:
+        scope = list(dict.fromkeys(scope + by_name))   # a filter guess must not hide a named document
     # A type named in the question ranks those documents first but never hides the
     # rest: "mortgage statement" mapped to mortgage_document and hid the statement
     # stored as mortgage_statement. Stored types are guesses too.
     results = hybrid_search(q, queries, doc_ids=scope or None, prefer_doc_ids=by_name or None,
-                            prefer_doc_types=doc_types, top_n=8)
+                            prefer_doc_types=doc_types, keep_doc_ids=by_name or None, top_n=8)
     if not results and scope and not doc_ids:
         results = hybrid_search(q, queries, top_n=8)   # filter's guess was wrong; never drop a chosen scope
     elif doc_types and results:
@@ -1884,10 +1920,19 @@ _NAME_STOP = {"what", "when", "where", "which", "does", "with", "from", "that", 
               "file", "pdf", "statement", "form", "bill", "report", "2023", "2024", "2025", "2026"}
 
 
+def _name_words(s: str) -> set:
+    # "H-1B" and "H1B", "I-129" and "I129" are the same code
+    s = re.sub(r"\b([a-z]{1,2})-(\d[a-z0-9]{0,3})\b", r"\1\2", s.lower())
+    return {w for w in re.findall(r"[a-z0-9]+", s)
+            if (len(w) >= 4 or (len(w) >= 2 and re.search(r"\d", w) and re.search(r"[a-z]", w)))
+            and w not in _NAME_STOP}
+
+
 def _filename_matches(question: str) -> List[str]:
-    """Doc ids whose filename shares ≥2 distinctive words with the question."""
-    words = {w for w in re.findall(r"[a-z0-9]{4,}", question.lower()) if w not in _NAME_STOP}
-    if len(words) < 2:
+    """Doc ids whose filename shares ≥2 distinctive words with the question, or one
+    form/visa code (h1b, i129, w2) — codes like that name the document."""
+    words = _name_words(question)
+    if not words:
         return []
     try:
         from sqlalchemy import text
@@ -1904,10 +1949,10 @@ def _filename_matches(question: str) -> List[str]:
         return []
     hits = []
     for r in rows:
-        name_words = set(re.findall(r"[a-z0-9]{4,}", (r.filename or "").lower()))
-        overlap = len(words & name_words)
-        if overlap >= 2:
-            hits.append((overlap, r.id))
+        shared = words & _name_words(r.filename or "")
+        has_code = any(re.search(r"\d", w) for w in shared)
+        if len(shared) >= 2 or has_code:
+            hits.append((len(shared) + has_code, r.id))
     return [i for _, i in sorted(hits, reverse=True)[:3]]
 
 
@@ -1916,7 +1961,7 @@ def _filename_matches(question: str) -> List[str]:
 # let a keyword match in an unrelated document ("PARCEL NUMBER" on a tax bill)
 # outrank the real answer ("Parcels 97.98" on an invoice).
 # NUM_CTX 8192 tokens ≈ 14k chars of document text after prompt + answer room.
-_FULL_DOC_BUDGET_CHARS = int(os.getenv("FULL_DOC_BUDGET_CHARS", "14000"))
+_FULL_DOC_BUDGET_CHARS = int(os.getenv("FULL_DOC_BUDGET_CHARS", "18000"))
 _FULL_DOC_MAX_DOCS     = 3
 
 
@@ -1964,6 +2009,14 @@ def _expand_to_full_documents(results: List[Dict], plan: Dict) -> List[Dict]:
         return results
 
     kept = {f["doc_id"] for f in full}
+    named = set(plan.get("_named_docs") or [])
+    if named & kept:
+        # The question named this document and it's read whole: other documents'
+        # passages only distract (a 290k-char tax guide buried the actual tax bill).
+        full = [f for f in full if f["doc_id"] in named] + [f for f in full if f["doc_id"] not in named]
+        plan["_full_docs"] = True
+        logger.info(f"Full-document context (named): {[f['filename'][:30] for f in full]}")
+        return [f for f in full if f["doc_id"] in named]
     # Passages from documents too large to include whole still go in, after the full ones
     extra = [r for r in results if str(r.get("doc_id")) not in kept]
     plan["_full_docs"] = True
@@ -2589,7 +2642,7 @@ def _synthesize(question: str, plan: Dict, steps: List[Dict], page: int = 0) -> 
         fn, txt, sim = item["fn"], item["txt"], item["sim"]
         if fn and fn not in admitted_docs:
             continue
-        clean_txt = _CITATION_NOISE_RE.sub('', txt)
+        clean_txt = _unbracket_redactions(_CITATION_NOISE_RE.sub('', txt))
         # Whole documents were budgeted by _expand_to_full_documents; passages cap at 5k
         if not item.get("full"):
             clean_txt = clean_txt[:5000]
@@ -2739,6 +2792,7 @@ Answer ({"cite [filename] once after the list" if "EVERY entry" in format_str el
         logger.info(f"Synthesis: prompt={resp.get('prompt_eval_count')} tok, "
                     f"answer={resp.get('eval_count')} tok, stop={resp.get('done_reason')}")
         answer = _decode_llm_text(resp["message"]["content"].strip())
+        answer = re.sub(r"(?m)^[ \t]*[*\-•][ \t]*\n", "", answer)   # empty bullets the model emits between items
         # Non-streamed answer can be corrected in place: a figure cited to the wrong
         # document gets the right citation, and Sources lists only that document.
         fix = _citation_fix(answer, context)
@@ -3457,7 +3511,7 @@ def _synthesize_stream(question: str, plan: Dict, steps: List[Dict], page: int =
         if fn not in sources:
             sources.append(fn)
         raw_txt = ch.get('chunk_text') or ch.get('text', '')
-        context_parts.append(f"[{fn}]\n{_CITATION_NOISE_RE.sub('', raw_txt)}")
+        context_parts.append(f"[{fn}]\n{_unbracket_redactions(_CITATION_NOISE_RE.sub('', raw_txt))}")
 
     context = "\n\n".join(context_parts[:20]) or "No relevant document excerpts found."
     key_lines = "" if plan.get("_full_docs") else _key_lines(question, [p.replace("]\n", "]: ", 1) for p in context_parts[:20]])
