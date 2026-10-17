@@ -135,7 +135,9 @@ def build():
 
 
 def load():
-    """Add the files to the demo tenant with their PDF text, as the fast parsing path would store it."""
+    """Add the files to the demo tenant and run them through the normal upload
+    pipeline, so they are chunked and embedded and Ask/Research can find them."""
+    from app.services.processing_service import ProcessingService
     import shutil
     from sqlalchemy import text
     from app.core.database import SessionLocal
@@ -147,11 +149,12 @@ def load():
                 continue
             dest = uploads / f"taxrecon_{f.name}"
             shutil.copy(f, dest)
-            raw = "\n".join(p.get_text() for p in fitz.open(f)) if f.suffix == ".pdf" else None
             db.execute(text("DELETE FROM documents WHERE tenant_id = :t AND filename = :n"), {"t": TENANT, "n": f.name})
-            db.execute(text("INSERT INTO documents (filename, file_path, tenant_id, status, raw_text) "
-                            "VALUES (:n, :p, :t, 'completed', :r)"), {"n": f.name, "p": str(dest), "t": TENANT, "r": raw})
-        db.commit()
+            doc_id = db.execute(text("INSERT INTO documents (filename, file_path, tenant_id, status) "
+                                     "VALUES (:n, :p, :t, 'pending') RETURNING id"),
+                                {"n": f.name, "p": str(dest), "t": TENANT}).scalar()
+            db.commit()
+            ProcessingService.process_document_background(str(doc_id), str(dest), f.name)
     finally:
         db.close()
 

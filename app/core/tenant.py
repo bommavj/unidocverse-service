@@ -90,6 +90,10 @@ class TenantMiddleware(BaseHTTPMiddleware):
         # (get_current_user), so on any route that returns tenant data the claim is trusted.
         else:
             auth = request.headers.get("Authorization", "")
+            # EventSource (research stream) can't send headers; it passes ?jwt=.
+            # Without this the stream ran every user's question as the default tenant.
+            if not auth and request.query_params.get("jwt"):
+                auth = "Bearer " + request.query_params["jwt"]
             from app.core import api_tokens
             if auth.startswith("Bearer ") and api_tokens.is_api_token(auth[7:].strip()):
                 row = api_tokens.resolve(auth[7:].strip())

@@ -53,8 +53,12 @@ _MONTHS = "jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
 _DATE_TOKEN = rf"(?:(?:{_MONTHS})[a-z]*\.?\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+\d{{4}}|(?:{_MONTHS})[a-z]*\.?\s+\d{{4}}|\d{{1,2}}/\d{{1,2}}/\d{{2,4}}|\d{{4}}-\d{{2}}-\d{{2}}|\d{{4}})"
 
 
+# "withheld on the W-2" is about a tax form, not the pay stubs
+_TAX_FORM_RE = re.compile(r"\bw-?2\b|\b1099\b|\bk-?1\b|\b1040\b|\b1065\b|\b8949\b|\bw-?9\b|schedule [a-z]\b", re.I)
+
+
 def is_payroll_question(question: str) -> bool:
-    return any_term(question, _PAYROLL_TERMS)
+    return any_term(question, _PAYROLL_TERMS) and not _TAX_FORM_RE.search(question)
 
 
 # ── Date range from the question ─────────────────────────────────────────────
@@ -91,7 +95,7 @@ def date_range_from_question(question: str) -> Optional[Tuple[date, date]]:
     if re.search(r"\b(ytd|year to date|this year)\b", q):
         today = date.today()
         return date(today.year, 1, 1), today
-    m = re.search(rf"\b(?:in|for|during|of)\s+({_DATE_TOKEN})\b", q)
+    m = re.search(rf"\b(?:in|for|during|of|on|dated)\s+(?:the\s+)?({_DATE_TOKEN})\b", q)
     if m:
         a, b = _parse_bound(m.group(1), False), _parse_bound(m.group(1), True)
         if a and b:
@@ -203,6 +207,18 @@ def answer_from_payroll_facts(question: str, tenant_id: str, doc_ids: Optional[L
         return {"answer": f"No pay stubs were paid between {rng[0]:%b %d, %Y} and {rng[1]:%b %d, %Y}.\n\n{coverage}",
                 "sources": [], "rows": 0}
 
+    # One pay stub and the question asks for gross or net pay: answer that figure,
+    # not the multi-stub deductions report.
+    asks = [k for k, pat in (("net_pay", r"\bnet\b|take.?home"), ("gross_pay", r"\bgross\b")) if re.search(pat, question, re.I)]
+    if len(in_range) == 1 and asks and not _focus(question):
+        s = in_range[0]
+        parts = [f"**{k.replace('_', ' ').capitalize()}** on the {s['pay_date']:%b %d, %Y} pay stub: "
+                 f"${_num(s['facts'].get(k)):,.2f}" for k in asks if _num(s["facts"].get(k)) is not None]
+        if parts:
+            src = s.get("filename")
+            return {"answer": "\n".join(parts) + (f" [{src}]" if src else ""),
+                    "sources": [src] if src else [], "rows": 1}
+
     focus = _focus(question)
     totals: Dict[str, float] = defaultdict(float)
     stubs_with: Dict[str, set] = defaultdict(set)
@@ -233,6 +249,10 @@ def answer_from_payroll_facts(question: str, tenant_id: str, doc_ids: Optional[L
         return None
 
     lines = [f"Based on {scope}:", ""]
+    if asks and not focus:
+        # The figure asked for goes first; the deduction detail follows
+        lines += [" · ".join(f"**Total {k.replace('_', ' ')}:** ${v:,.2f}"
+                             for k, v in (("net_pay", net), ("gross_pay", gross)) if k in asks), ""]
     cats = [focus] if focus else ["Taxes", "Retirement", "Benefits", "Other"]
     for cat in cats:
         names = sorted((n for n in shown if cat_of[n] == cat), key=lambda n: -totals[n])
