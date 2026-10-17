@@ -223,7 +223,8 @@ _OUTSIDE_MIN = 0.5          # other documents need this reranker score to be inc
 def hybrid_search(question: str, queries: Sequence[str] = (), doc_ids: Optional[Sequence[str]] = None,
                   doc_types: Optional[Sequence[str]] = None, top_n: int = 8,
                   prefer_doc_ids: Optional[Sequence[str]] = None,
-                  prefer_doc_types: Optional[Sequence[str]] = None) -> List[Dict]:
+                  prefer_doc_types: Optional[Sequence[str]] = None,
+                  keep_doc_ids: Optional[Sequence[str]] = None) -> List[Dict]:
     """
     Returns up to top_n passages: {doc_id, filename, doc_type, text, similarity, chunk_index}.
     `similarity` is the reranker's probability (0–1) when reranking ran, otherwise
@@ -306,7 +307,16 @@ def hybrid_search(question: str, queries: Sequence[str] = (), doc_ids: Optional[
         # Drop passages far below the best one: extra near-irrelevant text (e.g.
         # transaction lists) pulls a small LLM off the exact answer it was given.
         floor = max(0.05, order[0][1] * 0.25)
-        order = [o for i, o in enumerate(order) if i < 2 or o[1] >= floor]
+        # Documents the question names (filename "H-1B Approval Notice" for "H1B")
+        # keep their best passage even below the floor.
+        keep, kept = set(keep_doc_ids or []), set()
+        def _keep(c):
+            d = rows[c]["doc_id"]
+            if d in keep and d not in kept:
+                kept.add(d)
+                return True
+            return False
+        order = [o for i, o in enumerate(order) if i < 2 or o[1] >= floor or _keep(o[0])]
 
     out = []
     seen_text = set()
