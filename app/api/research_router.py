@@ -202,11 +202,16 @@ def research_ask_stream(
     parent_session_id: Optional[str] = Query(None),
     session_token: Optional[str] = Query(None),
     context_sources: Optional[str] = Query(None),
+    cloud: Optional[str] = Query(None),        # "ok" = send to the cloud model, "local" = answer locally
+    resume: Optional[str] = Query(None),       # the step parked at the consent question
     _: dict = Depends(get_current_user_or_session),
 ):
     """SSE endpoint — streams step events then answer tokens."""
     if not question or not question.strip():
         raise HTTPException(400, "Question is required")
+    # Set before the stream starts: each SSE step runs in a copy of this context
+    from app.core import llm
+    llm.begin_request(cloud, (_ or {}).get("username"))
 
     doc_id_list     = [d for d in (doc_ids         or "").split(",") if d.strip()]
     ctx_doc_id_list = [d for d in (context_doc_ids or "").split(",") if d.strip()]
@@ -222,6 +227,25 @@ def research_ask_stream(
         try:
             # Signal immediately so the frontend shows the typing indicator
             yield f"data: {json.dumps({'type': 'thinking'})}\n\n"
+
+            # The user answered the consent question: finish the parked step only
+            parked = llm.unpark(resume) if cloud in ("ok", "local") else None
+            if parked:
+                from app.services.document_react_agent import finish_parked
+                answer, note, srcs = None, "", parked["sources"]
+                for kind, value in _run_with_heartbeat(lambda: finish_parked(parked, cloud == "ok")):
+                    if kind == "progress":
+                        yield f"data: {json.dumps({'type': 'progress', 'text': value})}\n\n"
+                    else:
+                        answer, note, srcs = value
+                full = _decode_unicode_escapes(answer + note) + "".join(f"\n\n🔒 *{n}*" for n in llm.request_notes())
+                for i in range(0, len(full), 40):
+                    yield f"data: {json.dumps({'type': 'token', 'text': full[i:i + 40]})}\n\n"
+                yield f"data: {json.dumps({'type': 'sources', 'sources': srcs})}\n\n"
+                session_id = _save_session({"answer": full, "sources": srcs, "steps": []}, doc_id_list,
+                                           question.strip(), parent_session_id)
+                yield f"data: {json.dumps({'type': 'done', 'session_id': session_id, 'answer': full, 'matched_doc_ids': doc_id_list})}\n\n"
+                return
 
             # ── Intent-based routing ──────────────────────────────────────────
             # classify_intent() is <1ms — pure keyword heuristic, no LLM call.
@@ -265,56 +289,21 @@ def research_ask_stream(
             yield f"data: {json.dumps({'type': 'intent', 'route': intent.route, 'complexity': intent.complexity})}\n\n"
 
             if intent.route == "clarify":
-                # Vague question — create a HITL approval request for clarification
-                import uuid as _uuid
-                _approval_id = str(_uuid.uuid4())
-                _db_hitl = None
-                try:
-                    from app.core.database import SessionLocal as _SL
-                    from app.core.tenant import get_current_tenant_id, DEFAULT_TENANT_ID
-                    _db_hitl = _SL()
-                    _tid = get_current_tenant_id() or DEFAULT_TENANT_ID
-                    _db_hitl.execute(text("""
-                        INSERT INTO approval_requests
-                            (id, doc_id, title, description, approvers, status, priority)
-                        VALUES
-                            (:id, '', :title, :desc, '["admin"]'::jsonb, 'pending', 'high')
-                    """), {
-                        "id":    _approval_id,
-                        "title": f"Clarification needed: \"{question.strip()[:80]}\"",
-                        "desc":  (
-                            f"The research agent received a vague query and needs clarification "
-                            f"before proceeding.\n\n"
-                            f"**Original question:** {question.strip()}\n\n"
-                            f"Please clarify:\n"
-                            f"- What type of documents are you asking about? "
-                            f"(bank statements, insurance policies, pay stubs, contracts, etc.)\n"
-                            f"- What specifically would you like to know?"
-                        ),
-                    })
-                    _db_hitl.commit()
-                except Exception as _he:
-                    logger.warning(f"HITL insert failed: {_he}")
-                finally:
-                    if _db_hitl:
-                        _db_hitl.close()
-
-                _hitl_msg = (
-                    "⏳ **Clarification needed** — your question has been sent to the approval queue.\n\n"
-                    "To get an accurate answer, please clarify:\n"
-                    "- **What type of documents** are you asking about? "
-                    "(e.g. bank statements, insurance policies, pay stubs, contracts)\n"
-                    "- **What specifically** would you like to know?\n\n"
-                    "Or rephrase your question with more detail and try again."
+                # Vague question: ask the person right here, in the conversation.
+                # (It used to park the question in the approval queue, where nobody answered it.)
+                _msg = (
+                    "Could you tell me a bit more? For example:\n"
+                    "- **Which documents** — bank statements, pay stubs, an invoice, a contract, an immigration notice?\n"
+                    "- **What you want to know** — a total, a date, a name, or a summary?\n\n"
+                    "You can also select documents on the left to narrow the search."
                 )
-                for word in _hitl_msg.split(" "):
+                for word in _msg.split(" "):
                     yield f"data: {json.dumps({'type': 'token', 'text': word + ' '})}\n\n"
                     time.sleep(0.012)
-                yield f"data: {json.dumps({'type': 'hitl', 'approval_id': _approval_id})}\n\n"
-                yield f"data: {json.dumps({'type': 'done', 'session_id': None, 'matched_doc_ids': []})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'session_id': None, 'answer': _msg, 'matched_doc_ids': []})}\n\n"
                 return
 
-            elif intent.route == "fast":
+            if intent.route == "fast":
                 # Lightweight: single vector search + one LLM call, no agents
                 job = lambda: run_research_agent(
                     question=effective_q,
@@ -412,6 +401,11 @@ def research_ask_stream(
             more, pg = _pagination(result, steps, page)
             yield f"data: {json.dumps({'type': 'done', 'session_id': session_id, 'answer': saved_answer, 'matched_doc_ids': matched_doc_ids, 'has_more': more, 'page': pg})}\n\n"
 
+        except llm.CloudConsentRequired as c:
+            # Ask the user before any document leaves the network; the page re-asks with cloud=ok|local
+            label = llm.PROVIDERS.get(c.provider, {}).get("label", c.provider)
+            yield f"data: {json.dumps({'type': 'cloud_confirm', 'provider': label, 'model': c.model, 'documents': c.documents, 'masked': llm.policy()['mask_identifiers'], 'resume': c.resume})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'answer': '', 'cloud_confirm': True})}\n\n"
         except Exception as e:
             logger.error(f"[research_router] stream error: {e}", exc_info=True)
             err_msg = f"Something went wrong while processing your request. Please try again."
@@ -552,40 +546,54 @@ class ActionCancelRequest(BaseModel):
     approval_id: Optional[str] = None
 
 
-@router.post("/action/confirm")
-def research_action_confirm(body: ActionConfirmRequest, _: dict = Depends(get_current_user)):
-    """User approved a HITL-gated action — execute it now."""
-    if body.approval_id:
-        try:
-            import urllib.request as _ureq, json as _json, os as _os
-            base = _os.environ.get("BACKEND_URL", "http://localhost:7979")
-            data = _json.dumps({"decision": "approved", "comment": "Confirmed by user in Research Agent"}).encode()
-            req  = _ureq.Request(f"{base}/api/approvals/{body.approval_id}/decide",
-                                 data=data, headers={"Content-Type": "application/json"}, method="POST")
-            _ureq.urlopen(req, timeout=10)
-        except Exception as e:
-            logger.warning(f"Could not record approval decision: {e}")
+def _decide_inline(approval_id: str, user: dict, status: str, comment: str) -> Optional[dict]:
+    """Record the user's decision on the agent's own request, right here in the chat.
+    Returns the stored proposed action. Only the organisation's own pending agent requests qualify."""
+    import json as _json
+    from datetime import datetime as _dt
+    from app.core.audit import record as _audit
+    from app.core.database import SessionLocal
+    from app.core.tenant import DEFAULT_TENANT_ID, get_current_tenant_id
+    db = SessionLocal()
     try:
-        result = _do_execute_action(body.intent, body.entities)
-        return result
+        row = db.execute(text("""SELECT title, status, proposed_action, decisions FROM approval_requests
+            WHERE id = :id AND tenant_id = :t AND source = 'agent'"""),
+            {"id": approval_id, "t": str(get_current_tenant_id() or DEFAULT_TENANT_ID)}).mappings().fetchone()
+        if not row:
+            raise HTTPException(404, "This request no longer exists")
+        if row["status"] != "pending":
+            raise HTTPException(409, f"This request was already {row['status'].replace('_', ' ')}")
+        decisions = (row["decisions"] or []) + [{"approver": user["username"], "decision": "approve" if status == "approved" else "reject",
+                                                 "comment": comment, "at": _dt.utcnow().isoformat()}]
+        db.execute(text("UPDATE approval_requests SET status = :s, decisions = CAST(:d AS jsonb), updated_at = NOW() WHERE id = :id"),
+                   {"s": status, "d": _json.dumps(decisions), "id": approval_id})
+        db.commit()
+        _audit("approval.approve" if status == "approved" else "approval.reject", actor=user["username"], detail=row["title"],
+               extra={"approval_id": approval_id, "status": status, "comment": comment, "where": "research chat"})
+        return row["proposed_action"]
+    finally:
+        db.close()
+
+
+@router.post("/action/confirm")
+def research_action_confirm(body: ActionConfirmRequest, user: dict = Depends(get_current_user)):
+    """User approved the agent's action in the chat — record it and run exactly what was proposed."""
+    intent, entities = body.intent, body.entities
+    if body.approval_id:
+        stored = _decide_inline(body.approval_id, user, "approved", "Confirmed in Research Agent") or {}
+        intent, entities = stored.get("intent") or intent, stored.get("entities") or entities
+    try:
+        return _do_execute_action(intent, entities)
     except Exception as e:
         logger.error(f"Action confirm failed: {e}", exc_info=True)
         raise HTTPException(500, f"Action failed: {str(e)}")
 
 
 @router.post("/action/cancel")
-def research_action_cancel(body: ActionCancelRequest, _: dict = Depends(get_current_user)):
-    """User rejected a HITL-gated action."""
+def research_action_cancel(body: ActionCancelRequest, user: dict = Depends(get_current_user)):
+    """User rejected the agent's action in the chat."""
     if body.approval_id:
-        try:
-            import urllib.request as _ureq, json as _json, os as _os
-            base = _os.environ.get("BACKEND_URL", "http://localhost:7979")
-            data = _json.dumps({"decision": "rejected", "comment": "Cancelled by user in Research Agent"}).encode()
-            req  = _ureq.Request(f"{base}/api/approvals/{body.approval_id}/decide",
-                                 data=data, headers={"Content-Type": "application/json"}, method="POST")
-            _ureq.urlopen(req, timeout=10)
-        except Exception as e:
-            logger.warning(f"Could not record rejection: {e}")
+        _decide_inline(body.approval_id, user, "rejected", "Cancelled in Research Agent")
     return {"success": True, "cancelled": True, "message": "Action cancelled."}
 
 

@@ -23,8 +23,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/features", tags=["features"])
 
 FLAGS = ("agency_mode", "immigration_mode", "legal_mode", "medical_mode", "finance_mode", "real_estate_mode",
-         "hr_mode", "supply_chain_mode", "compliance_mode", "operations_mode")
-LEGACY = [f for f in FLAGS if f != "immigration_mode"]      # columns that exist on the old `settings` row
+         "hr_mode", "supply_chain_mode", "compliance_mode", "operations_mode", "clm_mode")
+LEGACY = [f for f in FLAGS if f not in ("immigration_mode", "clm_mode")]   # columns on the old `settings` row
+
+# Which module switch a domain (agent sector, scheduled report) belongs to
+DOMAIN_FLAG = {"insurance": "agency_mode", "claims": "agency_mode", "immigration": "immigration_mode",
+               "legal": "legal_mode", "medical": "medical_mode", "finance": "finance_mode",
+               "real_estate": "real_estate_mode", "hr": "hr_mode", "supply_chain": "supply_chain_mode",
+               "compliance": "compliance_mode", "operations": "operations_mode", "clm": "clm_mode"}
+
+
+def enabled_domains(db: Session, tenant_id: str) -> list:
+    flags = flags_for(db, tenant_id)
+    return [d for d, f in DOMAIN_FLAG.items() if flags.get(f)]
 
 
 class FeatureFlagUpdate(BaseModel):
@@ -38,6 +49,7 @@ class FeatureFlagUpdate(BaseModel):
     supply_chain_mode: Optional[bool] = None
     compliance_mode: Optional[bool] = None
     operations_mode: Optional[bool] = None
+    clm_mode: Optional[bool] = None
 
 
 def _ensure(db: Session) -> None:

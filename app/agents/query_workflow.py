@@ -40,6 +40,7 @@ import time
 from typing import Any, Annotated, Dict, List, Optional, Sequence, TypedDict
 
 import ollama
+from app.core import llm
 from langgraph.types import Send
 from langgraph.graph import END, StateGraph
 
@@ -212,6 +213,9 @@ def _run_domain_agent(domain: str, question: str, doc_ids: List[str], tenant_id:
     return result
 
 
+from app.core.llm import CloudConsentRequired as _CONSENT
+
+
 def make_domain_node(domain: str):
     """Factory that returns a node function for a given domain."""
 
@@ -223,6 +227,8 @@ def make_domain_node(domain: str):
         logger.info(f"[{domain}_node] Running agent")
         try:
             result = _run_domain_agent(domain, question, doc_ids, tenant_id)
+        except _CONSENT:
+            raise                     # the page asks the user before anything goes to a cloud model
         except Exception as exc:
             logger.error(f"[{domain}_node] error: {exc}", exc_info=True)
             result = AgentResult(
@@ -266,6 +272,8 @@ def merger_node(state: QueryState) -> Dict[str, Any]:
             logger.info(f"[merger_node] Running sequential domain: {domain}")
             try:
                 result = _run_domain_agent(domain, enriched_q, doc_ids, tenant_id)
+            except _CONSENT:
+                raise
             except Exception as exc:
                 logger.error(f"[merger_node] sequential {domain} error: {exc}")
                 result = AgentResult(
@@ -330,7 +338,7 @@ def synthesizer_node(state: QueryState) -> Dict[str, Any]:
         )
         try:
             model = getattr(app_config, "OLLAMA_MODEL", "mistral")
-            resp = ollama.chat(
+            resp = llm.chat(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0.1, "num_predict": 800},
@@ -360,7 +368,7 @@ Provide a unified answer:"""
 
     try:
         model = getattr(app_config, "OLLAMA_MODEL", "mistral")
-        resp = ollama.chat(
+        resp = llm.chat(
             model=model,
             messages=[{"role": "user", "content": prompt}],
             options={"temperature": 0.1, "num_predict": 1024},

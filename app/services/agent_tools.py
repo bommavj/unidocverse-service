@@ -196,12 +196,16 @@ def create_approval_request(run_id: str, title: str, description: str, proposed_
         aid = str(uuid.uuid4())
         db.execute(text("""
             INSERT INTO approval_requests
-                (id, doc_id, title, description, approvers, status, priority, agent_run_id, agent_reasoning, proposed_action)
+                (id, doc_id, title, description, approvers, status, priority, agent_run_id, agent_reasoning, proposed_action,
+                 tenant_id, requested_by, source, expires_at)
             VALUES
                 (:id, '', :title, :desc, '["admin"]'::jsonb, 'pending', 'high',
-                 :run_id, :reasoning, CAST(:action AS jsonb))
+                 :run_id, :reasoning, CAST(:action AS jsonb),
+                 coalesce((SELECT tenant_id::text FROM agent_runs WHERE id::text = :run_id), :tid),
+                 'research agent', 'agent', NOW() + interval '1 day')
         """), {"id": aid, "title": title, "desc": description,
                "run_id": run_id, "reasoning": reasoning,
+               "tid": str(__import__("app.core.tenant", fromlist=["get_current_tenant_id"]).get_current_tenant_id()),
                "action": json.dumps(proposed_action)})
         db.execute(text(
             "UPDATE agent_runs SET approval_id = :aid, status = 'waiting_approval', updated_at = NOW() WHERE id = :rid"

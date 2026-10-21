@@ -1,7 +1,7 @@
 """Audit Trail — immutable event log for all document actions."""
 import uuid
 from typing import Optional
-from fastapi import APIRouter, Depends, Query
+from fastapi import Request, APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -88,7 +88,11 @@ def list_events(
     return {"events": [row_to_dict(r) for r in rows], "total": total}
 
 @router.post("")
-def create_event(body: AuditEventCreate, db: Session = Depends(get_db)):
+def create_event(body: AuditEventCreate, request: Request, db: Session = Depends(get_db)):
+    # The actor is whoever is signed in, not what the client claims
+    from app.core.audit_middleware import _claims
+    body.actor = _claims(request).get("username") or "anonymous"
+    body.ip = request.client.host if request.client else body.ip
     import json
     ensure_table(db)
     eid = str(uuid.uuid4())
@@ -134,3 +138,83 @@ def audit_summary(db: Session = Depends(get_db)):
 @router.get("/actions")
 def get_actions():
     return {"actions": VALID_ACTIONS}
+
+
+# ── Retention (Audit trail → Retention) ──────────────────────────────────────
+
+from app.api.auth_router import require_admin  # noqa: E402
+
+class RetentionUpdate(BaseModel):
+    read_days: int
+    change_days: int
+    legal_hold: bool = False
+
+
+@router.get("/retention")
+def get_retention(db: Session = Depends(get_db), user=Depends(require_admin)):
+    from app.services import audit_retention as ar
+    ar.ensure_tables(db)
+    pol = ar.policy(db, _t())
+    size = db.execute(text("SELECT count(*) FROM audit_log WHERE tenant_id = CAST(:t AS uuid)"), {"t": _t()}).scalar()
+    return {**{k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in pol.items()},
+            "read_choices": ar.READ_CHOICES, "change_choices": ar.CHANGE_CHOICES, "rows": size}
+
+
+@router.put("/retention")
+def put_retention(body: RetentionUpdate, request: Request, db: Session = Depends(get_db),
+                  user=Depends(require_admin)):
+    from fastapi import HTTPException
+    from app.core.audit import record
+    from app.services import audit_retention as ar
+    ar.ensure_tables(db)
+    if body.read_days not in ar.READ_CHOICES or body.change_days not in ar.CHANGE_CHOICES:
+        raise HTTPException(400, "Choose one of the offered retention periods")
+    before = ar.policy(db, _t())
+    db.execute(text("""INSERT INTO audit_retention (tenant_id, read_days, change_days, legal_hold, updated_by)
+        VALUES (:t, :r, :c, :h, :u) ON CONFLICT (tenant_id) DO UPDATE SET read_days = EXCLUDED.read_days,
+        change_days = EXCLUDED.change_days, legal_hold = EXCLUDED.legal_hold, updated_at = now(),
+        updated_by = EXCLUDED.updated_by"""),
+        {"t": _t(), "r": body.read_days, "c": body.change_days, "h": body.legal_hold, "u": user["username"]})
+    db.commit()
+    record("audit.retention_changed", actor=user["username"], ip=request.client.host if request.client else None,
+           detail=f"Reads {body.read_days}d, changes {body.change_days or 'forever'}d, legal hold {'on' if body.legal_hold else 'off'}",
+           extra={"before": {k: before[k] for k in ("read_days", "change_days", "legal_hold")},
+                  "after": body.model_dump()})
+    return {"success": True}
+
+
+@router.post("/retention/run")
+def run_retention(request: Request, user=Depends(require_admin)):
+    from app.core.audit import record
+    from app.services import audit_retention as ar
+    result = ar.run(_t())
+    record("audit.cleanup_run", actor=user["username"], detail="Retention cleanup run manually",
+           ip=request.client.host if request.client else None, extra=result.get(_t(), {}))
+    return result.get(_t(), {})
+
+
+@router.get("/archives")
+def list_archives(user=Depends(require_admin)):
+    from app.services import audit_retention as ar
+    folder = ar.ARCHIVE_ROOT / _t()
+    files = sorted(folder.glob("*.jsonl.gz"), reverse=True) if folder.exists() else []
+    return {"archives": [{"name": f.name, "size": f.stat().st_size,
+                          "modified": datetime.fromtimestamp(f.stat().st_mtime).isoformat()} for f in files]}
+
+
+@router.get("/archives/{name}")
+def download_archive(name: str, request: Request,
+                     user=Depends(require_admin)):
+    import re
+    from fastapi import HTTPException
+    from fastapi.responses import FileResponse
+    from app.core.audit import record
+    from app.services import audit_retention as ar
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}-(read|change)\.jsonl\.gz", name):
+        raise HTTPException(400, "Invalid archive name")
+    path = ar.ARCHIVE_ROOT / _t() / name
+    if not path.exists():
+        raise HTTPException(404, "Archive not found")
+    record("audit.archive_downloaded", actor=user["username"], detail=name,
+           ip=request.client.host if request.client else None)
+    return FileResponse(path, media_type="application/gzip", filename=name)

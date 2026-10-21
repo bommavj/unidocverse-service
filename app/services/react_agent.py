@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import ollama
+from app.core import llm
 from sqlalchemy import text
 
 from app.core.database import SessionLocal
@@ -151,7 +152,7 @@ def run_agent(run_id: str):
             approval_level=approval_level
         )
 
-        client = ollama.Client()
+        client = llm
 
         while iteration < MAX_ITERATIONS:
             iteration += 1

@@ -14,6 +14,7 @@ from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
 import ollama
+from app.core import llm
 import pandas as pd
 from sqlalchemy import text
 
@@ -146,7 +147,7 @@ def plan_query(question: str, df: pd.DataFrame, filename: str) -> Optional[Dict]
     prompt = _PLAN_PROMPT.format(filename=filename, n_rows=len(df), schema=schema,
                                  sample=sample, question=question)
     try:
-        resp = ollama.chat(
+        resp = llm.chat(
             model=app_config.model,
             messages=[{"role": "user", "content": prompt}],
             format="json",

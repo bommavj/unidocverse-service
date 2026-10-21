@@ -35,9 +35,13 @@ async def upload_document(
         file: UploadFile = File(...),
         lang: Optional[str] = None,
         client_id: Optional[str] = None,
+        allow_duplicate: bool = False,
         db: Session = Depends(get_db)
 ):
-    """Upload document - processing happens in background"""
+    """Upload document - processing happens in background.
+
+    The same file (byte-for-byte) already uploaded by this organisation returns 409 with
+    the existing document, unless allow_duplicate=true ("Upload anyway")."""
 
     try:
         from app.core.language import get_request_language
@@ -59,6 +63,14 @@ async def upload_document(
 
         # Read file content first
         content = await file.read()
+
+        from app.services import duplicates
+        content_hash = duplicates.fingerprint(content)
+        existing = duplicates.find(db, get_current_tenant_id() or DEFAULT_TENANT_ID, content_hash)
+        if existing and not allow_duplicate:
+            raise HTTPException(status_code=409, detail={
+                "code": "duplicate", "existing": existing,
+                "message": f"This file is already uploaded as {existing['filename']}"})
 
         # Generate file path
         #storage_path = Path("storage/uploads")
@@ -89,6 +101,7 @@ async def upload_document(
         db.refresh(doc)
 
         doc_id = str(doc.id)
+        duplicates.remember(db, doc_id, content_hash)
 
         # Rename file to use actual doc ID
         final_file_path = storage_path / f"{doc_id}_{file.filename}"
@@ -99,6 +112,11 @@ async def upload_document(
         db.commit()
 
         logger.info(f"💾 File saved: {file.filename} ({len(content)} bytes)")
+        from app.core.audit import record as audit
+        from app.core.audit_middleware import _claims
+        audit("document.uploaded", actor=_claims(request).get("username") or "api-token", doc_id=doc_id,
+              detail=file.filename, ip=request.client.host if request.client else None,
+              extra={"file_size": len(content), "mime_type": file.content_type, "client_id": client_id})
 
         # Submit to bounded ingest pool — no unbounded thread creation
         _ingest_pool.submit(

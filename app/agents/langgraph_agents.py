@@ -1992,89 +1992,41 @@ def chunk_and_embed_node(state: DocumentState) -> Dict[str, Any]:
         doc_text = _re_chunk.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), doc_text)
         doc_text = _re_chunk.sub(r'/uni([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), doc_text)
 
-    # Split into logical sections (works for ALL file types)
-    sections = _split_into_sections(doc_text)
-    logger.info(f"📑 [ChunkNode] {len(sections)} sections detected")
-
-    # Sub-chunk each section, prefix every chunk with section context
-    chunk_records: List[tuple] = []  # (section_index, section_label, raw_chunk, md_chunk)
-    for sec_idx, sec_label, sec_text in sections:
-        sub_chunks = split_into_chunks(sec_text)
-        for sub in sub_chunks:
-            md = _build_context_chunk(sec_label, document_id, sub)
-            chunk_records.append((sec_idx, sec_label, sub, md))
-
-    logger.info(f"🧩 [ChunkNode] {len(chunk_records)} total chunks across {len(sections)} sections")
-    _t_after_split = time.perf_counter()
-    logger.info(f"⏱️ [ChunkNode] text-splitting done in {_t_after_split - _t0_chunk_total:.1f}s")
-
-    # Update stage: embedding
-    try:
-        from app.core.database import SessionLocal as _SL_emb
-        _db_emb = _SL_emb()
-        _db_emb.execute(
-            text("UPDATE documents SET processing_stage = 'embedding' WHERE id = :id"),
-            {"id": document_id}
-        )
-        _db_emb.commit()
-        _db_emb.close()
-    except Exception:
-        pass
-
-    # Embed the UNREDACTED text — preserves retrieval quality (entity names match queries)
-    _t0_embed = time.perf_counter()
-    texts_to_embed = [md for _, _, _, md in chunk_records]
-    embeddings = embedding_model.encode(texts_to_embed)
-    logger.info(f"⏱️ [ChunkNode] embedding {len(texts_to_embed)} chunks done in {time.perf_counter() - _t0_embed:.1f}s")
-
-    from app.core.pii_redactor import redact_text
+    # Page-accurate ingestion: every page read on its own (text layer or OCR), stored in
+    # document_pages, chunked within the page and embedded. Original text is stored; masking
+    # happens where data leaves the machine. See app/services/page_ingest.py.
+    from app.services import page_ingest
     from app.core.tenant import DEFAULT_TENANT_ID
-
     db = SessionLocal()
     try:
-        # Resolve tenant_id from the document row (ContextVar not available in background threads)
-        _doc_row = db.execute(
-            text("SELECT tenant_id FROM documents WHERE id = :id"),
-            {"id": document_id}
-        ).fetchone()
-        _tenant_id = (_doc_row.tenant_id if _doc_row and _doc_row.tenant_id else None) or DEFAULT_TENANT_ID
+        _row = db.execute(text("SELECT filename, file_path FROM documents WHERE id = :id"), {"id": document_id}).fetchone()
+        _filename = (_row.filename if _row else None) or state.get("filename") or "document"
+        _path = state.get("file_path") or (_row.file_path if _row else None)
+        try:
+            db.execute(text("UPDATE documents SET processing_stage = 'embedding' WHERE id = :id"), {"id": document_id})
+            db.commit()
+        except Exception:
+            db.rollback()
 
-        for i, ((sec_idx, sec_label, raw_chunk, md_chunk), chunk_embedding) in enumerate(
-            zip(chunk_records, embeddings)
-        ):
-            # Redact PII from the stored text — this is what the LLM sees at retrieval time.
-            # The embedding uses the original so similarity search still works correctly.
-            redacted_chunk = redact_text(md_chunk)
-
-            db.add(DocumentChunk(
-                document_id=document_id,
-                chunk_index=i,
-                chunk_text=redacted_chunk,
-                page_number=sec_idx,
-                chunk_metadata={"section_label": sec_label},  # raw_chunk excluded — never surfaced
-                embedding=chunk_embedding.tolist(),
-                tenant_id=_tenant_id
-            ))
-
-        _t0_dbwrite = time.perf_counter()
-        db.commit()
+        _dtype = ((state.get("classification") or {}).get("type") if isinstance(state.get("classification"), dict) else None) \
+            or db.execute(text("SELECT doc_type FROM documents WHERE id = :id"), {"id": document_id}).scalar()
+        stats = page_ingest.ingest(document_id, _path, _filename, fallback_text=doc_text,
+                                   embed=lambda xs, batch_size=32: embedding_model.encode(xs, batch_size=batch_size),
+                                   doc_type=_dtype)
+        chunk_records = [(r.page_number, f"page {r.page_number}", r.chunk_text, r.chunk_text) for r in db.execute(text(
+            "SELECT page_number, chunk_text FROM document_chunks WHERE document_id = :id ORDER BY chunk_index"),
+            {"id": document_id})]
+        logger.info(f"⏱️ [ChunkNode] {stats}")
 
         # Searchable-first: chunks are in, so the document can be searched now.
         # Summaries/insights/facts keep running and are filled in afterwards.
         if chunk_records:
             db.execute(text("""
-                UPDATE documents
-                   SET status = 'completed', processing_stage = 'enriching',
-                       raw_text = COALESCE(raw_text, :raw)
+                UPDATE documents SET status = 'completed', processing_stage = 'enriching'
                  WHERE id = :id AND status = 'processing'
-            """), {"id": document_id, "raw": redact_text(doc_text.replace("\x00", ""))})
+            """), {"id": document_id})
             db.commit()
             logger.info(f"🔎 Document {document_id} searchable — enrichment continues in background")
-        logger.info(
-            f"✅ Stored {len(chunk_records)} chunks for document {document_id} "
-            f"(DB write {time.perf_counter() - _t0_dbwrite:.1f}s, "
-            f"total chunk+embed {time.perf_counter() - _t0_chunk_total:.1f}s)"
-        )
 
         # Extract structured date metadata from all chunks and persist to doc_metadata
         all_text = "\n".join(raw for _, _, raw, _ in chunk_records)

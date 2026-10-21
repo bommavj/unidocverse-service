@@ -28,13 +28,16 @@ def _active_model() -> str:
     return app_config.model
 
 
-def _llm_extract(prompt: str, num_predict: int = 1200) -> Optional[Dict]:
-    """Call Mistral with a structured extraction prompt, return parsed JSON."""
+def _llm_extract(prompt: str, num_predict: int = 1200, upload: Optional[tuple] = None) -> Optional[Dict]:
+    """Structured extraction prompt → parsed JSON. `upload=(filename, doc_type)` lets the
+    organisation's cloud model do it when its policy allows that document type."""
     try:
-        resp = ollama.chat(
+        from app.core import llm
+        resp = llm.chat(
             model=_active_model(),
             messages=[{"role": "user", "content": prompt}],
             options={"num_predict": num_predict, "temperature": 0.0},
+            upload=upload,
         )
         raw = resp["message"]["content"].strip()
         raw = re.sub(r"```[a-z]*\s*", "", raw).strip("`").strip()
@@ -667,7 +670,7 @@ def _merge_transaction_facts(pages_facts: List[Dict]) -> Dict:
     return merged
 
 
-def extract_facts(doc_type: str, markdown_text: str) -> Optional[Dict]:
+def extract_facts(doc_type: str, markdown_text: str, filename: Optional[str] = None) -> Optional[Dict]:
     """
     Extract structured facts from document markdown.
     For transaction documents, processes each page separately and merges
@@ -693,7 +696,7 @@ def extract_facts(doc_type: str, markdown_text: str) -> Optional[Dict]:
     # Non-transaction docs — single pass on first 6000 chars
     text_snippet = markdown_text[:6000]
     prompt = prompt_template.replace("{text}", text_snippet)
-    facts = _llm_extract(prompt, num_predict=1200)
+    facts = _llm_extract(prompt, num_predict=1200, upload=(filename or "document", doc_type))
     if facts:
         facts["doc_type"] = doc_type
         facts = _clean_entity_fields(facts)
@@ -739,8 +742,44 @@ def _clean_entity_fields(facts: Dict) -> Dict:
 # Persistence
 # ---------------------------------------------------------------------------
 
+# Model output uses text for "no value" and for numbers; JSON queries need real nulls and numbers.
+# Same rules as udv_clean_facts() in migration V59 (which backfills existing rows).
+_FAKE_NULLS = {"null", "none", "n/a", "na", "", "unknown", "not found", "not available", "not provided", "-", "—"}
+_MONEY_KEY = re.compile(r"amount|total|balance|wage|tax|pay(?!_?(?:date|period|frequency|ee|er))|price|value|income|"
+                        r"withh|fee|cost|charge|gross|net|proceeds|basis|interest|dividend|compensation|ytd|escrow|"
+                        r"principal|deduction|premium|rent|salary|bonus|refund|due|credit|debit|limit", re.I)
+_ID_KEY = re.compile(r"number|_id$|^id$|ssn|ein|tin|zip|postal|account|routing|phone|last4|code|policy|receipt|"
+                     r"invoice_no|reference|year|date|period|name|address|percent|rate", re.I)
+_NUMERIC = re.compile(r"^\(?-?\$?\s*-?[\d,]+(\.\d+)?\)?$")
+
+
+def normalize_facts(value, key: str = ""):
+    """Fake-null strings → None at any depth; numeric text → number only for money keys
+    (identifiers such as invoice numbers, SSN last-4 and ZIPs keep their leading zeros)."""
+    if isinstance(value, dict):
+        return {k: normalize_facts(v, k) for k, v in value.items()}
+    if isinstance(value, list):
+        return [normalize_facts(v, key) for v in value]
+    if isinstance(value, str):
+        v = value.strip()
+        if v.lower() in _FAKE_NULLS:
+            return None
+        if key == "tax_year" and re.fullmatch(r"\d{4}", v):
+            return int(v)
+        if key and _MONEY_KEY.search(key) and not _ID_KEY.search(key) and _NUMERIC.match(v):
+            neg = v.startswith("(") or "-" in v
+            try:
+                n = float(re.sub(r"[^\d.]", "", v))
+                return -n if neg else n
+            except ValueError:
+                return v
+        return v
+    return value
+
+
 def store_facts(document_id: str, facts: Dict) -> bool:
     """Store extracted facts into documents.extracted_facts JSONB column."""
+    facts = normalize_facts(facts)
     db = SessionLocal()
     try:
         db.execute(
@@ -758,9 +797,9 @@ def store_facts(document_id: str, facts: Dict) -> bool:
         db.close()
 
 
-def extract_and_store(document_id: str, doc_type: str, markdown_text: str) -> bool:
+def extract_and_store(document_id: str, doc_type: str, markdown_text: str, filename: Optional[str] = None) -> bool:
     """Full pipeline: extract facts then persist. Returns True on success."""
-    facts = extract_facts(doc_type, markdown_text)
+    facts = extract_facts(doc_type, markdown_text, filename)
     if not facts:
         return False
     return store_facts(document_id, facts)

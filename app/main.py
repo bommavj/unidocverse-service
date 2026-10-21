@@ -165,6 +165,12 @@ async def lifespan(app: FastAPI):
     from app.services.job_worker import start_background_worker
     start_background_worker()
     logger.info("✅ Document job queue worker started")
+    from app.services.webhooks import start_sender
+    start_sender()
+    from app.services.audit_retention import start_scheduler
+    start_scheduler()
+    from app.services.duplicates import start_backfill
+    start_backfill()
 
     logger.info("✅ Server ready at http://localhost:7979")
 
@@ -210,6 +216,9 @@ app.add_middleware(GZipExceptEventStream, minimum_size=1000)
 # Tenant isolation — extracts tenant_id from JWT/header, stores in context
 from app.core.tenant import TenantMiddleware
 app.add_middleware(TenantMiddleware)
+# Every create / update / delete through the API is written to audit_log
+from app.core.audit_middleware import AuditMiddleware
+app.add_middleware(AuditMiddleware)
 
 # ── Global rate limit middleware (sliding window, in-process) ─────────────────
 import time as _time
@@ -251,6 +260,8 @@ async def rate_limit_middleware(request: Request, call_next):
 
 _protected = {"dependencies": [Depends(_auth_required)]}
 
+from app.api.brief_router import router as brief_router
+app.include_router(brief_router)
 app.include_router(auth_router.router)           # public — has own auth logic
 app.include_router(chatbot_router)               # public — token-based auth per endpoint
 app.include_router(documents.router,             **_protected)
@@ -272,6 +283,15 @@ app.include_router(whatsapp_qr_router,           **_protected)
 app.include_router(clients_router.router,        **_protected)
 app.include_router(policies_router.router,       **_protected)
 app.include_router(features_router.router,       **_protected)
+from app.api import llm_providers_router
+app.include_router(llm_providers_router.router,  **_protected)
+from app.api import webhooks_router, quickbooks_router, salesforce_router, integration_sends_router
+app.include_router(webhooks_router.router,        **_protected)
+app.include_router(quickbooks_router.router,      **_protected)
+app.include_router(quickbooks_router.public_router)   # OAuth callback: authenticated by its state token
+app.include_router(salesforce_router.router,      **_protected)
+app.include_router(integration_sends_router.router, **_protected)
+app.include_router(salesforce_router.public_router)   # OAuth callback: authenticated by its state token
 app.include_router(agency_router.router,         **_protected)
 app.include_router(agent_reports_router.router,  **_protected)
 app.include_router(commission_router.router,     **_protected)
@@ -423,20 +443,6 @@ async def upload_batch(files: list[UploadFile] = File(...)):
         "total": len(file_data),
         "poll_url": f"/api/upload/jobs/{job_id}",
     }
-
-
-@app.post("/api/upload")
-async def upload_document(file: UploadFile = File(...)):
-    file_bytes = await file.read()
-    loop   = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        _UPLOAD_EXECUTOR,
-        _process_single_upload,
-        file_bytes, file.filename, file.content_type
-    )
-    if result.get("status") == "error":
-        raise HTTPException(status_code=500, detail=result["error"])
-    return result
 
 
 # ── Chatbot pages (before Angular catch-all) ─────────────────────────────────

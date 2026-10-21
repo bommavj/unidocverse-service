@@ -95,8 +95,11 @@ async def _run_immigration_scan():
         db.close()
 
 
-async def _run_single_agent(sid: str, agent_type: str, task_name: str):
-    """Run one domain agent in its own DB session and update last_run_at."""
+async def _run_single_agent(sid: str, agent_type: str, task_name: str, tenant_id: str = None):
+    """Run one domain agent for one organisation in its own DB session and update last_run_at."""
+    if tenant_id:
+        from app.core.tenant import set_current_tenant_id
+        set_current_tenant_id(tenant_id)
     from sqlalchemy import text
     from app.core.database import SessionLocal
     from app.services.domain_agents.registry import get_agent_class
@@ -157,14 +160,30 @@ async def domain_agent_scheduler():
             if not due:
                 continue
 
-            logger.info(f"🚀 [Scheduler] Firing {len(due)} domain agents concurrently")
-            await asyncio.gather(*[
-                _run_single_agent(sid, agent_type, task_name)
-                for sid, agent_type, task_name in due
-            ])
+            # Each organisation gets the reports for the modules it has switched on — nothing else
+            from app.api.features_router import enabled_domains
+            db = SessionLocal()
+            try:
+                tenants = [r[0] for r in db.execute(text("SELECT id::text FROM tenants WHERE is_active"))]
+                jobs = [(sid, agent_type, task_name, tid) for tid in tenants
+                        for sid, agent_type, task_name in due if agent_type in enabled_domains(db, tid)]
+            finally:
+                db.close()
+            logger.info(f"🚀 [Scheduler] Firing {len(jobs)} domain reports across {len(tenants)} organisations")
+            await asyncio.gather(*[_run_single_agent(*job) for job in jobs])
 
         except Exception as e:
             logger.error(f"❌ [domain_agent_scheduler] error: {e}")
+
+
+async def daily_morning_brief():
+    """Builds and delivers every organisation's brief once a day at 07:00."""
+    while True:
+        await asyncio.sleep(60)
+        now = datetime.now()
+        if now.hour == 7 and now.minute == 0:
+            from app.services.morning_brief import build_all
+            await asyncio.to_thread(build_all)
 
 
 def start(loop=None):
@@ -172,4 +191,5 @@ def start(loop=None):
     asyncio.create_task(daily_renewal_notifier())
     asyncio.create_task(daily_immigration_scanner())
     asyncio.create_task(domain_agent_scheduler())
+    asyncio.create_task(daily_morning_brief())
     logger.info("✅ Schedulers started")

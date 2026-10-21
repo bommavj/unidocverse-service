@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import bcrypt
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
 from pydantic import BaseModel
@@ -207,7 +207,7 @@ def revoke_api_token(token_id: str, current_user: dict = Depends(_session_user),
 # Endpoints
 # ---------------------------------------------------------------------------
 @router.post("/login")
-def login(req: LoginRequest, db: Session = Depends(get_db)):
+def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
     # return {
     #     "access_token": "abc",
     #     "refresh_token": "xyz",
@@ -225,10 +225,20 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
         FROM users WHERE username = :username
     """), {"username": req.username.lower().strip()}).fetchone()
 
-    if not user or not user.is_active:
+    from app.core.audit import record as audit
+    ip = request.client.host if request.client else None
+    tried = req.username.lower().strip()[:100]
+    if not user or not user.is_active or not _verify_password(req.password, user.password_hash):
+        # The username tried is recorded (never the password) so repeated attempts are visible
+        reason = "unknown user" if not user else ("inactive account" if not user.is_active else "wrong password")
+        audit("auth.login_failed", actor="anonymous", detail=f"Sign-in failed for '{tried}'", ip=ip,
+              extra={"username": tried, "reason": reason,
+                     "user_agent": request.headers.get("user-agent", "")[:200]},
+              tenant_id=str(user.tenant_id) if user and user.tenant_id else None)
         raise HTTPException(status_code=401, detail="Invalid username or password")
-    if not _verify_password(req.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid username or password")
+    audit("auth.login", actor=user.username, detail="Signed in", ip=ip,
+          extra={"role": user.role, "user_agent": request.headers.get("user-agent", "")[:200]},
+          tenant_id=str(user.tenant_id) if user.tenant_id else None)
 
     db.execute(text("UPDATE users SET last_login = NOW() WHERE id = :id"), {"id": user.id})
     db.commit()
@@ -247,6 +257,15 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
             "language":     user.language,
         }
     }
+
+@router.post("/logout")
+def logout(request: Request, current_user: dict = Depends(get_current_user)):
+    """Tokens are stateless; this records the sign-out in the audit trail."""
+    from app.core.audit import record as audit
+    audit("auth.logout", actor=current_user["username"], detail="Signed out",
+          ip=request.client.host if request.client else None)
+    return {"success": True}
+
 
 @router.post("/refresh")
 def refresh_token(credentials: HTTPAuthorizationCredentials = Depends(security)):

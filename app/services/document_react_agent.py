@@ -18,10 +18,11 @@ import time
 import urllib.request
 import urllib.parse
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import ollama
+from app.core import llm
 import yaml
 
 from app.core.database import SessionLocal
@@ -871,7 +872,7 @@ def _decompose_query(question: str) -> List[str]:
         return [question]
 
     try:
-        resp = ollama.chat(
+        resp = llm.chat(
             model=_active_model(),
             messages=[{"role": "user", "content": _DECOMPOSE_PROMPT.replace("{question}", question)}],
             options={"num_ctx": NUM_CTX, "num_predict": 200, "temperature": 0.0},
@@ -1123,7 +1124,7 @@ def reason_question(question: str) -> Dict:
     examples = _select_examples(question, n=8)
     prompt = REASONER_PROMPT_TEMPLATE.replace("{examples}", examples).replace("{question}", question)
     try:
-        resp = ollama.chat(
+        resp = llm.chat(
             model=_active_model(),
             messages=[{"role": "user", "content": prompt}],
             options={"num_ctx": NUM_CTX, "num_predict": 800, "temperature": 0.0},
@@ -1623,6 +1624,43 @@ def _has_number(num: str, body: str) -> bool:
     return re.search(r"(?<![\d.])-?" + re.escape(num.lstrip("-")) + r"(?![\d])", body) is not None
 
 
+def _derived(missing: List[str], answer: str, source: str) -> Dict[str, str]:
+    """Figures the answer computed from figures that ARE in the source: a difference, a sum,
+    or a percentage of two of them (e.g. a year-over-year change). Returns {figure: how}."""
+    def val(x):
+        try:
+            return float(_digits(x))
+        except ValueError:
+            return None
+    found = []
+    for raw in dict.fromkeys(_NUMBER_RE.findall(_strip_citations(answer))):
+        n = _digits(raw)
+        v = val(raw)
+        if v is not None and len(n.replace("-", "").replace(".", "")) >= 2 and _has_number(n, source):
+            found.append((raw.strip(), v))
+    found = found[:25]
+    out: Dict[str, str] = {}
+    for m in missing:
+        target = val(m)
+        if target is None:
+            continue
+        tol = max(0.011, abs(target) * 0.0005)
+        for i, (ra, a) in enumerate(found):
+            for rb, b in found[i + 1:]:
+                for how, v in ((f"{ra} − {rb}", a - b), (f"{rb} − {ra}", b - a), (f"{ra} + {rb}", a + b),
+                               (f"{ra} ÷ {rb}", a / b * 100 if b else None), (f"{rb} ÷ {ra}", b / a * 100 if a else None),
+                               (f"change {rb} → {ra}", (a - b) / b * 100 if b else None),
+                               (f"change {ra} → {rb}", (b - a) / a * 100 if a else None)):
+                    if v is not None and abs(abs(v) - abs(target)) <= (tol if "÷" not in how and "change" not in how else 0.06):
+                        out[m] = how
+                        break
+                if m in out:
+                    break
+            if m in out:
+                break
+    return out
+
+
 def _grounding_note(answer: str, context: str) -> str:
     """Empty when every figure in the answer appears in the source text."""
     if not answer or answer.startswith("Error generating answer"):
@@ -1638,13 +1676,182 @@ def _grounding_note(answer: str, context: str) -> str:
             continue
         if not _has_number(num, source):
             missing.append(raw.strip())
+    calculated = []
     if missing:
-        return ("\n\n---\n⚠️ *Check these values — they don't appear in the source documents: "
-                + ", ".join(missing[:5]) + "*")
-    return _citation_check(answer, context)
+        calc = _derived(missing, answer, source)
+        calculated = [f"{m} = {how}" for m, how in calc.items()]
+        missing = [m for m in missing if m not in calc]
+    note = ("\n\n---\n🧮 *Calculated from figures in the document: " + "; ".join(calculated[:4]) + "*") if calculated else ""
+    if missing:
+        return note + ("\n\n---\n⚠️ *Check these values — they don't appear in the source documents: "
+                       + ", ".join(missing[:5]) + "*")
+    return note + _citation_check(answer, context)
 
 
 _DOC_HEADER_RE = re.compile(r"^\[([^\]\n]+)\]:?\s*$|^\[([^\]\n]+)\]:", re.M)
+
+
+def _figures(text: str) -> set:
+    return {n for n in (_digits(x) for x in _NUMBER_RE.findall(_strip_citations(text)))
+            if len(n.replace("-", "").replace(".", "")) >= 2}
+
+
+def _cascade_answer(prompt: str, num_predict: int, sources, context: str, question: str = "") -> Tuple[str, str]:
+    """
+    Final answer, returning (answer, note).
+
+    No cloud model active → one local call, as before.
+    Cloud model active (cascade): the local model answers first; if its answer passes the
+    source check (every figure appears in the documents, and it isn't "not found") it is
+    used and nothing leaves the machine. Otherwise the question escalates to the cloud
+    model — consent, never-send types, masking and budget still apply — and the cloud
+    answer is verified against the source, with any disagreement with the local answer shown.
+    Each cascade decision is logged locally (llm_cascade_outcomes) as labelled data.
+    """
+    msgs = [{"role": "user", "content": prompt}]
+    opts = {"num_ctx": NUM_CTX, "num_predict": num_predict, "temperature": 0.10}
+    docs = sorted(sources)
+
+    def run(cloud: bool) -> str:
+        r = llm.chat(model=_active_model(), messages=msgs, options=opts, cloud=cloud, documents=docs)
+        logger.info(f"Synthesis ({llm.last_route()[0]}): prompt={r.get('prompt_eval_count')} tok, "
+                    f"answer={r.get('eval_count')} tok, stop={r.get('done_reason')}")
+        return _decode_llm_text(r["message"]["content"].strip())
+
+    if not llm.active_provider() or llm.decision() == "local":
+        a = run(False)
+        return a, _grounding_note(a, context)
+    if llm.decision() == "ok" or not llm.policy().get("cascade_local_first", True):
+        a = run(True)
+        note = _verify_note(a, context, None)
+        llm.log_cascade(question, docs, "cloud" if llm.last_route()[0] == "cloud" else "local",
+                        local_reason="skipped", escalated=True, cloud_answer=a,
+                        cloud_verified=_verified(a, context))
+        return a, note
+
+    local = run(False)
+    reason = _local_reason(local, context)
+    if reason == "not_found" and not _documents_cover(question, context):
+        # The search only found loosely related documents. A cloud model reading the same
+        # documents can't find what isn't there, so nothing is sent — say so instead.
+        missing = _distinctive_terms(question)
+        llm.log_cascade(question, docs, "local", local_answer=local, local_passed=False, local_reason="not_covered")
+        return local, (f"\n\n---\n*None of the documents searched mention {', '.join(missing[:3])}. "
+                       "Nothing was sent to the cloud. Upload the document that covers this and ask again.*"
+                       if missing else "\n\n---\n*The documents searched don't cover this. Nothing was sent to the cloud.*")
+    if reason in ("verified", "no_figures"):
+        llm.log_cascade(question, docs, "local", local_answer=local, local_passed=True, local_reason=reason)
+        return local, ("\n\n---\n✓ *Answered by the local model and checked against the source — nothing was sent "
+                       "to the cloud.*" if reason == "verified" else
+                       "\n\n---\n✓ *Answered by the local model — nothing was sent to the cloud.*")
+    logger.info(f"Cascade: local answer {reason} — escalating to the cloud model")
+    try:
+        a = run(True)
+    except llm.CloudConsentRequired as c:
+        llm.log_cascade(question, docs, "consent_requested", local_answer=local, local_passed=False,
+                        local_reason=reason, escalated=True)
+        # Keep what's done: the user's choice then runs only the final step
+        c.resume = llm.park({"prompt": prompt, "num_predict": num_predict, "sources": docs, "context": context,
+                             "question": question, "local": local, "local_reason": reason})
+        raise
+    differ = sorted(_figures(local) - _figures(a)) if reason == "ungrounded" else []
+    llm.log_cascade(question, docs, "cloud" if llm.last_route()[0] == "cloud" else "local",
+                    local_answer=local, local_passed=False, local_reason=reason, escalated=True,
+                    cloud_answer=a, cloud_verified=_verified(a, context), disagreement=differ or None)
+    return a, _verify_note(a, context, local)
+
+
+_COMMON = set("""what which when where who whom whose why how does did do is are was were the this that these those
+and or for from with into onto about over under between show list give tell find total amount amounts much many my our
+your their his her its all any each every per year years month months date dates payment payments document documents
+file files report reports page pages summary detail details please number numbers value values cities counties""".split())
+
+
+def _distinctive_terms(question: str) -> List[str]:
+    """Words in the question that a relevant document must contain: names, codes and
+    hyphenated terms first (Bradley-Burns, I-797, W-2), then other uncommon words."""
+    toks = re.findall(r"[A-Za-z0-9][A-Za-z0-9'\-]*[A-Za-z0-9]", question or "")
+    strong = [t for t in toks if "-" in t or (re.search(r"\d", t) and re.search(r"[A-Za-z]", t))]
+    if strong:
+        return list(dict.fromkeys(strong))
+    words = [t for t in toks if len(t) >= 4 and t.lower() not in _COMMON]
+    return list(dict.fromkeys(words))
+
+
+def _documents_cover(question: str, context: str) -> bool:
+    """Do the retrieved excerpts mention what the question is about? Hyphenated / coded
+    terms must appear (allowing a space for the hyphen); otherwise at least half the
+    uncommon words must."""
+    terms = _distinctive_terms(question)
+    if not terms:
+        return True
+    low = (context or "").lower()
+    def has(t: str) -> bool:
+        t = t.lower()
+        return t in low or t.replace("-", " ") in low or t.replace("-", "") in low
+    if any("-" in t or re.search(r"\d", t) for t in terms):
+        return any(has(t) for t in terms)
+    return sum(has(t) for t in terms) * 2 >= len(terms)
+
+
+def finish_parked(p: Dict[str, Any], use_cloud: bool) -> Tuple[str, str, List[str]]:
+    """Complete a question parked at the consent step: (answer, note, sources).
+    Cloud: one cloud call with the same prompt, verified against the same passages.
+    Local: the local answer already written, with its source check."""
+    if not use_cloud:
+        return p["local"], _grounding_note(p["local"], p["context"]), p["sources"]
+    r = llm.chat(model=_active_model(), messages=[{"role": "user", "content": p["prompt"]}],
+                 options={"num_ctx": NUM_CTX, "num_predict": p["num_predict"], "temperature": 0.10},
+                 cloud=True, documents=p["sources"])
+    a = _decode_llm_text(r["message"]["content"].strip())
+    differ = sorted(_figures(p["local"]) - _figures(a)) if p.get("local_reason") == "ungrounded" else []
+    llm.log_cascade(p["question"], p["sources"], "cloud" if llm.last_route()[0] == "cloud" else "local",
+                    local_answer=p["local"], local_passed=False, local_reason=p.get("local_reason"), escalated=True,
+                    cloud_answer=a, cloud_verified=_verified(a, p["context"]), disagreement=differ or None)
+    return a, _verify_note(a, p["context"], p["local"]), p["sources"]
+
+
+def _parts_block(question: str) -> str:
+    """Conquer: a numbered checklist of the question's parts, so each one is answered."""
+    try:
+        from app.services.hybrid_search import question_parts
+        parts = question_parts(question)
+    except Exception:
+        return ""
+    if len(parts) < 2:
+        return ""
+    return ("\nThis question has " + str(len(parts)) + " parts. Answer EACH part under its own number, "
+            "with the exact figure and its [filename]; write [NOT FOUND] only for a part the excerpts don't cover:\n"
+            + "\n".join(f"{i}. {p}" for i, p in enumerate(parts, 1)))
+
+
+def _local_reason(answer: str, context: str) -> str:
+    """verified | no_figures | not_found | ungrounded — the label a decision model would learn."""
+    if _NOT_FOUND_RE.search(answer):
+        return "not_found"
+    if _grounding_note(answer, context):
+        return "ungrounded"
+    return "verified" if _figures(answer) else "no_figures"
+
+
+def _verified(answer: str, context: str) -> bool:
+    return bool(_figures(answer)) and not _grounding_note(answer, context)
+
+
+def _verify_note(answer: str, context: str, local_answer: Optional[str]) -> str:
+    route, label = llm.last_route()
+    note = _grounding_note(answer, context)
+    if not note and route == "cloud":
+        note = (f"\n\n---\n✓ *Answered by {label}. Every figure in this answer appears in the source.*"
+                if _figures(answer) else f"\n\n---\n*Answered by {label}.*")
+    elif route == "cloud":
+        note = f"\n\n---\n*Answered by {label}.*" + note.replace("\n\n---\n", "\n\n", 1)
+    if local_answer and not _NOT_FOUND_RE.search(local_answer):
+        differ = sorted(_figures(local_answer) - _figures(answer))
+        if differ and _figures(answer):
+            note += (f"\n\n⚖️ *The local model gave different figures ({', '.join(differ[:4])}), which don't match "
+                     f"the source; the answer above was checked against the documents.*")
+    return note
 
 
 def _citation_check(answer: str, context: str) -> str:
@@ -2114,7 +2321,7 @@ Document excerpts:
 {context}
 
 Answer:"""
-        resp = ollama.chat(
+        resp = llm.chat(
             model=_active_model(),
             messages=[{"role": "user", "content": prompt}],
             options={"num_ctx": NUM_CTX, "num_predict": 2400 if is_traversal else 500, "temperature": 0.1},
@@ -2413,9 +2620,11 @@ def _format_instruction(question: str) -> tuple:
             "If a page has no notable content write 'No significant content.'",
             2400
         )
-    if any(w in q for w in ("table", "tabular", "grid", "spreadsheet")):
+    # "as a table" asks for a table; "Table 2" names one in the document
+    if re.search(r"\b(as|in|into|make|show|give)\s+(me\s+)?(a\s+)?table\b|\btabular\b|\bgrid\b|\bspreadsheet\b", q):
         return (
-            "FORMAT: Output a markdown table with | col | col | headers and --- separators. "
+            "FORMAT: Output a markdown table whose header row names the real columns "
+            "(for example | Item | FY 2023-24 | FY 2022-23 |), then a --- separator row. "
             "One row per document or period. Include all numeric values.", 1100
         )
     if any(w in q for w in ("json", "object", "dict", "key value", "key-value")):
@@ -2780,18 +2989,13 @@ Research intent: {reasoning}
 {context}
 --- END EXCERPTS ---
 
-Question (answer this exactly): {question}
+Question (answer this exactly): {question}{_parts_block(question)}
 Answer ({"cite [filename] once after the list" if "EVERY entry" in format_str else "cite [filename] for every fact"}, write [NOT FOUND] for missing data):"""
 
     try:
-        resp = ollama.chat(
-            model=_active_model(),
-            messages=[{"role": "user", "content": prompt}],
-            options={"num_ctx": NUM_CTX, "num_predict": num_predict, "temperature": 0.10},
-        )
-        logger.info(f"Synthesis: prompt={resp.get('prompt_eval_count')} tok, "
-                    f"answer={resp.get('eval_count')} tok, stop={resp.get('done_reason')}")
-        answer = _decode_llm_text(resp["message"]["content"].strip())
+        answer, verify_note = _cascade_answer(prompt, num_predict, sources, context, question)
+        if "*None of the documents searched mention" in verify_note or "don't cover this" in verify_note:
+            sources = set()
         answer = re.sub(r"(?m)^[ \t]*[*\-•][ \t]*\n", "", answer)   # empty bullets the model emits between items
         # Non-streamed answer can be corrected in place: a figure cited to the wrong
         # document gets the right citation, and Sources lists only that document.
@@ -2799,11 +3003,14 @@ Answer ({"cite [filename] once after the list" if "EVERY entry" in format_str el
         if fix:
             answer = answer.replace(fix[0], fix[1])
             sources = {fix[1]}
-        else:
-            answer += _grounding_note(answer, context)
+        answer += verify_note
+    except llm.CloudConsentRequired:
+        raise
     except Exception as e:
         answer = f"Error generating answer: {e}"
 
+    for note in llm.request_notes():
+        answer += f"\n\n🔒 *{note}*"
     return {"answer": answer, "sources": sorted(sources)}
 
 
@@ -3028,7 +3235,7 @@ def _llm_resolve_columns(question: str, header: List[str], sample_row: Dict) -> 
         '"viz_type": "bar|line|pie|horizontalBar"}'
     )
     try:
-        resp = ollama.chat(
+        resp = llm.chat(
             model=_active_model(),
             messages=[{"role": "user", "content": prompt}],
             options={"num_ctx": NUM_CTX, "num_predict": 120, "temperature": 0.0},
@@ -3549,11 +3756,30 @@ Question: {question}
 {context}
 --- END EXCERPTS ---
 
-Question (answer this exactly): {question}
+Question (answer this exactly): {question}{_parts_block(question)}
 Answer:"""
 
+    if llm.active_provider():
+        # Cascade needs the whole local answer before deciding, so it isn't token-streamed
+        try:
+            answer, verify_note = _cascade_answer(prompt, num_predict, sources, context, question)
+            if "*None of the documents searched mention" in verify_note or "don't cover this" in verify_note:
+                sources = set()
+        except llm.CloudConsentRequired:
+            raise
+        except Exception as e:
+            answer, verify_note = f"Error generating answer: {e}", ""
+        for i in range(0, len(answer), 40):
+            yield ("token", answer[i:i + 40])
+        if verify_note:
+            yield ("token", verify_note)
+        for n in llm.request_notes():
+            yield ("token", f"\n\n🔒 *{n}*")
+        yield ("sources", sorted(sources))
+        return
+
     try:
-        stream = ollama.chat(
+        stream = llm.chat(
             model=_active_model(),
             messages=[{"role": "user", "content": prompt}],
             options={"num_ctx": NUM_CTX, "num_predict": num_predict, "temperature": 0.10},
@@ -3568,6 +3794,10 @@ Answer:"""
         note = _grounding_note("".join(answer_parts), context)
         if note:
             yield ("token", note)
+        for n in llm.request_notes():
+            yield ("token", f"\n\n🔒 *{n}*")
+    except llm.CloudConsentRequired:
+        raise
     except Exception as e:
         yield ("token", f"Error generating answer: {e}")
 
@@ -4249,7 +4479,7 @@ def run_research_agent(
             f"6. IMPORTANT: cover every ## Page N heading — do not stop early.\n\n"
             f"Document excerpts (ordered by page):\n{context}\n\nPage-by-page breakdown:"
         )
-        resp = ollama.chat(
+        resp = llm.chat(
             model=_active_model(),
             messages=[{"role": "user", "content": prompt}],
             options={"num_ctx": NUM_CTX, "num_predict": 2400, "temperature": 0.05},

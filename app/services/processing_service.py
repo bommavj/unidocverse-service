@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.models.document import Document
@@ -94,6 +95,10 @@ def sanitize_metadata_strings(obj):
     return obj
 
 
+def _has_pages_table(db) -> bool:
+    return bool(db.execute(text("SELECT to_regclass('public.document_pages')")).scalar())
+
+
 class ProcessingService:
 
     @staticmethod
@@ -105,6 +110,19 @@ class ProcessingService:
         import uuid
         from sqlalchemy import text
         from app.core.database import SessionLocal
+
+        # Automatic imports (watch folders, batch, chatbot) skip a file this organisation already has
+        from app.services import duplicates
+        content_hash = duplicates.fingerprint(file_bytes)
+        _db = SessionLocal()
+        try:
+            existing = duplicates.find(_db, get_current_tenant_id() or DEFAULT_TENANT_ID, content_hash)
+        finally:
+            _db.close()
+        if existing:
+            logger.info(f"⏭ Skipped duplicate upload {filename} — same file as {existing['filename']}")
+            return {"status": "duplicate", "document_id": existing["id"], "filename": filename,
+                    "existing": existing}
 
         doc_id = str(uuid.uuid4())
         upload_dir = Path.home() / "Library/Application Support/UniDocVerse/storage/uploads"
@@ -129,6 +147,7 @@ class ProcessingService:
                 "tenant_id": get_current_tenant_id() or DEFAULT_TENANT_ID,
             })
             db.commit()
+            duplicates.remember(db, doc_id, content_hash)
         finally:
             db.close()
 
@@ -156,6 +175,11 @@ class ProcessingService:
             logger.info(f"🔄 [Background] Starting: {filename}")
 
             doc = db.query(Document).filter(Document.id == doc_id).first()
+            if doc and doc.tenant_id:
+                # Background threads don't inherit the request's tenant; model calls (and any
+                # cloud provider) must use this document's own organisation
+                from app.core.tenant import set_current_tenant_id
+                set_current_tenant_id(str(doc.tenant_id))
             if not doc:
                 logger.error(f"❌ Document not found: {doc_id}")
                 return
@@ -224,9 +248,33 @@ class ProcessingService:
             if doc.raw_text:
                 try:
                     from app.services.facts_extractor import extract_and_store
-                    extract_and_store(str(doc.id), doc.doc_type or "general", doc.raw_text)
+                    if extract_and_store(str(doc.id), doc.doc_type or "general", doc.raw_text, doc.filename):
+                        # extracted_facts isn't mapped on the Document model — read the stored JSON
+                        facts = db.execute(text("SELECT extracted_facts FROM documents WHERE id = :d"),
+                                           {"d": str(doc.id)}).scalar()
+                        from app.services import webhooks
+                        webhooks.emit("document.facts_extracted", {
+                            "document_id": str(doc.id), "filename": doc.filename, "doc_type": doc.doc_type,
+                            "facts": facts}, str(doc.tenant_id) if doc.tenant_id else None)
                 except Exception as facts_err:
                     logger.warning(f"⚠ [Facts] Non-fatal: {facts_err}")
+
+            from app.core.audit import record as audit
+            has_facts = db.execute(text("SELECT extracted_facts IS NOT NULL FROM documents WHERE id = :d"),
+                                   {"d": str(doc.id)}).scalar()
+            audit("document.processed", doc_id=str(doc.id), detail=doc.filename,
+                  extra={"doc_type": doc.doc_type, "status": doc.status, "has_facts": bool(has_facts)},
+                  tenant_id=str(doc.tenant_id) if doc.tenant_id else None)
+
+            # Outbound webhooks (Zapier, Make, n8n, the customer's own systems)
+            try:
+                from app.services import webhooks
+                webhooks.emit("document.processed", {
+                    "document_id": str(doc.id), "filename": doc.filename, "doc_type": doc.doc_type,
+                    "status": doc.status, "summary": (doc.summary or "")[:1000]},
+                    str(doc.tenant_id) if doc.tenant_id else None)
+            except Exception as wh_err:
+                logger.warning(f"⚠ [Webhooks] Non-fatal: {wh_err}")
 
             # Post-processing hooks (AMS workflow, agents, etc.)
             try:
@@ -299,10 +347,14 @@ class ProcessingService:
         raw_text = _clean(final_state.get("cleaned_text") or final_state.get("raw_text", ""))
         summary = _clean(final_state.get("summary", ""))
 
-        if raw_text:
-            doc.raw_text = redact_text(raw_text)
+        # Original text is kept (masking happens where data leaves the machine). When the
+        # page-accurate ingest already stored page-marked text, it stays.
+        has_pages = db.execute(text("SELECT 1 FROM document_pages WHERE document_id = :id LIMIT 1"),
+                               {"id": str(doc.id)}).fetchone() if _has_pages_table(db) else None
+        if raw_text and not has_pages:
+            doc.raw_text = raw_text
         if summary:
-            doc.summary = redact_text(summary)
+            doc.summary = summary
 
         # Classification → doc_type
         classification = final_state.get("classification") or {}

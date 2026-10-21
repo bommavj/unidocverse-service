@@ -34,6 +34,7 @@ from functools import lru_cache
 from typing import Dict, List, Literal, Optional, Set, Tuple
 
 import ollama
+from app.core import llm
 
 from app.core import config as app_config
 from app.core.database import SessionLocal
@@ -247,7 +248,7 @@ Rules:
 Example: ["banking"] or ["payroll", "insurance"]"""
 
     try:
-        resp = ollama.chat(
+        resp = llm.chat(
             model=app_config.model,
             messages=[{"role": "user", "content": prompt}],
             options={"num_predict": 50, "temperature": 0.0},

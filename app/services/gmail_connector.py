@@ -313,6 +313,10 @@ class GmailPoller:
                 files=[("file", (filename, content.encode("utf-8"), "text/plain"))],
                 timeout=60,
             )
+            if resp.status_code == 409:      # same email body already imported
+                existing = (resp.json().get("detail") or {}).get("existing") or {}
+                logger.info(f"    ⏭ Already imported as {existing.get('filename')} — skipped")
+                return existing.get("id")
             resp.raise_for_status()
             data   = resp.json()
             doc_id = data.get("id") or data.get("document_id")

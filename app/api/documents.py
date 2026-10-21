@@ -377,14 +377,36 @@ async def get_document_status(
 
 
 # ✅ NEW: Delete all documents
+def _t() -> str:
+    from app.core.tenant import get_current_tenant_id, DEFAULT_TENANT_ID
+    return str(get_current_tenant_id() or DEFAULT_TENANT_ID)
+
+
+def _doc_snapshot(doc, chunks: int = 0) -> dict:
+    """What was deleted — kept in the audit log after the document is gone."""
+    return {"filename": doc.filename, "doc_type": doc.doc_type, "file_size": doc.file_size,
+            "mime_type": doc.mime_type, "status": doc.status,
+            "uploaded_at": str(doc.uploaded_at or doc.created_at), "client_id": str(doc.client_id) if doc.client_id else None,
+            "file_removed": bool(doc.file_path), "chunks_removed": chunks}
+
+
+def _audit_delete(db: Session, doc_id: str, snapshot: dict, user: dict, action: str = "document.deleted") -> None:
+    try:
+        from app.api.audit_router import log_event
+        log_event(db, doc_id, action, actor=(user or {}).get("username") or "unknown",
+                  detail=snapshot.get("filename", ""), extra=snapshot)
+    except Exception as e:
+        logger.error(f"❌ Audit write failed for {action} {doc_id}: {e}")
+
+
 @router.delete("/all")
 async def delete_all_documents(
         confirm: bool = Query(False, description="Must be true to delete all"),
         db: Session = Depends(get_db),
-        _: dict = Depends(require_admin)
+        user: dict = Depends(require_admin)
 ):
     """
-    Delete ALL documents (requires confirmation).
+    Delete ALL of this organisation's documents (requires confirmation).
 
     Cleanup order:
       1. Files from disk
@@ -402,8 +424,11 @@ async def delete_all_documents(
         )
 
     try:
-        documents = db.query(Document).all()
+        tid = _t()
+        documents = db.query(Document).filter(Document.tenant_id == tid).all()
         count = len(documents)
+        ids = [str(d.id) for d in documents]
+        snapshots = [{"id": str(d.id), **_doc_snapshot(d)} for d in documents]
 
         if count == 0:
             return {
@@ -422,20 +447,25 @@ async def delete_all_documents(
                     logger.warning(f"⚠️ Could not delete file {doc.file_path}: {e}")
 
         # ── 2. Delete notifications (no FK constraint) ────────────────
-        deleted_notifs = db.execute(text("DELETE FROM notifications")).rowcount
+        deleted_notifs = db.execute(text("DELETE FROM notifications WHERE doc_id::text = ANY(:ids)"),
+                                    {"ids": ids}).rowcount
         if deleted_notifs:
             logger.info(f"🗑️ Deleted {deleted_notifs} notifications")
 
-        # ── 3. Delete all chunks explicitly ───────────────────────────
-        deleted_chunks = db.query(DocumentChunk).delete(synchronize_session=False)
+        # ── 3. Delete this organisation's chunks ──────────────────────
+        deleted_chunks = (db.query(DocumentChunk).filter(DocumentChunk.document_id.in_(ids))
+                          .delete(synchronize_session=False))
         if deleted_chunks:
             logger.info(f"🗑️ Deleted {deleted_chunks} chunks")
 
         # ── 4. activity_log.document_id → SET NULL (DB handles it) ────
 
         # ── 5. Delete all document rows ───────────────────────────────
-        db.query(Document).delete(synchronize_session=False)
+        db.query(Document).filter(Document.tenant_id == tid).delete(synchronize_session=False)
         db.commit()
+        _audit_delete(db, None, {"filename": f"{count} documents", "documents": snapshots,
+                                 "files_removed": deleted_files, "chunks_removed": deleted_chunks},
+                      user, action="document.deleted_all")
 
         logger.warning(f"✅ Deleted {count} documents and {deleted_files} files")
 
@@ -456,10 +486,10 @@ async def delete_all_documents(
 async def delete_selected_docs(
         payload: dict,
         db: Session = Depends(get_db),
-        _: dict = Depends(get_current_user)
+        user: dict = Depends(get_current_user)
 ):
     """
-    Delete multiple documents by IDs.
+    Delete multiple documents by IDs (this organisation's only).
     Accepts: { "ids": ["1","2","3"] }
 
     Cleanup order:
@@ -480,11 +510,12 @@ async def delete_selected_docs(
 
     for doc_id in ids:
         try:
-            doc = db.query(Document).filter(Document.id == doc_id).first()
+            doc = db.query(Document).filter(Document.id == doc_id, Document.tenant_id == _t()).first()
 
             if not doc:
                 not_found.append(doc_id)
                 continue
+            snapshot = _doc_snapshot(doc)
 
             # ── 1. Delete file from disk ──────────────────────────────
             if doc.file_path and os.path.exists(doc.file_path):
@@ -519,7 +550,7 @@ async def delete_selected_docs(
 
             # ── 5. Delete document row ────────────────────────────────
             db.delete(doc)
-            deleted.append(doc_id)
+            deleted.append((doc_id, {**snapshot, "chunks_removed": deleted_chunks}))
             logger.info(f"✅ Deleted document {doc_id}")
 
         except Exception as e:
@@ -528,6 +559,9 @@ async def delete_selected_docs(
             failed.append(doc_id)
 
     db.commit()
+    for did, snap in deleted:
+        _audit_delete(db, did, {**snap, "bulk": True}, user)
+    deleted = [d for d, _snap in deleted]
 
     return {
         "message": "Bulk delete completed",
@@ -542,10 +576,10 @@ async def delete_selected_docs(
 async def delete_document(
         doc_id: str,
         db: Session = Depends(get_db),
-        _: dict = Depends(require_admin)
+        user: dict = Depends(require_admin)
 ):
     """
-    Delete a single document.
+    Delete a single document (this organisation's only).
 
     Cleanup order:
       1. File from disk
@@ -557,11 +591,12 @@ async def delete_document(
     try:
         logger.info(f"🗑️ Deleting document: {doc_id}")
 
-        doc = db.query(Document).filter(Document.id == doc_id).first()
+        doc = db.query(Document).filter(Document.id == doc_id, Document.tenant_id == _t()).first()
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found")
 
         filename = doc.filename
+        snapshot = _doc_snapshot(doc)
 
         # ── 1. Delete file from disk ──────────────────────────────────
         if doc.file_path and os.path.exists(doc.file_path):
@@ -595,6 +630,7 @@ async def delete_document(
         # ── 5. Delete document row ────────────────────────────────────
         db.delete(doc)
         db.commit()
+        _audit_delete(db, doc_id, {**snapshot, "chunks_removed": deleted_chunks}, user)
 
         logger.info(f"✅ Document deleted: {filename}")
 
@@ -1460,8 +1496,10 @@ async def process_document_background(doc_id: str):
 
         # Update document
         doc.doc_type = doc_type
-        doc.summary = redact_text(summary or "")
-        doc.raw_text = redact_text(raw_text or "")
+        doc.summary = summary or ""
+        if not (db.execute(text("SELECT to_regclass('public.document_pages')")).scalar() and
+                db.execute(text("SELECT 1 FROM document_pages WHERE document_id = :id LIMIT 1"), {"id": str(doc.id)}).fetchone()):
+            doc.raw_text = raw_text or ""
         doc.doc_metadata = redact_metadata(doc_metadata)
         doc.status = "completed" if not errors else "completed_with_errors"
         doc.processed_at = datetime.utcnow()
@@ -1498,7 +1536,10 @@ async def process_document_background(doc_id: str):
 
             try:
                 from app.services.facts_extractor import extract_and_store
-                extract_and_store(str(doc.id), doc.doc_type or "general", raw_text)
+                from app.core.tenant import set_current_tenant_id
+                if getattr(doc, "tenant_id", None):
+                    set_current_tenant_id(str(doc.tenant_id))   # may run off the request thread
+                extract_and_store(str(doc.id), doc.doc_type or "general", raw_text, doc.filename)
             except Exception as facts_err:
                 logger.warning(f"⚠️ Facts extraction failed (non-fatal): {facts_err}")
 

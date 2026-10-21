@@ -5,6 +5,7 @@ e-signature requests, reports, AI drafting and translation.
 Everything is scoped to a tenant id passed in by the router. Client-facing links
 (intake, signing) use random tokens; only their SHA-256 is stored.
 """
+from app.core import llm
 import hashlib
 import json
 import re
@@ -993,7 +994,7 @@ def draft(db, tenant: str, case_id: str, kind: str, instructions: str = "") -> D
               "names, receipt numbers or legal citations.\n"
               + (f"Extra instructions: {instructions.strip()[:1000]}\n" if instructions.strip() else "")
               + f"\nCASE FACTS\n{facts}\n\nDRAFT:")
-    resp = ollama.chat(model=app_config.model, messages=[{"role": "user", "content": prompt}],
+    resp = llm.chat(model=app_config.model, messages=[{"role": "user", "content": prompt}],
                        options={"num_ctx": app_config.NUM_CTX, "temperature": 0.2, "num_predict": 900})
     return {"kind": kind, "draft": resp["message"]["content"].strip(),
             "notice": "AI draft for attorney review — verify every fact before use. Not legal advice."}
@@ -1007,7 +1008,7 @@ def translate(textval: str, target: str) -> Dict:
         raise ValueError(f"Unsupported language {target!r}")
     if not textval.strip():
         raise ValueError("Nothing to translate")
-    resp = ollama.chat(model=app_config.model, messages=[{"role": "user", "content":
+    resp = llm.chat(model=app_config.model, messages=[{"role": "user", "content":
         f"Translate the text below into {langs[target]}. Keep names, numbers, dates and form numbers exactly as written. "
         f"Output only the translation.\n\n{textval.strip()[:6000]}"}],
         options={"num_ctx": app_config.NUM_CTX, "temperature": 0.0, "num_predict": 1800})

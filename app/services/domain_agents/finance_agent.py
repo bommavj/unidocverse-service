@@ -15,6 +15,12 @@ from typing import Any
 from sqlalchemy import text
 from app.services.domain_agents.base_domain_agent import BaseDomainAgent
 
+
+def _approvals_tenant() -> str:
+    from app.core.tenant import get_current_tenant_id, DEFAULT_TENANT_ID
+    return str(get_current_tenant_id() or DEFAULT_TENANT_ID)
+
+
 logger = logging.getLogger(__name__)
 
 FINANCE_DOC_TYPES = ('invoice','bank_statement','expense_report','tax_return',
@@ -97,9 +103,9 @@ class FinanceAgent(BaseDomainAgent):
                 SELECT title, priority, due_date,
                        CURRENT_DATE - created_at::date AS age_days
                 FROM approval_requests
-                WHERE status = 'pending'
+                WHERE status = 'pending' AND tenant_id = :tid
                 ORDER BY priority DESC, created_at
-            """)).fetchall()
+            """), {"tid": _approvals_tenant()}).fetchall()
             data["pending_approvals"] = [{
                 "title":    r[0],
                 "priority": r[1] or "normal",
