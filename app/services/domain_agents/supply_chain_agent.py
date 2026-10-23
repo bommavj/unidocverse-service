@@ -38,8 +38,8 @@ class SupplyChainAgent(BaseDomainAgent):
                     COUNT(*) FILTER (WHERE customs_status != 'cleared')        AS customs_holds,
                     COUNT(*) FILTER (WHERE is_reconciled = FALSE)              AS unreconciled,
                     COUNT(DISTINCT carrier_name)                               AS carriers
-                FROM supply_chain_shipments
-            """)).fetchone()
+                FROM (SELECT * FROM supply_chain_shipments WHERE document_id IN (SELECT id FROM documents WHERE tenant_id::text = :tenant_id)) supply_chain_shipments
+            """), self.tp).fetchone()
             data["shipment_snapshot"] = {
                 "total_shipments":   int(row[0] or 0),
                 "customs_cleared":   int(row[1] or 0),
@@ -57,10 +57,10 @@ class SupplyChainAgent(BaseDomainAgent):
             rows = db.execute(text("""
                 SELECT bol_number, carrier_name, origin, destination,
                        customs_status, created_at::date AS date
-                FROM supply_chain_shipments
+                FROM (SELECT * FROM supply_chain_shipments WHERE document_id IN (SELECT id FROM documents WHERE tenant_id::text = :tenant_id)) supply_chain_shipments
                 WHERE customs_status != 'cleared'
                 ORDER BY created_at DESC
-            """)).fetchall()
+            """), self.tp).fetchall()
             data["customs_holds"] = [{
                 "bol":        r[0] or "—",
                 "carrier":    r[1] or "—",
@@ -80,10 +80,10 @@ class SupplyChainAgent(BaseDomainAgent):
                 SELECT bol_number, carrier_name, origin, destination,
                        created_at::date AS date,
                        CURRENT_DATE - created_at::date AS age_days
-                FROM supply_chain_shipments
+                FROM (SELECT * FROM supply_chain_shipments WHERE document_id IN (SELECT id FROM documents WHERE tenant_id::text = :tenant_id)) supply_chain_shipments
                 WHERE is_reconciled = FALSE
                 ORDER BY created_at
-            """)).fetchall()
+            """), self.tp).fetchall()
             data["unreconciled_shipments"] = [{
                 "bol":         r[0] or "—",
                 "carrier":     r[1] or "—",
@@ -104,11 +104,11 @@ class SupplyChainAgent(BaseDomainAgent):
                        expiry_date,
                        CASE WHEN expiry_date IS NOT NULL
                             THEN expiry_date - CURRENT_DATE END AS days_to_expiry
-                FROM supply_chain_suppliers
+                FROM (SELECT * FROM supply_chain_suppliers WHERE document_id IN (SELECT id FROM documents WHERE tenant_id::text = :tenant_id)) supply_chain_suppliers
                 WHERE sanctions_status != 'clear'
                    OR (expiry_date IS NOT NULL AND expiry_date <= CURRENT_DATE + 60)
                 ORDER BY sanctions_status DESC, expiry_date
-            """)).fetchall()
+            """), self.tp).fetchall()
             data["supplier_risk"] = [{
                 "supplier":       r[0] or "—",
                 "type":           r[1] or "—",
@@ -125,12 +125,12 @@ class SupplyChainAgent(BaseDomainAgent):
         try:
             rows = db.execute(text("""
                 SELECT doc_type, COUNT(*) AS cnt
-                FROM documents
+                FROM (SELECT * FROM documents WHERE tenant_id::text = :tenant_id) documents
                 WHERE doc_type = ANY(:types)
                   AND status = 'completed'
                   AND created_at >= NOW() - INTERVAL '24 hours'
                 GROUP BY doc_type ORDER BY cnt DESC
-            """), {"types": list(SC_DOC_TYPES)}).fetchall()
+            """), {**self.tp, "types": list(SC_DOC_TYPES)}).fetchall()
             data["docs_last_24h"] = {r[0]: r[1] for r in rows}
             data["docs_last_24h"]["total"] = sum(r[1] for r in rows)
         except Exception as e:

@@ -36,6 +36,9 @@ def _reranker_source() -> str:
     if os.getenv("MODEL_PATH"):                       # bundled embedding model's folder → its sibling
         candidates.append(str(Path(os.environ["MODEL_PATH"]).parent / "bge-reranker-v2-m3"))
     candidates.append(str(Path(__file__).resolve().parents[2] / "models" / "bge-reranker-v2-m3"))
+    from app.services import model_fetch
+    if model_fetch.target_dir():                      # Starter: downloaded on first launch
+        candidates.append(str(model_fetch.target_dir()))
     for c in candidates:
         if c and (Path(c) / "model.safetensors").exists():
             return c
@@ -56,10 +59,27 @@ _reranker_failed = False
 _lock = threading.Lock()
 
 
+def reload_reranker() -> None:
+    """The Starter download just finished: use the new copy from the next search on."""
+    global _RERANKER_ID, _reranker, _reranker_failed
+    with _lock:
+        _RERANKER_ID, _reranker, _reranker_failed = _reranker_source(), None, False
+
+
+def _awaiting_download() -> bool:
+    """Starter edition before its search model has arrived (never fetch it from a third party)."""
+    from app.services import model_fetch
+    return model_fetch.enabled() and not model_fetch.downloaded()
+
+
 def _get_reranker():
     global _reranker, _reranker_failed
     if _reranker is not None or _reranker_failed or not _RERANK_ON:
         return _reranker
+    if _awaiting_download():
+        from app.core import llm
+        llm._note("The search model is still downloading, so results weren't reranked — accuracy improves once setup finishes (Home).")
+        return None
     with _lock:
         if _reranker is None and not _reranker_failed:
             try:

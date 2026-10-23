@@ -41,9 +41,9 @@ class FinanceAgent(BaseDomainAgent):
             rows = db.execute(text("""
                 SELECT anomaly_type, COUNT(*) AS cnt,
                        ROUND(SUM(amount::numeric)) AS total_amount
-                FROM finance_anomalies
+                FROM (SELECT * FROM finance_anomalies WHERE document_id IN (SELECT id FROM documents WHERE tenant_id::text = :tenant_id)) finance_anomalies
                 GROUP BY anomaly_type ORDER BY total_amount DESC
-            """)).fetchall()
+            """), self.tp).fetchall()
             total = sum(r[1] for r in rows)
             data["anomaly_snapshot"] = {
                 "total_anomalies": total,
@@ -60,9 +60,9 @@ class FinanceAgent(BaseDomainAgent):
                 SELECT title, anomaly_type, ref_code, amount,
                        created_at::date AS detected_on,
                        CURRENT_DATE - created_at::date AS age_days
-                FROM finance_anomalies
+                FROM (SELECT * FROM finance_anomalies WHERE document_id IN (SELECT id FROM documents WHERE tenant_id::text = :tenant_id)) finance_anomalies
                 ORDER BY amount::numeric DESC NULLS LAST
-            """)).fetchall()
+            """), self.tp).fetchall()
             data["top_anomalies"] = [{
                 "title":       r[0],
                 "type":        r[1],
@@ -84,8 +84,8 @@ class FinanceAgent(BaseDomainAgent):
                     COUNT(*) FILTER (WHERE match_status = 'matched')    AS matched,
                     COUNT(*) FILTER (WHERE match_status = 'mismatch')   AS mismatched,
                     COUNT(*) FILTER (WHERE match_status = 'pending')    AS pending
-                FROM finance_matches
-            """)).fetchone()
+                FROM (SELECT * FROM finance_matches WHERE document_id IN (SELECT id FROM documents WHERE tenant_id::text = :tenant_id)) finance_matches
+            """), self.tp).fetchone()
             data["three_way_match"] = {
                 "total":     int(row[0] or 0),
                 "matched":   int(row[1] or 0),
@@ -105,7 +105,7 @@ class FinanceAgent(BaseDomainAgent):
                 FROM approval_requests
                 WHERE status = 'pending' AND tenant_id = :tid
                 ORDER BY priority DESC, created_at
-            """), {"tid": _approvals_tenant()}).fetchall()
+            """), {**self.tp, "tid": _approvals_tenant()}).fetchall()
             data["pending_approvals"] = [{
                 "title":    r[0],
                 "priority": r[1] or "normal",
@@ -121,12 +121,12 @@ class FinanceAgent(BaseDomainAgent):
         try:
             rows = db.execute(text("""
                 SELECT doc_type, COUNT(*) AS cnt
-                FROM documents
+                FROM (SELECT * FROM documents WHERE tenant_id::text = :tenant_id) documents
                 WHERE doc_type = ANY(:types)
                   AND status = 'completed'
                   AND created_at >= NOW() - INTERVAL '24 hours'
                 GROUP BY doc_type ORDER BY cnt DESC
-            """), {"types": list(FINANCE_DOC_TYPES)}).fetchall()
+            """), {**self.tp, "types": list(FINANCE_DOC_TYPES)}).fetchall()
             data["docs_last_24h"] = {r[0]: r[1] for r in rows}
             data["docs_last_24h"]["total"] = sum(r[1] for r in rows)
         except Exception as e:

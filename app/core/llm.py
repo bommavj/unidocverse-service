@@ -185,6 +185,94 @@ def active_provider(tenant_id: Optional[str] = None) -> Optional[Dict[str, str]]
     return cfg
 
 
+# ── Model roles ─────────────────────────────────────────────────────────────
+# Each step of the pipeline can use its own model. Unset roles keep the defaults below.
+ROLES: Dict[str, Dict[str, str]] = {
+    "planner":    {"label": "Planner", "help": "Understands the question and plans the search",
+                   "default": "Active local model (always local unless you choose otherwise)"},
+    "answer":     {"label": "Answer", "help": "Writes the answer from the passages found",
+                   "default": "Active local model, or the active cloud model with local-first escalation"},
+    "extraction": {"label": "Extraction", "help": "Pulls fields and facts from documents at upload",
+                   "default": "Active local model (cloud only if upload processing is turned on)"},
+    "vision":     {"label": "Vision", "help": "Reads forms and charts from page images at upload",
+                   "default": "gemma4 (local)"},
+}
+
+
+def role_config(role: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, str]]:
+    """{'engine': 'local', 'model'} or {'engine': 'cloud', 'provider', 'model'} — None when unset."""
+    tid = str(_tid(tenant_id))
+    hit = _CACHE.get(("roles", tid))
+    if not (hit and time.time() - hit[0] < _CACHE_TTL):
+        roles: Dict[str, Dict[str, str]] = {}
+        try:
+            from sqlalchemy import text
+            db = _db()
+            try:
+                for r in db.execute(text("SELECT role, engine, provider, model FROM tenant_model_roles "
+                                         "WHERE tenant_id = :t"), {"t": str(tid)}):
+                    roles[r.role] = {"engine": r.engine, "provider": r.provider, "model": r.model}
+            finally:
+                db.close()
+        except Exception:
+            roles = {}                                  # table missing on an old install
+        _CACHE[("roles", tid)] = (time.time(), roles)
+        hit = _CACHE[("roles", tid)]
+    return hit[1].get(role)
+
+
+def provider_cfg(provider: str, model: Optional[str] = None, tenant_id: Optional[str] = None):
+    """A configured provider (active or not) with an optional model override, else None."""
+    try:
+        from sqlalchemy import text
+        from app.core.secret_box import decrypt
+        db = _db()
+        try:
+            row = db.execute(text("SELECT provider, model, api_key_enc, base_url FROM tenant_llm_providers "
+                                  "WHERE tenant_id = :t AND provider = :p"), {"t": _tid(tenant_id), "p": provider}).fetchone()
+        finally:
+            db.close()
+        if row:
+            return {"provider": row.provider, "model": model or row.model, "api_key": decrypt(row.api_key_enc),
+                    "base_url": row.base_url}
+    except Exception as e:
+        logger.warning(f"Provider {provider} unavailable for a model role: {e}")
+    return None
+
+
+def cloud_for(role: Optional[str], tenant_id: Optional[str] = None):
+    """The cloud model a role uses, or None when it runs locally. Unset 'answer' keeps today's
+    behaviour (the active cloud provider); other unset roles stay local."""
+    rc = role_config(role, tenant_id) if role else None
+    if rc:
+        return provider_cfg(rc["provider"], rc.get("model"), tenant_id) if rc["engine"] == "cloud" else None
+    return active_provider(tenant_id) if role in (None, "answer") else None
+
+
+_LOCAL_MODELS: Dict[str, Any] = {"at": 0.0, "names": set()}
+
+
+def _installed_local() -> set:
+    if time.time() - _LOCAL_MODELS["at"] > 60:
+        try:
+            _LOCAL_MODELS["names"] = {m.get("model") or m.get("name") for m in ollama.list().get("models", [])}
+        except Exception:
+            _LOCAL_MODELS["names"] = set()
+        _LOCAL_MODELS["at"] = time.time()
+    return _LOCAL_MODELS["names"]
+
+
+def local_model_for(role: Optional[str], default: Optional[str]) -> Optional[str]:
+    """The local model a role uses; its default when unset or not installed."""
+    rc = role_config(role) if role else None
+    if rc and rc["engine"] == "local" and rc.get("model"):
+        installed = _installed_local()
+        if not installed or rc["model"] in installed:
+            return rc["model"]
+        logger.warning(f"Model role '{role}': {rc['model']} isn't installed — using {default}")
+    return default
+
+
 def policy(tenant_id: Optional[str] = None) -> Dict[str, Any]:
     tid = _tid(tenant_id)
     hit = _CACHE.get(("policy", tid))
@@ -381,14 +469,19 @@ def _local(model, messages, options, format, stream, kwargs):
 def chat(model: Optional[str] = None, messages: Optional[List[Dict]] = None,
          options: Optional[Dict] = None, format: Optional[str] = None,
          stream: bool = False, cloud: bool = False, documents: Optional[List[str]] = None,
-         upload: Optional[Tuple[str, str]] = None, **kwargs):
+         upload: Optional[Tuple[str, str]] = None, role: Optional[str] = None, **kwargs):
     """cloud=True marks a call that may use the cloud provider; `documents` are the
     filenames whose text is in the prompt (checked against the never-send list).
     upload=(filename, doc_type) marks upload processing: it goes to the cloud only when
     the organisation turned that on for this document type (no per-call consent)."""
+    if role:
+        model = local_model_for(role, model)
+        rc = role_config(role)
+        if rc and rc["engine"] == "cloud":
+            cloud = True                     # the user chose a cloud model for this step
     if upload:
         return _upload_chat(model, messages, options, format, kwargs, *upload)
-    cfg = active_provider() if cloud else None
+    cfg = (cloud_for(role) if role else active_provider()) if cloud else None
     if not cfg or _DECISION.get() == "local":
         return _local(model, messages, options, format, stream, kwargs)
 
@@ -434,16 +527,20 @@ def chat(model: Optional[str] = None, messages: Optional[List[Dict]] = None,
 def _upload_chat(model, messages, options, format, kwargs, filename: str, doc_type: str):
     """Field extraction during upload. Runs in a background thread: the caller must have
     set the document's own tenant (ProcessingService does) so the right key and policy apply."""
-    cfg = active_provider()
     pol = policy()
-    allowed = (cfg and pol["upload_cloud"] and doc_type in set(pol["upload_types"])
+    role_cloud = cloud_for("extraction") if (role_config("extraction") or {}).get("engine") == "cloud" else None
+    cfg = role_cloud or active_provider()
+    # A cloud Extraction role is the user's explicit choice; otherwise the upload policy decides.
+    # Never-send document types always stay local.
+    allowed = (cfg and (role_cloud or (pol["upload_cloud"] and doc_type in set(pol["upload_types"])))
                and doc_type not in set(pol["blocked_types"]))
     if not allowed:
         return _local(model, messages, options, format, False, kwargs)
     if _over_budget(pol):
         logger.info(f"Upload extraction for {filename} stays local: monthly cloud budget reached")
         return _local(model, messages, options, format, False, kwargs)
-    cfg = {**cfg, "model": pol.get("upload_model") or cfg["model"]}
+    if not role_cloud:
+        cfg = {**cfg, "model": pol.get("upload_model") or cfg["model"]}
     msgs = list(messages or [])
     if format == "json":
         msgs = msgs + [{"role": "user", "content": "Reply with valid JSON only, no other text."}]

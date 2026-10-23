@@ -25,6 +25,7 @@ webhooks, connectors), not in storage.
 from __future__ import annotations
 
 import hashlib
+import os
 import logging
 import re
 import time
@@ -248,6 +249,9 @@ def pdf_pages(path: str, doc_type: Optional[str] = None) -> List[Page]:
     doc = fitz.open(path)
     pages: List[Page] = []
     read_forms = vlm_forms.enabled(doc_type)
+    from app.services import vlm_charts
+    read_charts = vlm_charts.enabled()
+    charts_read = 0
     for i, page in enumerate(doc, start=1):
         txt = _clean(page.get_text("text", sort=True))
         method = "text"
@@ -278,6 +282,12 @@ def pdf_pages(path: str, doc_type: Optional[str] = None) -> List[Page]:
             fields = vlm_forms.read_page(page, doc_type, txt, ocr=method != "text")
             if fields:
                 txt = f"{fields}\n\n{txt}"
+        # Charts drawn as pictures: their labels and values aren't in the text — read them
+        if read_charts and charts_read < vlm_charts.MAX_CHART_PAGES and vlm_charts.looks_like_chart_page(page, txt):
+            charts_read += 1
+            data = vlm_charts.read_page(page, txt)
+            if data:
+                txt = f"{txt}\n\n{data}"
         pages.append(Page(i, txt, method if txt else "none"))
     return pages
 
@@ -333,7 +343,7 @@ def build_chunks(pages: List[Page], filename: str) -> List[Chunk]:
         if prev_tail:
             body_text = f"(continued from page {p.number - 1})\n{prev_tail}\n(page {p.number})\n{body_text}"
         lines = [ln for ln in p.text.split("\n") if ln.strip() and not ln.startswith("[")
-                 and not re.match(r"(FORM FIELDS|TABLE ROWS|TEXT IN IMAGES)\b", ln)]
+                 and not re.match(r"(FORM FIELDS|TABLE ROWS|TEXT IN IMAGES|CHART DATA)\b", ln)]
         tail, n = [], 0
         for ln in reversed(lines):
             if n + len(ln) > CHUNK_OVERLAP * 2:
@@ -372,6 +382,30 @@ def ensure_table(db) -> None:
     db.commit()
 
 
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".heic", ".heif", ".tif", ".tiff", ".bmp", ".webp")
+
+
+def image_to_pdf(path: str) -> Optional[str]:
+    """A photo as a one-page PDF at its own resolution (temp file; caller removes it)."""
+    import tempfile
+    try:
+        from PIL import Image, ImageOps
+        try:
+            from pillow_heif import register_heif_opener
+            register_heif_opener()
+        except Exception:
+            pass
+        with Image.open(path) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            fd, out = tempfile.mkstemp(suffix=".pdf")
+            os.close(fd)
+            im.save(out, "PDF", resolution=300.0)
+        return out
+    except Exception as e:
+        logger.warning(f"Could not read image {path}: {e}")
+        return None
+
+
 def ingest(document_id: str, file_path: Optional[str], filename: str, fallback_text: str = "",
            embed=None, doc_type: Optional[str] = None) -> dict:
     """Extract pages → store pages → chunk → embed → store chunks. Returns stats.
@@ -383,11 +417,23 @@ def ingest(document_id: str, file_path: Optional[str], filename: str, fallback_t
     t0 = time.perf_counter()
     is_pdf = bool(file_path) and file_path.lower().endswith(".pdf")
     pages: List[Page] = []
+    tmp_pdf = None
+    if not is_pdf and file_path and file_path.lower().endswith(IMAGE_EXTS):
+        # Photos (HEIC, JPG, PNG…) go through the same page pipeline as scans: one-page PDF →
+        # PaddleOCR with the noise filter, form and chart reading, and value checks
+        tmp_pdf = image_to_pdf(file_path)
+        if tmp_pdf:
+            file_path, is_pdf = tmp_pdf, True
     if is_pdf:
         try:
             pages = pdf_pages(file_path, doc_type)
         except Exception as e:
             logger.warning(f"Page extraction failed for {filename}: {e}; using extracted text")
+    if tmp_pdf:
+        try:
+            os.remove(tmp_pdf)
+        except OSError:
+            pass
     if not any(p.text for p in pages):
         pages = text_pages(fallback_text)
     t_pages = time.perf_counter() - t0

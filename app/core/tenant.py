@@ -53,14 +53,27 @@ def _tenant_of_user(sub) -> Optional[str]:
     return _user_tenants[uid]
 
 
+# Organisation the database scopes rows to (Postgres RLS via app.current_tenant_id, see V73).
+# None = unscoped: background jobs and unauthenticated requests, which filter by themselves.
+_db_tenant_id: ContextVar[Optional[str]] = ContextVar("db_tenant_id", default=None)
+
+
+def get_db_tenant_id() -> Optional[str]:
+    return _db_tenant_id.get()
+
+
 def get_current_tenant_id() -> str:
     """Return the tenant_id for the current request. Falls back to default tenant."""
     return _current_tenant_id.get()
 
 
-def set_current_tenant_id(tenant_id: str) -> None:
-    """Set the tenant_id for the current request context."""
+def set_current_tenant_id(tenant_id: str, scope_db: bool = False) -> None:
+    """Set the tenant_id for the current request context; with scope_db the database also
+    hides other organisations' rows from every query made in this context. Only the request
+    middleware scopes the database: background loops set this per item and never reset it, so a
+    reused worker thread would otherwise stay scoped to the last organisation it handled."""
     _current_tenant_id.set(tenant_id)
+    _db_tenant_id.set(str(tenant_id) if scope_db and tenant_id else None)
 
 
 class TenantMiddleware(BaseHTTPMiddleware):
@@ -78,6 +91,7 @@ class TenantMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         tenant_id = DEFAULT_TENANT_ID
+        identified = False
 
         # The signed-in user's token decides the tenant. A client-supplied X-Tenant-ID header used to
         # win over it, letting any logged-in user read another tenant's data — it's now honoured only
@@ -85,6 +99,7 @@ class TenantMiddleware(BaseHTTPMiddleware):
         header_tid = request.headers.get("X-Tenant-ID")
         if header_tid and os.getenv("UDV_ALLOW_TENANT_HEADER") == "1":
             tenant_id = header_tid
+            identified = True
 
         # JWT claim — read without verifying here; protected routes verify the token itself
         # (get_current_user), so on any route that returns tenant data the claim is trusted.
@@ -98,6 +113,7 @@ class TenantMiddleware(BaseHTTPMiddleware):
             if auth.startswith("Bearer ") and api_tokens.is_api_token(auth[7:].strip()):
                 row = api_tokens.resolve(auth[7:].strip())
                 tenant_id = str(row.tenant_id) if row else _NO_TENANT
+                identified = True
                 if row and row.scope == "read" and request.method not in api_tokens.SAFE_METHODS:
                     from starlette.responses import JSONResponse
                     return JSONResponse({"detail": "This API token is read-only"}, status_code=403)
@@ -115,10 +131,13 @@ class TenantMiddleware(BaseHTTPMiddleware):
                         jwt_tid = _tenant_of_user(payload["sub"]) or _NO_TENANT
                     if jwt_tid:
                         tenant_id = jwt_tid
+                        identified = True
                 except Exception:
                     pass  # fall through to default
 
-        set_current_tenant_id(tenant_id)
+        # Requests that carry a token are scoped by the database too; the rest (login, public links)
+        # stay unscoped and their handlers look rows up by their own token.
+        set_current_tenant_id(tenant_id, scope_db=identified)
         response = await call_next(request)
         return response
 

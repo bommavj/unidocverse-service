@@ -338,7 +338,7 @@ def synthesizer_node(state: QueryState) -> Dict[str, Any]:
         )
         try:
             model = getattr(app_config, "OLLAMA_MODEL", "mistral")
-            resp = llm.chat(
+            resp = llm.chat(role="answer", 
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
                 options={"temperature": 0.1, "num_predict": 800},
@@ -368,7 +368,7 @@ Provide a unified answer:"""
 
     try:
         model = getattr(app_config, "OLLAMA_MODEL", "mistral")
-        resp = llm.chat(
+        resp = llm.chat(role="answer", 
             model=model,
             messages=[{"role": "user", "content": prompt}],
             options={"temperature": 0.1, "num_predict": 1024},

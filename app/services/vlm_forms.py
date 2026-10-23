@@ -50,6 +50,10 @@ FORM_TYPES: Dict[str, str] = {
     "mortgage_statement": "mortgage statement. Give every labeled field: loan number, statement date, due date, amount due, principal, interest, escrow, balances, interest rate, past payments breakdown",
     "property_tax_bill": "property tax bill. Give parcel number, bill number, tax rate area, assessed values, exemptions, each tax line and amount, installments with due dates and totals",
     "invoice": "invoice. Give invoice number, dates, vendor, bill-to, each line item and amounts, subtotal, tax, total, amount due",
+    # Photos and generic forms (phone pictures of tax forms are often classified only as "image")
+    "image": "photographed or scanned document (often a tax form, notice or ID). Give every labeled field and box with its value; skip addresses printed on envelopes and barcodes",
+    "government_form": "government form or notice. Give every labeled field, box and line with its value",
+    "document": "document. Give every labeled field and its value",
 }
 
 PROMPT = ("This is a {what}. Read the page image and list every field with its value EXACTLY as printed "
@@ -57,6 +61,14 @@ PROMPT = ("This is a {what}. Read the page image and list every field with its v
           "If the page shows the same form twice (summary and official copy), list it once. "
           "Skip empty fields. Never guess or compute.\n"
           'Return JSON only: {{"fields": [{{"label": "printed label (with box/line number)", "value": "exact value"}}]}}')
+
+
+def _vision_model() -> str:
+    """The Vision model role (local only: page images can't be masked), else VLM_MODEL."""
+    from app.core import llm
+    from app.services.vlm_forms import VLM_MODEL as _default
+    rc = llm.role_config("vision")
+    return llm.local_model_for("vision", _default) if (rc or {}).get("engine", "local") == "local" else _default
 
 
 def enabled(doc_type: Optional[str]) -> bool:
@@ -111,7 +123,7 @@ def read_page(page, doc_type: str, page_text: str, ocr: bool) -> str:
     fields = None
     for attempt, budget in enumerate((3500, 6000)):
         try:
-            r = ollama.chat(model=VLM_MODEL, format="json",
+            r = ollama.chat(model=_vision_model(), format="json",
                             messages=[{"role": "user", "content": PROMPT.format(what=FORM_TYPES[doc_type]), "images": [png]}],
                             options={"temperature": 0, "num_ctx": 12288, "num_predict": budget})
             fields = _parse_fields(r["message"]["content"])

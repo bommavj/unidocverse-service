@@ -108,6 +108,73 @@ def list_providers(user=Depends(require_admin), db: Session = Depends(get_db)):
     return {"providers": out, "active": next((p["provider"] for p in out if p["active"]), None)}
 
 
+class RoleIn(BaseModel):
+    engine: str                      # local | cloud
+    model: str
+    provider: Optional[str] = None   # cloud only
+
+
+def _ensure_roles_table(db: Session) -> None:
+    db.execute(text("""CREATE TABLE IF NOT EXISTS tenant_model_roles (
+        tenant_id TEXT NOT NULL, role TEXT NOT NULL, engine TEXT NOT NULL, provider TEXT, model TEXT NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_by TEXT, PRIMARY KEY (tenant_id, role))"""))
+    db.commit()
+
+
+@router.get("/model-roles")
+def model_roles(db: Session = Depends(get_db)):
+    """Each role, what it uses now, and the models it can use: installed Ollama models and
+    configured cloud providers. Vision is local only (page images can't be masked)."""
+    _ensure_roles_table(db)
+    tid = str(get_current_tenant_id())
+    local = engine_status()["ollama"]["models"]
+    clouds = [{"provider": r.provider, "label": llm.PROVIDERS.get(r.provider, {}).get("label", r.provider),
+               "model": r.model} for r in db.execute(text(
+                   "SELECT provider, model FROM tenant_llm_providers WHERE tenant_id = :t ORDER BY provider"), {"t": tid})]
+    out = []
+    for key, meta in llm.ROLES.items():
+        rc = llm.role_config(key)
+        out.append({"role": key, **meta, "current": rc, "local_only": key == "vision"})
+    return {"roles": out, "local_models": local, "cloud_providers": clouds}
+
+
+@router.put("/model-roles/{role}")
+def set_model_role(role: str, body: RoleIn, user: dict = Depends(require_admin), db: Session = Depends(get_db)):
+    if role not in llm.ROLES:
+        raise HTTPException(404, "Unknown role")
+    if body.engine not in ("local", "cloud"):
+        raise HTTPException(400, "engine must be local or cloud")
+    if body.engine == "cloud" and role == "vision":
+        raise HTTPException(400, "Vision reads page images, which can't be masked — it runs locally only")
+    if body.engine == "cloud":
+        if not body.provider or not db.execute(text("SELECT 1 FROM tenant_llm_providers WHERE tenant_id = :t "
+                                                    "AND provider = :p"), {"t": str(get_current_tenant_id()), "p": body.provider}).fetchone():
+            raise HTTPException(400, "Add that cloud provider in Cloud models first")
+    _ensure_roles_table(db)
+    db.execute(text("""INSERT INTO tenant_model_roles (tenant_id, role, engine, provider, model, updated_by)
+        VALUES (:t, :r, :e, :p, :m, :u) ON CONFLICT (tenant_id, role) DO UPDATE SET engine = EXCLUDED.engine,
+        provider = EXCLUDED.provider, model = EXCLUDED.model, updated_at = now(), updated_by = EXCLUDED.updated_by"""),
+        {"t": str(get_current_tenant_id()), "r": role, "e": body.engine,
+         "p": body.provider if body.engine == "cloud" else None, "m": body.model.strip(), "u": user.get("username")})
+    db.commit()
+    llm.invalidate(str(get_current_tenant_id()))
+    from app.core.audit import record as audit
+    audit("model_role.set", actor=user.get("username"), detail=f"{role} → {body.engine}:{body.provider or ''}:{body.model}")
+    return {"success": True}
+
+
+@router.delete("/model-roles/{role}")
+def reset_model_role(role: str, user: dict = Depends(require_admin), db: Session = Depends(get_db)):
+    _ensure_roles_table(db)
+    db.execute(text("DELETE FROM tenant_model_roles WHERE tenant_id = :t AND role = :r"),
+               {"t": str(get_current_tenant_id()), "r": role})
+    db.commit()
+    llm.invalidate(str(get_current_tenant_id()))
+    from app.core.audit import record as audit
+    audit("model_role.reset", actor=user.get("username"), detail=role)
+    return {"success": True}
+
+
 @router.get("/engine-status")
 def engine_status():
     """Can this install answer questions? Local Ollama (and its models) and/or an active cloud
@@ -126,10 +193,14 @@ def engine_status():
         pass
     cfg = llm.active_provider()
     chat_models = [m for m in models if not any(k in m for k in ("embed", "minilm", "bge"))]
+    from app.services.vlm_forms import VLM_MODEL
+    vision = llm.local_model_for("vision", VLM_MODEL)
     return {
         "ollama": {"reachable": reachable, "models": chat_models},
         "cloud": {"provider": cfg["provider"], "model": cfg["model"]} if cfg else None,
         "ready": bool(chat_models) or bool(cfg),
+        # Forms and charts are read accurately only when the vision model is installed
+        "vision": {"model": vision, "installed": vision in models, "pull": f"ollama pull {vision.split(':')[0]}"},
     }
 
 

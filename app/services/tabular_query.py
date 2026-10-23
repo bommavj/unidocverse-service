@@ -109,7 +109,14 @@ def find_tabular_docs(question: str, tenant_id: str, doc_ids: Optional[List[str]
         col_words = set().union(*(_words(c) for c in cols)) if cols else set()
         name_hits = len(q_words & _words(r.filename))
         score = 2 * len(q_words & col_words) + name_hits
-        if score > 0 and name_hits >= other_best:
+        # A file-name match only counts if it beats every other document: "taxable sales" must
+        # not pull Product-Sales-Region.xlsx when "California" names california-tax-info.pdf
+        # Unless the file is clearly named, the columns must cover a real share of the question: "sales tax revenue in
+        # fiscal 2023-24 … General Fund" shares only "sales, tax" with a ledger and belongs to the report.
+        col_share = len(q_words & col_words) / max(len(q_words), 1)
+        if name_hits < 2 and col_share < 0.3:     # one shared word ("sales_ledger") is not naming the file
+            continue
+        if score > 0 and (name_hits > other_best or (other_best == 0 and name_hits == 0)):
             ranked.append({"id": str(r.id), "filename": r.filename, "path": r.file_path,
                            "score": score, "name_hits": name_hits})
     return sorted(ranked, key=lambda d: -d["score"])
@@ -147,7 +154,7 @@ def plan_query(question: str, df: pd.DataFrame, filename: str) -> Optional[Dict]
     prompt = _PLAN_PROMPT.format(filename=filename, n_rows=len(df), schema=schema,
                                  sample=sample, question=question)
     try:
-        resp = llm.chat(
+        resp = llm.chat(role="planner", 
             model=app_config.model,
             messages=[{"role": "user", "content": prompt}],
             format="json",
@@ -324,9 +331,17 @@ def execute(plan: Dict, df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+_LAYOUT_REF = re.compile(r"\b(chart|table|figure|exhibit|schedule|section|appendix|page)\s+[0-9IVX]+[A-Z]?\b|"
+                         r"\b(the|this) (economic )?(analysis|report) section\b", re.IGNORECASE)
+
+
 def answer_from_tables(question: str, tenant_id: str, doc_ids: Optional[List[str]] = None) -> Optional[Dict]:
     """Full path. Returns {answer, source, plan, rows} or None to fall back."""
     if not is_analytic_question(question):
+        return None
+    # "Chart 2", "Table 1", "the economic analysis section" point inside a report — not at a
+    # spreadsheet, unless one is in the user's chosen scope
+    if _LAYOUT_REF.search(question) and not doc_ids:
         return None
     docs = find_tabular_docs(question, tenant_id, doc_ids)
     if not docs:

@@ -40,8 +40,8 @@ class RealEstateAgent(BaseDomainAgent):
                     COUNT(*) FILTER (WHERE has_clear_title = TRUE)        AS clear_title,
                     COUNT(*) FILTER (WHERE has_appraisal = TRUE)          AS appraised,
                     ROUND(AVG(price::numeric))                             AS avg_price
-                FROM real_estate_properties
-            """)).fetchone()
+                FROM (SELECT * FROM real_estate_properties WHERE document_id IN (SELECT id FROM documents WHERE tenant_id::text = :tenant_id)) real_estate_properties
+            """), self.tp).fetchone()
             data["portfolio_snapshot"] = {
                 "total_properties":  int(row[0] or 0),
                 "escrow_funded":     int(row[1] or 0),
@@ -62,10 +62,10 @@ class RealEstateAgent(BaseDomainAgent):
                     has_appraisal, has_clear_title, is_escrow_funded,
                     created_at::date AS opened_on,
                     CURRENT_DATE - created_at::date AS days_open
-                FROM real_estate_properties
+                FROM (SELECT * FROM real_estate_properties WHERE document_id IN (SELECT id FROM documents WHERE tenant_id::text = :tenant_id)) real_estate_properties
                 WHERE NOT (has_appraisal AND has_clear_title AND is_escrow_funded)
                 ORDER BY created_at
-            """)).fetchall()
+            """), self.tp).fetchall()
             data["stalled_closings"] = [{
                 "address":       r[0] or "—",
                 "buyer":         r[1] or "—",
@@ -88,12 +88,12 @@ class RealEstateAgent(BaseDomainAgent):
         try:
             rows = db.execute(text("""
                 SELECT address, buyer_name, price, progress
-                FROM real_estate_properties
+                FROM (SELECT * FROM real_estate_properties WHERE document_id IN (SELECT id FROM documents WHERE tenant_id::text = :tenant_id)) real_estate_properties
                 WHERE has_appraisal = TRUE
                   AND has_clear_title = TRUE
                   AND is_escrow_funded = TRUE
                 ORDER BY price DESC
-            """)).fetchall()
+            """), self.tp).fetchall()
             data["ready_to_close"] = [{
                 "address":  r[0] or "—",
                 "buyer":    r[1] or "—",
@@ -109,12 +109,12 @@ class RealEstateAgent(BaseDomainAgent):
         try:
             rows = db.execute(text("""
                 SELECT doc_type, COUNT(*) AS cnt
-                FROM documents
+                FROM (SELECT * FROM documents WHERE tenant_id::text = :tenant_id) documents
                 WHERE doc_type = ANY(:types)
                   AND status = 'completed'
                   AND created_at >= NOW() - INTERVAL '24 hours'
                 GROUP BY doc_type ORDER BY cnt DESC
-            """), {"types": list(RE_DOC_TYPES)}).fetchall()
+            """), {**self.tp, "types": list(RE_DOC_TYPES)}).fetchall()
             data["docs_last_24h"] = {r[0]: r[1] for r in rows}
             data["docs_last_24h"]["total"] = sum(r[1] for r in rows)
         except Exception as e:
@@ -127,12 +127,12 @@ class RealEstateAgent(BaseDomainAgent):
             rows = db.execute(text("""
                 SELECT column_name FROM information_schema.columns
                 WHERE table_name = 'real_estate_milestones' LIMIT 1
-            """)).fetchone()
+            """), self.tp).fetchone()
             if rows:
                 ms = db.execute(text("""
-                    SELECT * FROM real_estate_milestones
+                    SELECT * FROM (SELECT * FROM real_estate_milestones WHERE property_id IN (SELECT id FROM real_estate_properties WHERE document_id IN (SELECT id FROM documents WHERE tenant_id::text = :tenant_id))) real_estate_milestones
                     WHERE due_date <= CURRENT_DATE + 14
-                    ORDER BY due_date                """)).fetchall()
+                    ORDER BY due_date                """), self.tp).fetchall()
                 data["milestones_due"] = [dict(zip([c.name for c in ms.cursor.description], r)) for r in ms] if ms else []
             else:
                 data["milestones_due"] = []

@@ -248,7 +248,7 @@ Rules:
 Example: ["banking"] or ["payroll", "insurance"]"""
 
     try:
-        resp = llm.chat(
+        resp = llm.chat(role="planner", 
             model=app_config.model,
             messages=[{"role": "user", "content": prompt}],
             options={"num_predict": 50, "temperature": 0.0},

@@ -40,14 +40,14 @@ class HRAgent(BaseDomainAgent):
         try:
             rows = db.execute(text("""
                 SELECT doc_type, COUNT(*) AS cnt
-                FROM documents
+                FROM (SELECT * FROM documents WHERE tenant_id::text = :tenant_id) documents
                 WHERE doc_type = ANY(:types) AND status = 'completed'
                 GROUP BY doc_type ORDER BY cnt DESC
-            """), {"types": list(HR_DOC_TYPES)}).fetchall()
+            """), {**self.tp, "types": list(HR_DOC_TYPES)}).fetchall()
             total = db.execute(text("""
-                SELECT COUNT(DISTINCT client_id) FROM documents
+                SELECT COUNT(DISTINCT client_id) FROM (SELECT * FROM documents WHERE tenant_id::text = :tenant_id) documents
                 WHERE doc_type = ANY(:types) AND status = 'completed' AND client_id IS NOT NULL
-            """), {"types": list(HR_DOC_TYPES)}).scalar()
+            """), {**self.tp, "types": list(HR_DOC_TYPES)}).scalar()
             data["workforce_snapshot"] = {
                 "employees_tracked": int(total or 0),
                 "documents_by_type": {r[0]: r[1] for r in rows},
@@ -63,10 +63,10 @@ class HRAgent(BaseDomainAgent):
                 SELECT employee_name, title,
                        due_date,
                        CURRENT_DATE - due_date AS days_overdue
-                FROM hr_onboarding_tasks
+                FROM (SELECT * FROM hr_onboarding_tasks WHERE document_id IN (SELECT id FROM documents WHERE tenant_id::text = :tenant_id)) hr_onboarding_tasks
                 WHERE is_done = FALSE AND due_date < CURRENT_DATE
                 ORDER BY due_date
-            """)).fetchall()
+            """), self.tp).fetchall()
             data["onboarding_overdue"] = [{
                 "employee":     r[0] or "—",
                 "task":         r[1],
@@ -88,12 +88,12 @@ class HRAgent(BaseDomainAgent):
                     COALESCE(valid_until, authorized_stay_until) AS expiry,
                     COALESCE(valid_until, authorized_stay_until) - CURRENT_DATE AS days_left,
                     status
-                FROM client_immigration
+                FROM (SELECT * FROM client_immigration WHERE client_id IN (SELECT id FROM clients WHERE tenant_id::text = :tenant_id)) client_immigration
                 WHERE COALESCE(valid_until, authorized_stay_until) IS NOT NULL
                   AND COALESCE(valid_until, authorized_stay_until) >= CURRENT_DATE
                   AND COALESCE(valid_until, authorized_stay_until) <= CURRENT_DATE + 90
                 ORDER BY expiry
-            """)).fetchall()
+            """), self.tp).fetchall()
             data["immigration_expiring"] = [{
                 "person":    r[0] or "—",
                 "doc_type":  r[1],
@@ -111,10 +111,10 @@ class HRAgent(BaseDomainAgent):
         try:
             rows = db.execute(text("""
                 SELECT candidate_name, role, experience_years, match_score, feedback
-                FROM hr_candidates
+                FROM (SELECT * FROM hr_candidates WHERE document_id IN (SELECT id FROM documents WHERE tenant_id::text = :tenant_id)) hr_candidates
                 WHERE match_score IS NOT NULL
                 ORDER BY match_score DESC
-            """)).fetchall()
+            """), self.tp).fetchall()
             data["top_candidates"] = [{
                 "candidate":       r[0] or "—",
                 "role":            r[1] or "—",
@@ -135,7 +135,7 @@ class HRAgent(BaseDomainAgent):
                 FROM approval_requests
                 WHERE status = 'pending' AND tenant_id = :tid
                 ORDER BY priority DESC, created_at
-            """), {"tid": _approvals_tenant()}).fetchall()
+            """), {**self.tp, "tid": _approvals_tenant()}).fetchall()
             data["pending_approvals"] = [{
                 "title":    r[0],
                 "priority": r[1] or "—",

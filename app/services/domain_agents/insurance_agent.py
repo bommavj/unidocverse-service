@@ -65,8 +65,8 @@ class InsuranceAgent(BaseDomainAgent):
                             WHEN 'monthly'     THEN 12
                             ELSE 1 END
                     ELSE 0 END)                                                         AS at_risk_premium
-                FROM policies
-            """)).fetchone()
+                FROM (SELECT * FROM policies WHERE tenant_id::text = :tenant_id) policies
+            """), self.tp).fetchone()
             data["book"] = {
                 "active_policies":    int(rows[0] or 0),
                 "lapsed_policies":    int(rows[1] or 0),
@@ -93,11 +93,11 @@ class InsuranceAgent(BaseDomainAgent):
                     p.premium_freq,
                     p.expiry_date,
                     CURRENT_DATE - p.expiry_date                          AS days_lapsed
-                FROM policies p
-                JOIN clients c ON c.id = p.client_id
+                FROM (SELECT * FROM policies WHERE tenant_id::text = :tenant_id) p
+                JOIN (SELECT * FROM clients WHERE tenant_id::text = :tenant_id) c ON c.id = p.client_id
                 WHERE p.status IN ('lapsed','cancelled','expired')
                 ORDER BY p.expiry_date DESC
-            """)).fetchall()
+            """), self.tp).fetchall()
             data["lapsed"] = [{
                 "client":         r[0],
                 "client_number":  r[1],
@@ -129,13 +129,13 @@ class InsuranceAgent(BaseDomainAgent):
                     p.expiry_date,
                     p.expiry_date - CURRENT_DATE                          AS days_left,
                     p.renewal_status
-                FROM policies p
-                JOIN clients c ON c.id = p.client_id
+                FROM (SELECT * FROM policies WHERE tenant_id::text = :tenant_id) p
+                JOIN (SELECT * FROM clients WHERE tenant_id::text = :tenant_id) c ON c.id = p.client_id
                 WHERE p.status = 'active'
                   AND p.expiry_date <= CURRENT_DATE + 90
                   AND p.renewal_status = 'not_started'
                 ORDER BY p.expiry_date
-            """)).fetchall()
+            """), self.tp).fetchall()
             data["stalled_renewals"] = [{
                 "client":         r[0],
                 "client_number":  r[1],
@@ -166,12 +166,12 @@ class InsuranceAgent(BaseDomainAgent):
                     p.expiry_date,
                     p.expiry_date - CURRENT_DATE                          AS days_left,
                     p.renewal_status
-                FROM policies p
-                JOIN clients c ON c.id = p.client_id
+                FROM (SELECT * FROM policies WHERE tenant_id::text = :tenant_id) p
+                JOIN (SELECT * FROM clients WHERE tenant_id::text = :tenant_id) c ON c.id = p.client_id
                 WHERE p.status = 'active'
                   AND p.expiry_date <= CURRENT_DATE + 90
                 ORDER BY p.expiry_date
-            """)).fetchall()
+            """), self.tp).fetchall()
             data["renewals"] = [{
                 "client":         r[0],
                 "client_number":  r[1],
@@ -200,11 +200,11 @@ class InsuranceAgent(BaseDomainAgent):
                     q.stage,
                     q.created_at::date                    AS created_date,
                     CURRENT_DATE - q.created_at::date     AS age_days
-                FROM quotes q
-                LEFT JOIN clients c ON c.id = q.client_id
+                FROM (SELECT * FROM quotes WHERE tenant_id::text = :tenant_id) q
+                LEFT JOIN (SELECT * FROM clients WHERE tenant_id::text = :tenant_id) c ON c.id = q.client_id
                 WHERE q.stage NOT IN ('bound','lost','declined')
                 ORDER BY q.created_at DESC
-            """)).fetchall()
+            """), self.tp).fetchall()
             data["quotes"] = [{
                 "client":       r[0],
                 "quote_number": r[1],
@@ -227,13 +227,13 @@ class InsuranceAgent(BaseDomainAgent):
                     cc.certificate_number,
                     cc.valid_until,
                     cc.valid_until - CURRENT_DATE AS days_left
-                FROM coi_certificates cc
-                JOIN clients c ON c.id = cc.client_id
+                FROM (SELECT * FROM coi_certificates WHERE client_id IN (SELECT id FROM clients WHERE tenant_id::text = :tenant_id)) cc
+                JOIN (SELECT * FROM clients WHERE tenant_id::text = :tenant_id) c ON c.id = cc.client_id
                 WHERE cc.valid_until IS NOT NULL
                   AND cc.valid_until >= CURRENT_DATE
                   AND cc.valid_until <= CURRENT_DATE + 60
                 ORDER BY cc.valid_until
-            """)).fetchall()
+            """), self.tp).fetchall()
             data["coi_expirations"] = [{
                 "client":      r[0],
                 "client_number": r[1],

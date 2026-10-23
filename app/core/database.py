@@ -1,7 +1,7 @@
 import logging
-from sqlalchemy import create_engine, text
+from sqlalchemy import String, cast, create_engine, event, text
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker, with_loader_criteria
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -17,6 +17,66 @@ engine = create_engine(
     pool_pre_ping=True,  # test connection health before using — prevents "connection closed" errors
     echo=False,
 )
+
+_scope_role_exists = None
+
+
+@event.listens_for(engine, "before_cursor_execute")
+def _scope_connection_to_tenant(conn, cursor, statement, parameters, context, executemany):
+    # Keep the connection's app.current_tenant_id equal to the current organisation so the RLS
+    # policies (V73) hide other organisations' rows. Superusers skip RLS, so scoped connections also
+    # SET ROLE udv_tenant_scope (no superuser, owner privileges). Set at session level and tracked
+    # per pooled connection, so it costs a round trip only when the organisation changes.
+    global _scope_role_exists
+    from app.core.tenant import get_db_tenant_id
+    tid = get_db_tenant_id() or ""
+    if conn.info.get("udv_tenant") == tid:
+        return
+    cur = cursor.connection.cursor()
+    try:
+        if _scope_role_exists is None:
+            cur.execute("SELECT 1 FROM pg_roles WHERE rolname = 'udv_tenant_scope'")
+            _scope_role_exists = cur.fetchone() is not None
+            if not _scope_role_exists:
+                logger.warning("Role udv_tenant_scope missing (migration V73 not applied): "
+                               "organisation isolation relies on each query's own filter")
+        if _scope_role_exists:
+            cur.execute("SET ROLE udv_tenant_scope" if tid else "RESET ROLE")
+        cur.execute("SELECT set_config('app.current_tenant_id', %s, false)", (tid,))
+    finally:
+        cur.close()
+    conn.info["udv_tenant"] = tid
+
+
+# A rolled-back transaction also undoes set_config, so forget what was set and set it again.
+@event.listens_for(engine, "rollback")
+@event.listens_for(engine, "rollback_savepoint")
+def _forget_tenant_on_rollback(conn, *args):
+    conn.info.pop("udv_tenant", None)
+
+
+@event.listens_for(engine.pool, "reset")
+def _forget_tenant_on_reset(dbapi_connection, connection_record, reset_state):
+    connection_record.info.pop("udv_tenant", None)
+
+
+@event.listens_for(Session, "do_orm_execute")
+def _scope_orm_to_tenant(state):
+    # Second layer beside RLS: ORM selects/updates/deletes made for a signed-in organisation only
+    # touch rows of models that carry tenant_id and belong to it. Cast because the column is
+    # mapped as String while the database type is uuid on some tables and text on others.
+    from app.core.tenant import get_db_tenant_id
+    tid = get_db_tenant_id()
+    if not tid or state.is_column_load or state.is_relationship_load:
+        return
+    if not (state.is_select or state.is_update or state.is_delete):
+        return
+    for mapper in state.all_mappers:
+        cls = mapper.class_
+        if "tenant_id" in mapper.columns:
+            state.statement = state.statement.options(with_loader_criteria(
+                cls, lambda c: cast(c.tenant_id, String) == tid, include_aliases=True))
+
 
 # Session factory
 SessionLocal = sessionmaker(

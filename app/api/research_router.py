@@ -204,6 +204,7 @@ def research_ask_stream(
     context_sources: Optional[str] = Query(None),
     cloud: Optional[str] = Query(None),        # "ok" = send to the cloud model, "local" = answer locally
     resume: Optional[str] = Query(None),       # the step parked at the consent question
+    web: Optional[str] = Query(None),          # "1" = also search the web (when an admin turned it on)
     _: dict = Depends(get_current_user_or_session),
 ):
     """SSE endpoint — streams step events then answer tokens."""
@@ -221,6 +222,25 @@ def research_ask_stream(
             prior_qa_list = json.loads(prior_qa)
         except Exception:
             prior_qa_list = []
+
+    def web_events(q: str):
+        """Web section after the document answer: ('sse', event) items, then ('text', appended markdown)."""
+        if web != "1":
+            return
+        from app.services import web_search
+        found = None
+        for kind, value in _run_with_heartbeat(lambda: web_search.run(q, (_ or {}).get("username"))):
+            if kind == "progress":
+                yield "sse", f"data: {json.dumps({'type': 'progress', 'text': 'Searching the web…'})}\n\n"
+            else:
+                found = value
+        if not found:
+            return
+        yield "sse", f"data: {json.dumps({'type': 'step', 'step': {'iteration': 99, 'tool': 'web_search', 'thought': 'Searched the web for: ' + (found['query'] or '(nothing sent)'), 'args': {'query': found['query']}, 'observation': {'results': [r['url'] for r in found['results']], 'error': found['error']}}})}\n\n"
+        text_ = web_search.section(found)
+        yield "sse", f"data: {json.dumps({'type': 'token', 'text': text_})}\n\n"
+        yield "sse", f"data: {json.dumps({'type': 'web_sources', 'query': found['query'], 'results': found['results']})}\n\n"
+        yield "text", text_
 
     def event_stream():
         nonlocal doc_id_list  # a follow-up may narrow it to the conversation's documents
@@ -345,6 +365,12 @@ def research_ask_stream(
                 chart_data = result.get("chart_data")
                 if chart_data:
                     yield f"data: {json.dumps({'type': 'chart', 'chart': chart_data})}\n\n"
+                for kind, value in web_events(effective_q):
+                    if kind == "sse":
+                        yield value
+                    else:
+                        direct_answer += value
+                        result = {**result, "answer": direct_answer}
                 matched_doc_ids = result.get("matched_doc_ids") or doc_id_list
                 session_id = _save_session(result, doc_id_list, question.strip(), parent_session_id)
                 yield f"data: {json.dumps({'type': 'done', 'session_id': session_id, 'answer': direct_answer, 'matched_doc_ids': matched_doc_ids, 'has_more': result.get('has_more', False), 'page': result.get('page', 0)})}\n\n"
@@ -395,6 +421,11 @@ def research_ask_stream(
                     accumulated_answer.append(fallback)
                     yield f"data: {json.dumps({'type': 'token', 'text': fallback})}\n\n"
 
+            for kind, value in web_events(effective_q):
+                if kind == "sse":
+                    yield value
+                else:
+                    accumulated_answer.append(value)
             saved_answer = "".join(accumulated_answer)
             matched_doc_ids = result.get("matched_doc_ids") or doc_id_list
             session_id = _save_session({**result, "sources": synth_sources, "answer": saved_answer}, doc_id_list, question.strip(), parent_session_id)
@@ -440,16 +471,16 @@ def research_history(limit: int = 20, offset: int = 0, db: Session = Depends(get
     safe_limit = max(1, min(limit, 100))
     safe_offset = max(0, offset)
 
-    total = db.execute(text("SELECT COUNT(*) FROM research_sessions WHERE parent_session_id IS NULL")).scalar() or 0
+    total = db.execute(text("SELECT COUNT(*) FROM research_sessions WHERE parent_session_id IS NULL AND tenant_id::text = :t"), {"t": _tenant()}).scalar() or 0
 
     rows = db.execute(text("""
         SELECT id, question, answer, sources, steps, iterations, doc_ids,
                chart_data, matched_doc_ids, created_at
         FROM research_sessions
-        WHERE parent_session_id IS NULL
+        WHERE parent_session_id IS NULL AND tenant_id::text = :t
         ORDER BY created_at DESC
         LIMIT :limit OFFSET :offset
-    """), {"limit": safe_limit, "offset": safe_offset}).fetchall()
+    """), {"limit": safe_limit, "offset": safe_offset, "t": _tenant()}).fetchall()
 
     root_ids = [str(r.id) for r in rows]
 
@@ -460,9 +491,9 @@ def research_history(limit: int = 20, offset: int = 0, db: Session = Depends(get
         child_rows = db.execute(text(f"""
             SELECT id, parent_session_id, question, answer, sources, chart_data, matched_doc_ids, created_at
             FROM research_sessions
-            WHERE parent_session_id IN ({placeholders})
+            WHERE parent_session_id IN ({placeholders}) AND tenant_id::text = :t
             ORDER BY created_at ASC
-        """)).fetchall()
+        """), {"t": _tenant()}).fetchall()
         for cr in child_rows:
             pid = str(cr.parent_session_id)
             if pid in thread_map:
@@ -505,14 +536,14 @@ def get_research_session(session_id: str, db: Session = Depends(get_db), _: dict
     row = db.execute(text("""
         SELECT id, question, answer, sources, steps, iterations, doc_ids,
                chart_data, matched_doc_ids, created_at
-        FROM research_sessions WHERE id = :id AND parent_session_id IS NULL
-    """), {"id": session_id}).fetchone()
+        FROM research_sessions WHERE id = :id AND parent_session_id IS NULL AND tenant_id::text = :t
+    """), {"id": session_id, "t": _tenant()}).fetchone()
     if not row:
         raise HTTPException(404, "Session not found")
     children = db.execute(text("""
         SELECT question, answer, sources, chart_data, matched_doc_ids, created_at
-        FROM research_sessions WHERE parent_session_id = :id ORDER BY created_at ASC
-    """), {"id": session_id}).fetchall()
+        FROM research_sessions WHERE parent_session_id = :id AND tenant_id::text = :t ORDER BY created_at ASC
+    """), {"id": session_id, "t": _tenant()}).fetchall()
     thread = [{"question": c.question, "answer": c.answer or "", "sources": c.sources or [],
                "chartData": c.chart_data, "matchedDocIds": c.matched_doc_ids or []} for c in children]
     return {
@@ -527,8 +558,8 @@ def get_research_session(session_id: str, db: Session = Depends(get_db), _: dict
 @router.delete("/history/{session_id}")
 def delete_research_session(session_id: str, db: Session = Depends(get_db), _: dict = Depends(get_current_user)):
     result = db.execute(
-        text("DELETE FROM research_sessions WHERE id = :id RETURNING id"),
-        {"id": session_id}
+        text("DELETE FROM research_sessions WHERE id = :id AND tenant_id::text = :t RETURNING id"),
+        {"id": session_id, "t": _tenant()}
     ).fetchone()
     db.commit()
     if not result:
@@ -597,6 +628,11 @@ def research_action_cancel(body: ActionCancelRequest, user: dict = Depends(get_c
     return {"success": True, "cancelled": True, "message": "Action cancelled."}
 
 
+def _tenant() -> str:
+    from app.core.tenant import DEFAULT_TENANT_ID, get_current_tenant_id
+    return str(get_current_tenant_id() or DEFAULT_TENANT_ID)
+
+
 @router.get("/docs")
 def list_research_docs(db: Session = Depends(get_db), _: dict = Depends(get_current_user)):
     rows = db.execute(text("""
@@ -604,11 +640,11 @@ def list_research_docs(db: Session = Depends(get_db), _: dict = Depends(get_curr
                COUNT(c.id) AS chunk_count
         FROM documents d
         LEFT JOIN document_chunks c ON c.document_id = d.id AND c.embedding IS NOT NULL
-        WHERE d.status = 'completed'
+        WHERE d.status = 'completed' AND d.tenant_id::text = :t
         GROUP BY d.id, d.filename, d.doc_type, d.created_at
         ORDER BY d.created_at DESC
         LIMIT 100
-    """)).fetchall()
+    """), {"t": _tenant()}).fetchall()
     return [
         {
             "id": str(r.id),

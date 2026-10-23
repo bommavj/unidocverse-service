@@ -36,10 +36,10 @@ class OperationsAgent(BaseDomainAgent):
         try:
             rows = db.execute(text("""
                 SELECT stage, priority, COUNT(*) AS cnt
-                FROM matters
+                FROM (SELECT * FROM matters WHERE tenant_id::text = :tenant_id) matters
                 WHERE status NOT IN ('closed','resolved')
                 GROUP BY stage, priority ORDER BY cnt DESC
-            """)).fetchall()
+            """), self.tp).fetchall()
             total = sum(r[2] for r in rows)
             urgent = sum(r[2] for r in rows if r[1] in ('high','urgent'))
             data["matters_snapshot"] = {
@@ -63,7 +63,7 @@ class OperationsAgent(BaseDomainAgent):
                 FROM approval_requests
                 WHERE status = 'pending' AND tenant_id = :tid
                 ORDER BY priority DESC, created_at
-            """), {"tid": _approvals_tenant()}).fetchall()
+            """), {**self.tp, "tid": _approvals_tenant()}).fetchall()
             data["approval_queue"] = [{
                 "title":    r[0],
                 "priority": r[1] or "normal",
@@ -85,7 +85,7 @@ class OperationsAgent(BaseDomainAgent):
                   AND due_date IS NOT NULL
                   AND due_date < CURRENT_DATE
                 ORDER BY days_overdue DESC
-            """), {"tid": _approvals_tenant()}).fetchall()
+            """), {**self.tp, "tid": _approvals_tenant()}).fetchall()
             data["overdue_approvals"] = [{
                 "title":        r[0],
                 "priority":     r[1] or "normal",
@@ -102,9 +102,9 @@ class OperationsAgent(BaseDomainAgent):
             rows = db.execute(text("""
                 SELECT status, COUNT(*) AS cnt,
                        ROUND(SUM(amount_incurred::numeric)) AS total_incurred
-                FROM loss_run_claims
+                FROM (SELECT * FROM loss_run_claims WHERE loss_run_id IN (SELECT id FROM loss_runs WHERE document_id IN (SELECT id FROM documents WHERE tenant_id::text = :tenant_id) OR client_id IN (SELECT id FROM clients WHERE tenant_id::text = :tenant_id))) loss_run_claims
                 GROUP BY status ORDER BY cnt DESC
-            """)).fetchall()
+            """), self.tp).fetchall()
             data["claims_snapshot"] = [{
                 "status":          r[0],
                 "count":           int(r[1] or 0),
@@ -120,9 +120,9 @@ class OperationsAgent(BaseDomainAgent):
             rows = db.execute(text("""
                 SELECT stage, COUNT(*) AS cnt,
                        ROUND(SUM(contract_value::numeric)) AS total_value
-                FROM clm_entries
+                FROM (SELECT * FROM clm_entries WHERE doc_id IN (SELECT id FROM documents WHERE tenant_id::text = :tenant_id)) clm_entries
                 GROUP BY stage ORDER BY cnt DESC
-            """)).fetchall()
+            """), self.tp).fetchall()
             data["clm_pipeline"] = [{
                 "stage":       r[0],
                 "count":       int(r[1] or 0),

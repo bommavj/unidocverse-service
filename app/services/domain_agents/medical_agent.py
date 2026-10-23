@@ -45,8 +45,8 @@ class MedicalAgent(BaseDomainAgent):
                     COUNT(*) FILTER (WHERE insurance_verified = TRUE)        AS insurance_ok,
                     COUNT(*) FILTER (WHERE history_filed = TRUE)             AS history_ok,
                     ROUND(AVG(chart_score))                                  AS avg_chart_score
-                FROM patient_charts
-            """)).fetchone()
+                FROM (SELECT * FROM patient_charts WHERE document_id IN (SELECT id FROM documents WHERE tenant_id::text = :tenant_id)) patient_charts
+            """), self.tp).fetchone()
             data["chart_snapshot"] = {
                 "total_charts":      int(row[0] or 0),
                 "consent_signed":    int(row[1] or 0),
@@ -64,10 +64,10 @@ class MedicalAgent(BaseDomainAgent):
             rows = db.execute(text("""
                 SELECT patient_name, chart_score,
                     consent_signed, insurance_verified, history_filed
-                FROM patient_charts
+                FROM (SELECT * FROM patient_charts WHERE document_id IN (SELECT id FROM documents WHERE tenant_id::text = :tenant_id)) patient_charts
                 WHERE NOT (consent_signed AND insurance_verified AND history_filed)
                 ORDER BY chart_score ASC
-            """)).fetchall()
+            """), self.tp).fetchall()
             data["incomplete_charts"] = [{
                 "patient":    r[0] or "—",
                 "score":      float(r[1] or 0),
@@ -87,11 +87,11 @@ class MedicalAgent(BaseDomainAgent):
             rows = db.execute(text("""
                 SELECT column_name FROM information_schema.columns
                 WHERE table_name='patient_biomarkers' LIMIT 1
-            """)).fetchone()
+            """), self.tp).fetchone()
             if rows:
                 bm = db.execute(text("""
-                    SELECT COUNT(*) AS total FROM patient_biomarkers
-                """)).fetchone()
+                    SELECT COUNT(*) AS total FROM (SELECT * FROM patient_biomarkers WHERE document_id IN (SELECT id FROM documents WHERE tenant_id::text = :tenant_id)) patient_biomarkers
+                """), self.tp).fetchone()
                 data["biomarker_count"] = {"total_recorded": int(bm[0] or 0)}
             else:
                 data["biomarker_count"] = {}
@@ -107,7 +107,7 @@ class MedicalAgent(BaseDomainAgent):
                 FROM approval_requests
                 WHERE status = 'pending' AND tenant_id = :tid
                 ORDER BY priority DESC, created_at
-            """), {"tid": _approvals_tenant()}).fetchall()
+            """), {**self.tp, "tid": _approvals_tenant()}).fetchall()
             data["pending_approvals"] = [{
                 "title":    r[0],
                 "priority": r[1] or "normal",
@@ -123,12 +123,12 @@ class MedicalAgent(BaseDomainAgent):
         try:
             rows = db.execute(text("""
                 SELECT doc_type, COUNT(*) AS cnt
-                FROM documents
+                FROM (SELECT * FROM documents WHERE tenant_id::text = :tenant_id) documents
                 WHERE doc_type = ANY(:types)
                   AND status = 'completed'
                   AND created_at >= NOW() - INTERVAL '24 hours'
                 GROUP BY doc_type ORDER BY cnt DESC
-            """), {"types": list(MEDICAL_DOC_TYPES)}).fetchall()
+            """), {**self.tp, "types": list(MEDICAL_DOC_TYPES)}).fetchall()
             data["docs_last_24h"] = {r[0]: r[1] for r in rows}
             data["docs_last_24h"]["total"] = sum(r[1] for r in rows)
         except Exception as e:

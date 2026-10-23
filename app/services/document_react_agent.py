@@ -872,7 +872,7 @@ def _decompose_query(question: str) -> List[str]:
         return [question]
 
     try:
-        resp = llm.chat(
+        resp = llm.chat(role="planner", 
             model=_active_model(),
             messages=[{"role": "user", "content": _DECOMPOSE_PROMPT.replace("{question}", question)}],
             options={"num_ctx": NUM_CTX, "num_predict": 200, "temperature": 0.0},
@@ -1124,7 +1124,7 @@ def reason_question(question: str) -> Dict:
     examples = _select_examples(question, n=8)
     prompt = REASONER_PROMPT_TEMPLATE.replace("{examples}", examples).replace("{question}", question)
     try:
-        resp = llm.chat(
+        resp = llm.chat(role="planner", 
             model=_active_model(),
             messages=[{"role": "user", "content": prompt}],
             options={"num_ctx": NUM_CTX, "num_predict": 800, "temperature": 0.0},
@@ -1713,12 +1713,12 @@ def _cascade_answer(prompt: str, num_predict: int, sources, context: str, questi
     docs = sorted(sources)
 
     def run(cloud: bool) -> str:
-        r = llm.chat(model=_active_model(), messages=msgs, options=opts, cloud=cloud, documents=docs)
+        r = llm.chat(role="answer", model=_active_model(), messages=msgs, options=opts, cloud=cloud, documents=docs)
         logger.info(f"Synthesis ({llm.last_route()[0]}): prompt={r.get('prompt_eval_count')} tok, "
                     f"answer={r.get('eval_count')} tok, stop={r.get('done_reason')}")
         return _decode_llm_text(r["message"]["content"].strip())
 
-    if not llm.active_provider() or llm.decision() == "local":
+    if not llm.cloud_for("answer") or llm.decision() == "local":
         a = run(False)
         return a, _grounding_note(a, context)
     if llm.decision() == "ok" or not llm.policy().get("cascade_local_first", True):
@@ -1800,7 +1800,7 @@ def finish_parked(p: Dict[str, Any], use_cloud: bool) -> Tuple[str, str, List[st
     Local: the local answer already written, with its source check."""
     if not use_cloud:
         return p["local"], _grounding_note(p["local"], p["context"]), p["sources"]
-    r = llm.chat(model=_active_model(), messages=[{"role": "user", "content": p["prompt"]}],
+    r = llm.chat(role="answer", model=_active_model(), messages=[{"role": "user", "content": p["prompt"]}],
                  options={"num_ctx": NUM_CTX, "num_predict": p["num_predict"], "temperature": 0.10},
                  cloud=True, documents=p["sources"])
     a = _decode_llm_text(r["message"]["content"].strip())
@@ -1823,6 +1823,53 @@ def _parts_block(question: str) -> str:
     return ("\nThis question has " + str(len(parts)) + " parts. Answer EACH part under its own number, "
             "with the exact figure and its [filename]; write [NOT FOUND] only for a part the excerpts don't cover:\n"
             + "\n".join(f"{i}. {p}" for i, p in enumerate(parts, 1)))
+
+
+_CHART_REF_RE = re.compile(r"\b(chart|figure|graph)\s+(\d{1,3}[A-Za-z]?)\b", re.I)
+
+
+def _chart_gaps(question: str, context: str) -> List[str]:
+    """Charts the question names ("Chart 2") whose values aren't in the passages. Chart values
+    exist only when the vision model read the chart at upload (a CHART DATA block)."""
+    gaps = []
+    for kind, num in dict.fromkeys(_CHART_REF_RE.findall(question or "")):
+        read = re.search(rf"CHART DATA[\s\S]*?\b{kind}\s+{re.escape(num)}\b", context or "", re.I)
+        if not read:
+            gaps.append(f"{kind.title()} {num}")
+    return gaps
+
+
+def _chart_gap_instruction(question: str, context: str) -> str:
+    gaps = _chart_gaps(question, context)
+    if not gaps:
+        return ""
+    return (f"\nIMPORTANT: The values of {', '.join(gaps)} are drawn in an image and are NOT in the excerpts. "
+            "Use only figures written in the excerpts. For anything only the chart shows, say it is not "
+            "available in the text. Never estimate, count or rank chart items you cannot see.")
+
+
+def _vision_ready() -> Tuple[bool, str]:
+    """(installed?, model) for the Vision role."""
+    try:
+        from app.services.vlm_forms import VLM_MODEL
+        model = llm.local_model_for("vision", VLM_MODEL)
+        return (model in llm._installed_local()), model
+    except Exception:
+        return False, "gemma4:latest"
+
+
+def _chart_gap_note(question: str, context: str) -> str:
+    gaps = _chart_gaps(question, context)
+    if not gaps:
+        return ""
+    ok, model = _vision_ready()
+    how = ("Re-process this document (Documents → 🔄 on its row) so the vision model reads its charts."
+           if ok else
+           f"For complete chart and form values, install the vision model — in Terminal run "
+           f"`ollama pull {model.split(':')[0]}` (about 10 GB; needs 16 GB of memory or more) — then re-process "
+           f"this document. See Help → Recommended models.")
+    return (f"\n\n---\n📊 *{', '.join(gaps)} is a chart image whose values haven't been read, so this answer "
+            f"uses only what the text says. {how}*")
 
 
 def _local_reason(answer: str, context: str) -> str:
@@ -2321,7 +2368,7 @@ Document excerpts:
 {context}
 
 Answer:"""
-        resp = llm.chat(
+        resp = llm.chat(role="answer", 
             model=_active_model(),
             messages=[{"role": "user", "content": prompt}],
             options={"num_ctx": NUM_CTX, "num_predict": 2400 if is_traversal else 500, "temperature": 0.1},
@@ -2989,7 +3036,7 @@ Research intent: {reasoning}
 {context}
 --- END EXCERPTS ---
 
-Question (answer this exactly): {question}{_parts_block(question)}
+Question (answer this exactly): {question}{_parts_block(question)}{_chart_gap_instruction(question, context)}
 Answer ({"cite [filename] once after the list" if "EVERY entry" in format_str else "cite [filename] for every fact"}, write [NOT FOUND] for missing data):"""
 
     try:
@@ -3003,7 +3050,7 @@ Answer ({"cite [filename] once after the list" if "EVERY entry" in format_str el
         if fix:
             answer = answer.replace(fix[0], fix[1])
             sources = {fix[1]}
-        answer += verify_note
+        answer += verify_note + _chart_gap_note(question, context)
     except llm.CloudConsentRequired:
         raise
     except Exception as e:
@@ -3235,7 +3282,7 @@ def _llm_resolve_columns(question: str, header: List[str], sample_row: Dict) -> 
         '"viz_type": "bar|line|pie|horizontalBar"}'
     )
     try:
-        resp = llm.chat(
+        resp = llm.chat(role="planner", 
             model=_active_model(),
             messages=[{"role": "user", "content": prompt}],
             options={"num_ctx": NUM_CTX, "num_predict": 120, "temperature": 0.0},
@@ -3756,10 +3803,10 @@ Question: {question}
 {context}
 --- END EXCERPTS ---
 
-Question (answer this exactly): {question}{_parts_block(question)}
+Question (answer this exactly): {question}{_parts_block(question)}{_chart_gap_instruction(question, context)}
 Answer:"""
 
-    if llm.active_provider():
+    if llm.cloud_for("answer"):
         # Cascade needs the whole local answer before deciding, so it isn't token-streamed
         try:
             answer, verify_note = _cascade_answer(prompt, num_predict, sources, context, question)
@@ -3773,13 +3820,16 @@ Answer:"""
             yield ("token", answer[i:i + 40])
         if verify_note:
             yield ("token", verify_note)
+        chart_note = _chart_gap_note(question, context)
+        if chart_note:
+            yield ("token", chart_note)
         for n in llm.request_notes():
             yield ("token", f"\n\n🔒 *{n}*")
         yield ("sources", sorted(sources))
         return
 
     try:
-        stream = llm.chat(
+        stream = llm.chat(role="answer", 
             model=_active_model(),
             messages=[{"role": "user", "content": prompt}],
             options={"num_ctx": NUM_CTX, "num_predict": num_predict, "temperature": 0.10},
@@ -3791,7 +3841,7 @@ Answer:"""
             if token:
                 answer_parts.append(token)
                 yield ("token", token)
-        note = _grounding_note("".join(answer_parts), context)
+        note = _grounding_note("".join(answer_parts), context) + _chart_gap_note(question, context)
         if note:
             yield ("token", note)
         for n in llm.request_notes():
@@ -4479,7 +4529,7 @@ def run_research_agent(
             f"6. IMPORTANT: cover every ## Page N heading — do not stop early.\n\n"
             f"Document excerpts (ordered by page):\n{context}\n\nPage-by-page breakdown:"
         )
-        resp = llm.chat(
+        resp = llm.chat(role="planner", 
             model=_active_model(),
             messages=[{"role": "user", "content": prompt}],
             options={"num_ctx": NUM_CTX, "num_predict": 2400, "temperature": 0.05},

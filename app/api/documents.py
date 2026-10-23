@@ -67,7 +67,7 @@ async def get_documents(
     from sqlalchemy import or_, and_
 
     # Build query
-    query = db.query(Document).filter(Document.status != 'deleted')
+    query = db.query(Document).filter(Document.status != 'deleted', Document.tenant_id == _t())
 
     # Apply filters
     if doc_type:
@@ -891,6 +891,25 @@ async def preview_document(
     }
 
     content_type = content_type_map.get(file_ext, 'application/octet-stream')
+
+    # Browsers can't show HEIC (iPhone photos), HEIF, TIFF or BMP — send a JPEG instead
+    if file_ext in ('.heic', '.heif', '.tif', '.tiff', '.bmp'):
+        try:
+            from PIL import Image, ImageOps
+            try:
+                from pillow_heif import register_heif_opener
+                register_heif_opener()
+            except Exception:
+                pass
+            with Image.open(doc.file_path) as im:
+                im = ImageOps.exif_transpose(im).convert("RGB")
+                buf = io.BytesIO()
+                im.save(buf, "JPEG", quality=90)
+            return StreamingResponse(io.BytesIO(buf.getvalue()), media_type="image/jpeg", headers={
+                "Content-Disposition": f'inline; filename="{Path(doc.filename).stem}.jpg"',
+                "Cache-Control": "public, max-age=3600"})
+        except Exception as e:
+            logger.warning(f"Preview conversion failed for {doc.filename}: {e}")
 
     # Read file
     try:

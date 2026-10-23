@@ -84,7 +84,7 @@ def rewrite_followup(question: str, prior_qa: Optional[List[Dict]], always: bool
 
     history = "\n".join(f"Q: {_flat(t.get('q'))[:300]}\nA: {_flat(t.get('a'))[:300]}" for t in prior_qa[-3:])
     try:
-        resp = llm.chat(
+        resp = llm.chat(role="planner", 
             model=app_config.model,
             messages=[{"role": "user", "content": _PROMPT.format(history=history, question=question.strip())}],
             options={"num_ctx": NUM_CTX, "temperature": 0.0, "num_predict": 220},

@@ -110,6 +110,8 @@ async def lifespan(app: FastAPI):
     asyncio.get_running_loop().run_in_executor(None, zero_shot_router.warm_up)
     from app.services import hybrid_search
     asyncio.get_running_loop().run_in_executor(None, hybrid_search.warm_up)
+    from app.services import model_fetch
+    model_fetch.start()          # Starter edition: fetch the search model on first launch
 
     # Start background schedulers (renewal emails, follow-ups, etc.)
     from app.services import scheduler
@@ -261,7 +263,7 @@ async def rate_limit_middleware(request: Request, call_next):
 _protected = {"dependencies": [Depends(_auth_required)]}
 
 from app.api.brief_router import router as brief_router
-app.include_router(brief_router)
+app.include_router(brief_router, **_protected)    # names and policy numbers: signed-in only
 app.include_router(auth_router.router)           # public — has own auth logic
 app.include_router(chatbot_router)               # public — token-based auth per endpoint
 app.include_router(documents.router,             **_protected)
@@ -285,6 +287,12 @@ app.include_router(policies_router.router,       **_protected)
 app.include_router(features_router.router,       **_protected)
 from app.api import llm_providers_router
 app.include_router(llm_providers_router.router,  **_protected)
+from app.api import web_search_router
+from app.api import setup_router
+from app.api import pilot_router
+app.include_router(pilot_router.router, **_protected)
+app.include_router(setup_router.router, **_protected)
+app.include_router(web_search_router.router, **_protected)
 from app.api import webhooks_router, quickbooks_router, salesforce_router, integration_sends_router
 app.include_router(webhooks_router.router,        **_protected)
 app.include_router(quickbooks_router.router,      **_protected)
@@ -322,12 +330,12 @@ for _r in (claims_router, matters_router, quote_router, clm_router, audit_router
 
 
 # ── Performance stats endpoint ────────────────────────────────────────────────
-@app.get("/api/perf")
+@app.get("/api/perf", dependencies=[Depends(_auth_required)])
 async def perf_stats():
     """Live performance stats: cache hit rates, queue depth, job registry."""
     return get_perf_stats()
 
-@app.delete("/api/perf/cache")
+@app.delete("/api/perf/cache", dependencies=[Depends(_auth_required)])
 async def clear_caches():
     from app.core.performance import embedding_cache, response_cache
     embedding_cache.clear()
@@ -336,7 +344,7 @@ async def clear_caches():
 
 
 # ── Background upload job status ──────────────────────────────────────────────
-@app.get("/api/upload/jobs/{job_id}")
+@app.get("/api/upload/jobs/{job_id}", dependencies=[Depends(_auth_required)])
 async def get_upload_job(job_id: str):
     job = job_registry.get(job_id)
     if not job:
@@ -344,7 +352,7 @@ async def get_upload_job(job_id: str):
     return job
 
 # ── Persistent job queue status ───────────────────────────────────────────────
-@app.get("/api/jobs/{job_id}")
+@app.get("/api/jobs/{job_id}", dependencies=[Depends(_auth_required)])
 async def get_job_status(job_id: str):
     """Check status of a queued background job (document processing, reembed, etc.)"""
     from app.services.job_worker import get_job_status
@@ -353,7 +361,7 @@ async def get_job_status(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found")
     return job
 
-@app.get("/api/jobs")
+@app.get("/api/jobs", dependencies=[Depends(_auth_required)])
 async def list_jobs(status: str = None, limit: int = 20):
     """List recent jobs — useful for admin monitoring."""
     from app.core.database import SessionLocal
@@ -423,7 +431,7 @@ def _run_batch_background(job_id: str, file_data: list):
     )
 
 
-@app.post("/api/upload/batch")
+@app.post("/api/upload/batch", dependencies=[Depends(_auth_required)])
 async def upload_batch(files: list[UploadFile] = File(...)):
     """
     Returns a job_id immediately. Processing runs in background.
@@ -436,7 +444,11 @@ async def upload_batch(files: list[UploadFile] = File(...)):
         total_files=len(file_data),
     )
     loop = asyncio.get_event_loop()
-    loop.run_in_executor(_UPLOAD_EXECUTOR, _run_batch_background, job_id, file_data)
+    # Run in a copy of this request's context so the files are stored under the signed-in
+    # organisation (a bare executor thread falls back to the default tenant).
+    import contextvars
+    ctx = contextvars.copy_context()
+    loop.run_in_executor(_UPLOAD_EXECUTOR, ctx.run, _run_batch_background, job_id, file_data)
     return {
         "job_id": job_id,
         "status": "pending",

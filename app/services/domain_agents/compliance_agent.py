@@ -36,9 +36,9 @@ class ComplianceAgent(BaseDomainAgent):
         try:
             rows = db.execute(text("""
                 SELECT risk_level, COUNT(*) AS cnt
-                FROM doc_risk
+                FROM (SELECT * FROM doc_risk WHERE doc_id IN (SELECT id FROM documents WHERE tenant_id::text = :tenant_id)) doc_risk
                 GROUP BY risk_level ORDER BY cnt DESC
-            """)).fetchall()
+            """), self.tp).fetchall()
             total = sum(r[1] for r in rows)
             data["risk_snapshot"] = {
                 "total_assessed": total,
@@ -54,11 +54,11 @@ class ComplianceAgent(BaseDomainAgent):
             rows = db.execute(text("""
                 SELECT d.filename, dr.risk_level, dr.risk_score,
                        d.doc_type, d.created_at::date AS uploaded
-                FROM doc_risk dr
-                JOIN documents d ON d.id = dr.document_id
+                FROM (SELECT * FROM doc_risk WHERE doc_id IN (SELECT id FROM documents WHERE tenant_id::text = :tenant_id)) dr
+                JOIN (SELECT * FROM documents WHERE tenant_id::text = :tenant_id) d ON d.id = dr.document_id
                 WHERE dr.risk_level IN ('high','critical')
                 ORDER BY dr.risk_score DESC
-            """)).fetchall()
+            """), self.tp).fetchall()
             data["high_risk_documents"] = [{
                 "filename":   r[0],
                 "risk_level": r[1],
@@ -75,10 +75,10 @@ class ComplianceAgent(BaseDomainAgent):
         try:
             rows = db.execute(text("""
                 SELECT action, COUNT(*) AS cnt
-                FROM audit_log
+                FROM (SELECT * FROM audit_log WHERE tenant_id::text = :tenant_id) audit_log
                 WHERE created_at >= NOW() - INTERVAL '24 hours'
                 GROUP BY action ORDER BY cnt DESC
-            """)).fetchall()
+            """), self.tp).fetchall()
             data["audit_activity_24h"] = {r[0]: r[1] for r in rows}
             data["audit_activity_24h"]["total_events"] = sum(r[1] for r in rows)
         except Exception as e:
@@ -94,7 +94,7 @@ class ComplianceAgent(BaseDomainAgent):
                 FROM approval_requests
                 WHERE status = 'pending' AND tenant_id = :tid
                 ORDER BY priority DESC, created_at
-            """), {"tid": _approvals_tenant()}).fetchall()
+            """), {**self.tp, "tid": _approvals_tenant()}).fetchall()
             data["pending_approvals"] = [{
                 "title":    r[0],
                 "priority": r[1] or "normal",

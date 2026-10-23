@@ -33,7 +33,7 @@ def _llm_extract(prompt: str, num_predict: int = 1200, upload: Optional[tuple] =
     organisation's cloud model do it when its policy allows that document type."""
     try:
         from app.core import llm
-        resp = llm.chat(
+        resp = llm.chat(role="extraction", 
             model=_active_model(),
             messages=[{"role": "user", "content": prompt}],
             options={"num_predict": num_predict, "temperature": 0.0},

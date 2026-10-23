@@ -24,6 +24,12 @@ class BaseDomainAgent:
     def __init__(self, db: Session):
         self.db = db
 
+    @property
+    def tp(self) -> dict:
+        # Bind params for the :tenant_id filter every collect() query carries — the app connects
+        # as the table owner, so Postgres RLS does not scope these queries for us.
+        return {"tenant_id": str(get_current_tenant_id() or DEFAULT_TENANT_ID)}
+
     def collect(self) -> dict[str, Any]:
         """Override in each domain agent — return raw data dict."""
         raise NotImplementedError

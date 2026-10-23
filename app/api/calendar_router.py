@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.core.database import get_db
+from app.core.tenant import get_current_tenant_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ams/calendar", tags=["calendar"])
@@ -102,6 +103,7 @@ async def get_calendar_events(
         FROM policies p
         JOIN clients c ON c.id = p.client_id
         WHERE c.status != 'deleted'
+          AND p.tenant_id::text = :tenant_id
           AND p.status NOT IN ('deleted','cancelled')
           AND (
             p.expiry_date    BETWEEN :start AND :end_ext
@@ -109,7 +111,7 @@ async def get_calendar_events(
             OR p.renewal_date   BETWEEN :start AND :end_ext
           )
         ORDER BY p.expiry_date ASC
-    """), {"start": rstart, "end": rend, "end_ext": rend_extended}).fetchall()
+    """), {"start": rstart, "end": rend, "end_ext": rend_extended, "tenant_id": get_current_tenant_id()}).fetchall()
 
     for p in policies:
         r = dict(p._mapping)
@@ -187,9 +189,10 @@ async def get_calendar_events(
         FROM documents d
         LEFT JOIN clients c ON c.id = d.client_id
         WHERE d.status = 'completed'
+          AND d.tenant_id::text = :tenant_id
           AND d.doc_metadata IS NOT NULL
           AND d.doc_metadata != '{}'
-    """)).fetchall()
+    """), {"tenant_id": get_current_tenant_id()}).fetchall()
 
     # Date fields to extract per doc type
     DATE_FIELDS = {
@@ -281,8 +284,9 @@ async def get_calendar_events(
         LEFT JOIN policies p ON p.id = ra.policy_id
         LEFT JOIN clients  c ON c.id = p.client_id
         WHERE ra.created_at::date BETWEEN :start AND :end
+          AND p.tenant_id::text = :tenant_id
         ORDER BY ra.created_at DESC
-    """), {"start": rstart, "end": rend}).fetchall()
+    """), {"start": rstart, "end": rend, "tenant_id": get_current_tenant_id()}).fetchall()
 
     for a in activities:
         r    = dict(a._mapping)

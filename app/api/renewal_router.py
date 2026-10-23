@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.core.database import get_db
+from app.core.tenant import get_current_tenant_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ams/renewal", tags=["renewal"])
@@ -65,10 +66,11 @@ def get_renewal_pipeline(
         JOIN clients c ON c.id = p.client_id
         LEFT JOIN renewal_activities ra ON ra.policy_id = p.id
         WHERE p.expiry_date BETWEEN :today AND :end_date
+          AND p.tenant_id::text = :tenant_id
           AND p.status NOT IN ('cancelled', 'lapsed', 'non_renewed')
         GROUP BY p.id, c.id
         ORDER BY p.expiry_date ASC
-    """), {"today": today, "end_date": end_date}).fetchall()
+    """), {"today": today, "end_date": end_date, "tenant_id": get_current_tenant_id()}).fetchall()
 
     # Group by renewal_status
     pipeline = {
@@ -121,9 +123,10 @@ def get_upcoming_renewals(
         FROM policies p
         JOIN clients c ON c.id = p.client_id
         WHERE p.expiry_date BETWEEN :today AND :end_date
+          AND p.tenant_id::text = :tenant_id
           AND p.status NOT IN ('cancelled', 'lapsed', 'non_renewed')
         ORDER BY p.expiry_date ASC
-    """), {"today": today, "end_date": end_date}).fetchall()
+    """), {"today": today, "end_date": end_date, "tenant_id": get_current_tenant_id()}).fetchall()
 
     result = []
     for row in rows:
@@ -162,10 +165,11 @@ def get_renewal_calendar(db: Session = Depends(get_db)):
             COUNT(CASE WHEN p.expiry_date - CURRENT_DATE <= 30 THEN 1 END) as urgent
         FROM policies p
         WHERE p.expiry_date BETWEEN :today AND :end_date
+          AND p.tenant_id::text = :tenant_id
           AND p.status NOT IN ('cancelled', 'lapsed', 'non_renewed')
         GROUP BY DATE_TRUNC('month', p.expiry_date)
         ORDER BY month ASC
-    """), {"today": today, "end_date": end_date}).fetchall()
+    """), {"today": today, "end_date": end_date, "tenant_id": get_current_tenant_id()}).fetchall()
 
     calendar = []
     for row in rows:
@@ -215,8 +219,8 @@ def log_activity(activity: ActivityCreate, db: Session = Depends(get_db)):
                     WHEN renewal_status = 'not_started' THEN 'contacted'
                     ELSE renewal_status
                 END
-            WHERE id = :id
-        """), {"id": activity.policy_id})
+            WHERE id = :id AND tenant_id::text = :tenant_id
+        """), {"id": activity.policy_id, "tenant_id": get_current_tenant_id()})
 
     db.commit()
     return {"activity_id": activity_id, "message": "Activity logged"}
@@ -231,7 +235,7 @@ def update_renewal_status(
     db: Session = Depends(get_db)
 ):
     updates = ["renewal_status = :renewal_status"]
-    params = {"id": policy_id, "renewal_status": update.renewal_status}
+    params = {"id": policy_id, "renewal_status": update.renewal_status, "tenant_id": get_current_tenant_id()}
 
     if update.status:
         updates.append("status = :status")
@@ -241,7 +245,7 @@ def update_renewal_status(
         params["notes"] = update.renewal_notes
 
     db.execute(text(f"""
-        UPDATE policies SET {', '.join(updates)} WHERE id = :id
+        UPDATE policies SET {', '.join(updates)} WHERE id = :id AND tenant_id::text = :tenant_id
     """), params)
     db.commit()
     return {"message": "Renewal status updated"}
@@ -265,7 +269,8 @@ def get_renewal_stats(db: Session = Depends(get_db)):
                 WHERE expiry_date BETWEEN CURRENT_DATE AND CURRENT_DATE + 90)                as premium_at_risk_90
         FROM policies
         WHERE status NOT IN ('cancelled', 'lapsed', 'non_renewed')
-    """)).fetchone()
+          AND tenant_id::text = :tenant_id
+    """), {"tenant_id": get_current_tenant_id()}).fetchone()
 
     return dict(stats._mapping) if stats else {}
 
@@ -355,7 +360,9 @@ async def preview_renewal_notifications(db: Session = Depends(get_db)):
             WHERE p.expiry_date BETWEEN :start AND :end
               AND p.status IN ('active','renewal_due')
               AND c.status != 'deleted'
+              AND p.tenant_id::text = :tenant_id
         """), {
+            "tenant_id": get_current_tenant_id(),
             "start": target - timedelta(days=1),
             "end":   target + timedelta(days=1),
         }).fetchall()
