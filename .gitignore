@@ -64,3 +64,7 @@ venv-arm64/
 tests/eval/research_cases.yaml
 tests/fixtures/demo_user.json
 tests/fixtures/*/out/
+
+# Local scratch scripts (reference personal documents on this machine) — never commit
+/test_*.py
+/check_*.py
