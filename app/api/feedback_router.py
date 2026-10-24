@@ -16,7 +16,7 @@ from app.core.audit import record
 from app.core.database import get_db
 
 router = APIRouter(prefix="/api/feedback", tags=["feedback"])
-APP_VERSION = os.getenv("UDV_VERSION", "0.1.7")
+APP_VERSION = os.getenv("UDV_VERSION", "0.1.8")
 
 
 @router.get("/usage")
