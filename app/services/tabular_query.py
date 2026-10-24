@@ -66,7 +66,25 @@ def _load(path: str, mtime: float) -> pd.DataFrame:
         return pd.read_csv(path, sep="\t" if ext == ".tsv" else ",", low_memory=False)
     if ext == ".parquet":
         return pd.read_parquet(path)
-    return pd.read_excel(path)
+    df = pd.read_excel(path)
+    skip = _title_rows(df)
+    return pd.read_excel(path, header=skip) if skip else df
+
+
+def _title_rows(df: pd.DataFrame) -> int:
+    """Government and finance workbooks often put a title (and notes) above the real header:
+    "Sales and Use Tax Monthly…" then "Calendar Year | Month | Cash Receipts". Return how many rows
+    to skip so the first fully labelled row becomes the header (0 when the header is already first)."""
+    def labelled(cells) -> bool:
+        vals = [c for c in cells if pd.notna(c) and str(c).strip()]
+        return len(vals) >= max(2, int(0.6 * len(cells))) and all(isinstance(c, str) for c in vals)
+    unnamed = sum(str(c).startswith("Unnamed:") for c in df.columns)
+    if unnamed < max(1, len(df.columns) // 2):
+        return 0
+    for i in range(min(10, len(df))):
+        if labelled(list(df.iloc[i])):
+            return i + 1
+    return 0
 
 
 def load_frame(path: str) -> pd.DataFrame:
@@ -138,13 +156,18 @@ Return ONLY JSON with this shape:
   "agg": one of ["sum","mean","count","min","max","median","nunique"],
   "filters": [{{"column": name, "op": one of ["==","!=",">",">=","<","<=","contains"], "value": value}}],
   "sort": "desc" or "asc",
-  "top_n": integer or null}}
+  "top_n": integer or null,
+  "change": {{"column": period column, "from": value, "to": value}} or null}}
 
 Rules:
 - Use only the exact column names listed above.
 - "sales", "revenue", "amount" mean the money column (e.g. a total/price column); "units" or "quantity" mean the quantity column.
 - For "how many" questions use agg "count" and metric null.
 - "by X and Y" means group_by [X, Y].
+- For a change, drop, increase or growth "between A and B" (e.g. March 2020 → April 2020): set "change" on the
+  period column with its "from" and "to" values exactly as they appear in the data (e.g. Month 3 → 4), put
+  the other period parts in filters (e.g. Calendar Year == 2020), and sort "asc" for drops, "desc" for increases.
+- "excluding X" / "except X" means a filter with op "!=" on X.
 """
 
 
@@ -230,6 +253,11 @@ def _validate(plan: Dict, df: pd.DataFrame, question: str = "") -> Optional[Dict
     def _first(v):
         return v[0] if isinstance(v, list) and v else v
 
+    ch = plan.get("change")
+    if isinstance(ch, dict) and _match_col(ch.get("column"), df) and ch.get("from") not in (None, "") \
+            and ch.get("to") not in (None, ""):
+        return _validate_change(plan, ch, df, question)
+
     agg = _first(plan.get("agg"))
     agg = agg.strip().lower() if isinstance(agg, str) else ""
     agg = {"avg": "mean", "average": "mean", "total": "sum"}.get(agg, agg)
@@ -281,9 +309,14 @@ def _validate(plan: Dict, df: pd.DataFrame, question: str = "") -> Optional[Dict
                 continue
             hits = [v for v in values if _words(str(v)) and _words(str(v)) <= q_words]
             if len(hits) == 1:
-                filters.append({"column": col, "op": "==", "value": hits[0]})
+                # "excluding total aggregates" names the Total row to leave out, not to keep
+                excluded = re.search(r"\b(exclud\w*|except|without|other than|not)\b[^.?;]{0,40}\b"
+                                     + re.escape(str(hits[0]).split()[0]), question, re.I)
+                filters.append({"column": col, "op": "!=" if excluded else "==", "value": hits[0]})
     top_n = plan.get("top_n")
+    change = None
     return {
+        "change": change,
         "group_by": group_by,
         "metric": metric,
         "agg": agg,
@@ -291,6 +324,55 @@ def _validate(plan: Dict, df: pd.DataFrame, question: str = "") -> Optional[Dict
         "sort": "asc" if plan.get("sort") == "asc" else "desc",
         "top_n": int(top_n) if isinstance(top_n, (int, float)) and top_n > 0 else None,
     }
+
+
+_PCT_COL = re.compile(r"percent|pct|%|change|growth|ratio|rate", re.I)
+_CODE_COL = re.compile(r"\b(code|id|naics|sic|key)\b", re.I)
+
+
+def _validate_change(plan: Dict, ch: Dict, df: pd.DataFrame, question: str) -> Optional[Dict]:
+    """A change between two periods: compare an amount column per category, never a column that
+    already holds a percentage, never grouped by the period itself, and by a readable label rather
+    than a code ("Business Type Category", not "Business Group Code")."""
+    period = _match_col(ch["column"], df)
+    q_words = _words(question)
+    numeric = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and c != period
+               and not _PCT_COL.search(str(c)) and not _CODE_COL.search(str(c))]
+    metric = _match_col(plan.get("metric"), df)
+    if metric not in numeric:
+        scored = sorted(numeric, key=lambda c: -len(_words(str(c)) & q_words))
+        metric = scored[0] if scored and _words(str(scored[0])) & q_words else None
+    if not metric:
+        return None
+    labels = [c for c in df.columns if c != period and not pd.api.types.is_numeric_dtype(df[c])]
+    groups = [c for c in (_match_col(g, df) for g in (plan.get("group_by") or [])) if c and c != period]
+    groups = [c for c in groups if c in labels]
+    readable = [c for c in labels if not _CODE_COL.search(str(c))]
+    if groups and _CODE_COL.search(str(groups[0])):
+        twin = [c for c in readable if df[c].nunique() == df[groups[0]].nunique()]
+        groups = twin[:1] or groups
+    if not groups:
+        groups = sorted(readable, key=lambda c: -df[c].nunique())[:1]
+    if not groups:
+        return None
+    filters = []
+    for f in plan.get("filters") or []:
+        col = _match_col(f.get("column"), df) if isinstance(f, dict) else None
+        if col and col != period and f.get("op") in _OPS and f.get("value") not in (None, ""):
+            filters.append({"column": col, "op": f["op"], "value": f["value"]})
+    # "excluding totals": drop aggregate rows by their label too ("Total", "ALL")
+    if re.search(r"\b(exclud\w*|except|without)\b[^.?;]{0,40}\b(total|aggregate|all)", question, re.I):
+        for c in labels:
+            vals = {str(v).strip().lower() for v in df[c].dropna().unique()}
+            for agg_label in ("total", "all"):
+                if agg_label in vals and not any(f["column"] == c and str(f["value"]).lower() == agg_label for f in filters):
+                    filters.append({"column": c, "op": "!=", "value": agg_label})
+    top_n = plan.get("top_n")
+    return {"group_by": groups[:1], "metric": metric, "agg": "sum", "filters": filters,
+            "sort": "desc" if plan.get("sort") == "desc" and not re.search(r"\b(drop|declin|decreas|fall|fell|lowest|loss)", question, re.I) else "asc",
+            "top_n": int(top_n) if isinstance(top_n, (int, float)) and top_n > 0 else None,
+            "change": {"column": period, "from": _period_value(ch["from"], df[period]),
+                       "to": _period_value(ch["to"], df[period])}}
 
 
 def _truthy_value(series: pd.Series):
@@ -317,6 +399,8 @@ def execute(plan: Dict, df: pd.DataFrame) -> pd.DataFrame:
                 ">=": col >= val, "<": col < val, "<=": col <= val}[op]
         df = df[mask]
 
+    if plan.get("change"):
+        return _execute_change(plan, df)
     label = f"{plan['agg']}({plan['metric']})" if plan["metric"] else plan["agg"]
     if plan["group_by"]:
         grouped = df.groupby(plan["group_by"], dropna=False)
@@ -329,6 +413,33 @@ def execute(plan: Dict, df: pd.DataFrame) -> pd.DataFrame:
     if plan["top_n"]:
         out = out.head(plan["top_n"])
     return out
+
+
+_MONTHS = {m: i for i, m in enumerate(["january", "february", "march", "april", "may", "june", "july", "august",
+                                       "september", "october", "november", "december"], 1)}
+
+
+def _period_value(v: Any, series: pd.Series) -> Any:
+    """Match a period the planner named to the column's own values ("March" → 3 in a numeric Month column)."""
+    if pd.api.types.is_numeric_dtype(series):
+        if isinstance(v, str) and v.strip().lower()[:3] in {m[:3] for m in _MONTHS}:
+            return next(i for m, i in _MONTHS.items() if m[:3] == v.strip().lower()[:3])
+        return pd.to_numeric(v, errors="coerce")
+    return str(v)
+
+
+def _execute_change(plan: Dict, df: pd.DataFrame) -> pd.DataFrame:
+    """Per-group change of a metric between two values of a period column, with the percentage."""
+    ch, metric, agg = plan["change"], plan["metric"], plan["agg"]
+    col = df[ch["column"]]
+    keyed = col if pd.api.types.is_numeric_dtype(col) else col.astype(str).str.strip()
+    a = df[keyed == ch["from"]].groupby(plan["group_by"], dropna=False)[metric].agg(agg)
+    b = df[keyed == ch["to"]].groupby(plan["group_by"], dropna=False)[metric].agg(agg)
+    out = pd.concat([a.rename(f"{ch['column']} {ch['from']}"), b.rename(f"{ch['column']} {ch['to']}")], axis=1).dropna()
+    out = out[out.iloc[:, 0] != 0]
+    out["change %"] = (out.iloc[:, 1] - out.iloc[:, 0]) / out.iloc[:, 0].abs() * 100
+    out = out.reset_index().sort_values("change %", ascending=plan["sort"] == "asc")
+    return out.head(plan["top_n"]) if plan["top_n"] else out
 
 
 _LAYOUT_REF = re.compile(r"\b(chart|table|figure|exhibit|schedule|section|appendix|page)\s+[0-9IVX]+[A-Z]?\b|"
@@ -369,9 +480,18 @@ def answer_from_tables(question: str, tenant_id: str, doc_ids: Optional[List[str
     desc = f"**{plan['agg']}** of **{plan['metric'] or 'rows'}**"
     if plan["group_by"]:
         desc += " by " + " and ".join(f"**{g}**" for g in plan["group_by"])
+    if plan.get("change"):
+        desc += f", change from {plan['change']['column']} {plan['change']['from']} to {plan['change']['to']}"
     if plan["filters"]:
         desc += " where " + ", ".join(f"{f['column']} {f['op']} {f['value']}" for f in plan["filters"])
     answer = f"{desc} — computed over all {len(df):,} rows of [{doc['filename']}]\n\n{table}"
+    if plan.get("change") and "change %" in result.columns and len(result):
+        top = result.iloc[0]
+        a, b = result.columns[-3], result.columns[-2]
+        word = "drop" if top["change %"] < 0 else "increase"
+        lead = (f"**Largest {word}: {top[plan['group_by'][0]]}, {top['change %']:+.2f}%** "
+                f"({plan['metric']} {top[a]:,.0f} → {top[b]:,.0f}, {a} → {b}).")
+        answer = lead + "\n\n" + answer
     if len(result) > _MAX_ROWS_OUT:
         answer += f"\n\n_Showing {_MAX_ROWS_OUT} of {len(result)} groups._"
     logger.info(f"[tabular] {doc['filename']} plan={plan} → {len(result)} rows")

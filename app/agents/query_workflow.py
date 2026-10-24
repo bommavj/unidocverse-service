@@ -77,6 +77,7 @@ class QueryState(TypedDict):
     question: str
     tenant_id: str
     doc_ids: List[str]
+    request_ctx: Any                        # contextvars snapshot of the request (see _in_request)
 
     # Supervisor output
     domains: List[str]                      # domains to run (ordered by priority)
@@ -214,6 +215,20 @@ def _run_domain_agent(domain: str, question: str, doc_ids: List[str], tenant_id:
 
 
 from app.core.llm import CloudConsentRequired as _CONSENT
+
+
+def _in_request(node):
+    """LangGraph runs nodes on its own worker threads, which start with empty context variables —
+    the organisation, the user and their cloud choice ("Send to …" / "Answer locally") were lost
+    there, so a question the user had approved asked again. Each node runs in a copy of the
+    request's context instead (a copy per node, so parallel domain nodes don't collide)."""
+    import functools
+
+    @functools.wraps(node)
+    def run(state):
+        ctx = state.get("request_ctx")
+        return ctx.copy().run(node, state) if ctx is not None else node(state)
+    return run
 
 
 def make_domain_node(domain: str):
@@ -407,16 +422,16 @@ def create_query_workflow() -> StateGraph:
     graph = StateGraph(QueryState)
 
     # Supervisor
-    graph.add_node("supervisor_node", supervisor_node)
+    graph.add_node("supervisor_node", _in_request(supervisor_node))
 
     # One domain node per agent class + general
     all_domains = list(_AGENT_CLASSES.keys()) + ["general"]
     for domain in all_domains:
-        graph.add_node(f"{domain}_node", make_domain_node(domain))
+        graph.add_node(f"{domain}_node", _in_request(make_domain_node(domain)))
 
     # Merger and synthesizer
-    graph.add_node("merger_node",      merger_node)
-    graph.add_node("synthesizer_node", synthesizer_node)
+    graph.add_node("merger_node",      _in_request(merger_node))
+    graph.add_node("synthesizer_node", _in_request(synthesizer_node))
 
     # Edges
     graph.set_entry_point("supervisor_node")
@@ -471,9 +486,11 @@ def run_query_workflow(
     if tenant_id is None:
         tenant_id = get_current_tenant_id()
 
+    import contextvars
     initial_state: QueryState = {
         "question":      question,
         "tenant_id":     tenant_id,
+        "request_ctx":   contextvars.copy_context(),
         "doc_ids":       doc_ids or [],
         "domains":       [],
         "plan":          {},

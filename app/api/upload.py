@@ -1,3 +1,4 @@
+import contextvars
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -119,8 +120,8 @@ async def upload_document(
               extra={"file_size": len(content), "mime_type": file.content_type, "client_id": client_id})
 
         # Submit to bounded ingest pool — no unbounded thread creation
-        _ingest_pool.submit(
-            ProcessingService.process_document_background,
+        _ingest_pool.submit(  # keep the request's organisation in the worker
+            contextvars.copy_context().run, ProcessingService.process_document_background,
             doc_id, str(final_file_path), file.filename
         )
 

@@ -210,9 +210,22 @@ def research_ask_stream(
     """SSE endpoint — streams step events then answer tokens."""
     if not question or not question.strip():
         raise HTTPException(400, "Question is required")
-    # Set before the stream starts: each SSE step runs in a copy of this context
+    # Starlette resumes this generator in a fresh copy of the request context at every step, so
+    # a choice set once here was lost by the time the answer step ran (an approved question asked
+    # again). _bound() re-applies the user's cloud choice — with one shared notes list — at each step.
     from app.core import llm
-    llm.begin_request(cloud, (_ or {}).get("username"))
+    _user = (_ or {}).get("username")
+    _notes: list = []
+    llm.begin_request(cloud, _user, _notes)
+
+    def _bound(gen):
+        while True:
+            llm.begin_request(cloud, _user, _notes)
+            try:
+                item = next(gen)
+            except StopIteration:
+                return
+            yield item
 
     doc_id_list     = [d for d in (doc_ids         or "").split(",") if d.strip()]
     ctx_doc_id_list = [d for d in (context_doc_ids or "").split(",") if d.strip()]
@@ -444,7 +457,7 @@ def research_ask_stream(
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
             yield f"data: {json.dumps({'type': 'done', 'session_id': None, 'answer': err_msg, 'matched_doc_ids': []})}\n\n"
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream", headers={
+    return StreamingResponse(_bound(event_stream()), media_type="text/event-stream", headers={
         "Cache-Control": "no-cache",
         "X-Accel-Buffering": "no",
     })

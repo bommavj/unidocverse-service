@@ -1,3 +1,4 @@
+import contextvars
 import base64
 import io
 import json
@@ -280,8 +281,8 @@ async def reprocess_document(doc_id: str, db: Session = Depends(get_db)):
     db.commit()
 
     from app.services.processing_service import ProcessingService
-    _ingest_pool.submit(
-        ProcessingService.process_document_background,
+    _ingest_pool.submit(  # keep the request's organisation in the worker
+        contextvars.copy_context().run, ProcessingService.process_document_background,
         doc_id, doc.file_path, doc.filename
     )
 
@@ -335,8 +336,8 @@ async def unlock_document(
     doc.doc_metadata = {}
     db.commit()
 
-    _ingest_pool.submit(
-        ProcessingService.process_document_background,
+    _ingest_pool.submit(  # keep the request's organisation in the worker
+        contextvars.copy_context().run, ProcessingService.process_document_background,
         doc_id, doc.file_path, doc.filename
     )
 

@@ -83,10 +83,12 @@ def last_route() -> Tuple[str, str]:
     return _ROUTE.get()
 
 
-def begin_request(decision: Optional[str], user: Optional[str]) -> None:
+def begin_request(decision: Optional[str], user: Optional[str], notes: Optional[List[str]] = None) -> None:
+    """Pass the same `notes` list on every call for one request (e.g. each step of a stream) so
+    notes added in any step or thread are all shown under the answer."""
     _DECISION.set(decision if decision in ("ok", "local") else None)
     _USER.set(user)
-    _NOTES.set([])
+    _NOTES.set(notes if notes is not None else [])
 
 
 def request_notes() -> List[str]:

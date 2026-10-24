@@ -619,10 +619,13 @@ def run_supervisor(
     else:
         # Parallel execution for multi-domain questions
         results = []
+        # Each subagent runs in a copy of this request's context, so the organisation and the
+        # user's cloud choice ("Send to …" / "Answer locally") reach every thread.
+        import contextvars
         with ThreadPoolExecutor(max_workers=len(domains)) as pool:
             futures = {
                 pool.submit(
-                    _run_subagent,
+                    contextvars.copy_context().run, _run_subagent,
                     domain, question, doc_ids, stream_answer, page, prior_qa,
                 ): domain
                 for domain in domains
