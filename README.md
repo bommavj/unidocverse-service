@@ -218,6 +218,8 @@ The service exposes a full MCP server with 30+ tools covering all document verti
 
 ## License
 
-Apache License 2.0 — see [LICENSE](../LICENSE).
+UniDocVerse Service is licensed under the [Apache License 2.0](LICENSE). Copyright 2024–2026 Vijay Kumar Bomma.
 
-Copyright 2024 Vijay Bomma
+Redistributions and derivative works must keep the attribution in [NOTICE](NOTICE). "UniDocVerse" and the UniDocVerse logo are trademarks of Vijay Kumar Bomma and are not licensed for use by others.
+
+To cite this software, use the **Cite this repository** button or [CITATION.cff](CITATION.cff) (DOI [10.5281/zenodo.21880388](https://doi.org/10.5281/zenodo.21880388)).

@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "UniDocVerse Service"
+abstract: "UniDocVerse backend: document ingestion, OCR, hybrid search with reranking and a cited-answer research agent."
+type: software
+authors:
+  - family-names: Bomma
+    given-names: Vijay Kumar
+    alias: bommavj
+version: "0.1.7"
+date-released: "2026-10-23"
+license: Apache-2.0
+doi: "10.5281/zenodo.21880388"
+repository-code: "https://github.com/bommavj/unidocverse-service"
+url: "https://unidocverse.com"
+keywords:
+  - document-ai
+  - retrieval-augmented-generation
+  - ocr
+  - local-llm
+  - privacy
