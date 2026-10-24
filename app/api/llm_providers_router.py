@@ -197,7 +197,8 @@ def engine_status():
     vision = llm.local_model_for("vision", VLM_MODEL)
     return {
         "ollama": {"reachable": reachable, "models": chat_models},
-        "cloud": {"provider": cfg["provider"], "model": cfg["model"]} if cfg else None,
+        "cloud": {"provider": cfg["provider"], "model": cfg["model"],
+                  "label": llm.PROVIDERS.get(cfg["provider"], {}).get("label", cfg["provider"])} if cfg else None,
         "ready": bool(chat_models) or bool(cfg),
         # Forms and charts are read accurately only when the vision model is installed
         "vision": {"model": vision, "installed": vision in models, "pull": f"ollama pull {vision.split(':')[0]}"},
