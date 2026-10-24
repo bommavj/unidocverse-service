@@ -26,5 +26,5 @@ def try_structured_answer(question: str, tenant_id: str, doc_ids: Optional[List[
         if res:
             sources = res.get("sources") or ([res["source"]] if res.get("source") else [])
             return {"tool": tool, "answer": res["answer"], "sources": sources,
-                    "detail": res.get("plan") or {"rows": res.get("rows")}}
+                    "detail": res.get("plan") or {"rows": res.get("rows")}, "chart": res.get("chart")}
     return None

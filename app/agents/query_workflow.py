@@ -184,7 +184,7 @@ def _run_domain_agent(domain: str, question: str, doc_ids: List[str], tenant_id:
             sources=structured["sources"],
             steps=[{"tool": structured["tool"], "thought": "Computed from structured data",
                     "args": structured["detail"], "observation": {"sources": structured["sources"]}}],
-            chart_data=None,
+            chart_data=structured.get("chart"),
             domain=domain,
         )
 

@@ -4568,6 +4568,7 @@ def run_research_agent(
             "answer":     structured["answer"],
             "sources":    structured["sources"],
             "iterations": len(steps),
+            "chart_data": structured.get("chart"),
         }
 
     # ── New query: full ReAct loop ────────────────────────────────────────────

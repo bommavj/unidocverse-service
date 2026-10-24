@@ -375,7 +375,29 @@ def answer_from_tables(question: str, tenant_id: str, doc_ids: Optional[List[str
     if len(result) > _MAX_ROWS_OUT:
         answer += f"\n\n_Showing {_MAX_ROWS_OUT} of {len(result)} groups._"
     logger.info(f"[tabular] {doc['filename']} plan={plan} → {len(result)} rows")
-    return {"answer": answer, "source": doc["filename"], "plan": plan, "rows": len(result)}
+    return {"answer": answer, "source": doc["filename"], "plan": plan, "rows": len(result),
+            "chart": _chart(result, plan)}
+
+
+_CHART_COLORS = ["#2563eb", "#0e9384", "#f79009", "#7a5af8", "#e04f16", "#15b79e", "#dd2590", "#667085"]
+
+
+def _chart(result: pd.DataFrame, plan: Dict) -> Optional[Dict]:
+    """Bar chart for a grouped result (one label column + one number column, 2–30 groups) — the
+    Visualize button in Research. Anything else (single totals, wide tables) gets no chart."""
+    if len(result.columns) != 2 or not 2 <= len(result) <= 30:
+        return None
+    label_col, value_col = result.columns
+    if not pd.api.types.is_numeric_dtype(result[value_col]) or pd.api.types.is_numeric_dtype(result[label_col]):
+        return None
+    labels = [str(v) for v in result[label_col]]
+    values = [round(float(v), 2) for v in result[value_col]]
+    colors = [_CHART_COLORS[i % len(_CHART_COLORS)] for i in range(len(values))]
+    return {"type": "bar", "labels": labels,
+            "datasets": [{"label": f"{plan.get('agg', 'value')} of {plan.get('metric') or 'rows'}", "data": values,
+                          "backgroundColor": [c + "cc" for c in colors], "borderColor": colors,
+                          "borderWidth": 1, "borderRadius": 4}],
+            "_group_col": str(label_col), "_metric_col": str(value_col)}
 
 
 # ── Overview: deterministic trends & insights, no LLM ────────────────────────
