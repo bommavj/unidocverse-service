@@ -28,6 +28,16 @@ def usage(_: dict = Depends(get_current_user), db: Session = Depends(get_db)):
             "usage": {k: m.get(k) for k in keep}}
 
 
+@router.get("/stats")
+def stats(days: int = 30, _: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Statistics page: this organisation's usage over the last `days` (counts only — no names,
+    file names or text), for the user to view and share if they choose."""
+    days = days if days in (7, 30, 90, 365) else 30
+    start = date.today() - timedelta(days=days)
+    return {"days": days, "period_start": start, "period_end": date.today(), "app_version": APP_VERSION,
+            "edition": os.getenv("UDV_EDITION", "desktop"), "metrics": measure(db, start, date.today())}
+
+
 class Sent(BaseModel):
     destination: str
     rating: int
