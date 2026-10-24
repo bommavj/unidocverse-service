@@ -290,6 +290,8 @@ app.include_router(llm_providers_router.router,  **_protected)
 from app.api import web_search_router
 from app.api import setup_router
 from app.api import pilot_router
+from app.api import feedback_router
+app.include_router(feedback_router.router, **_protected)
 app.include_router(pilot_router.router, **_protected)
 app.include_router(setup_router.router, **_protected)
 app.include_router(web_search_router.router, **_protected)
