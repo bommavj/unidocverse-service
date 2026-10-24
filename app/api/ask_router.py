@@ -671,7 +671,7 @@ def _extract_named_subject(question: str) -> str:
     Returns the detected name, or "" if none found.
     """
     import re
-    # Look for patterns: "for John Smith", "about Jane Doe", "of Vijay Bomma"
+    # Look for patterns: "for John Smith", "about Jane Doe", "of Vijay Kumar Bomma"
     m = re.search(
         r'\b(?:for|about|of|summarize|show|find)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})',
         question,

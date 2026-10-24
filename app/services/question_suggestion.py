@@ -2,7 +2,7 @@
 Dynamic Question Suggestion Service
 Generates contextual questions based on document type and analysis
 
-Author: UniDocVerse AI (Vijay Bomma)
+Author: Vijay Kumar Bomma
 """
 from typing import List, Dict, Optional
 import logging

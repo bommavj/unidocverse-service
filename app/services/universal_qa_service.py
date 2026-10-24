@@ -2,7 +2,7 @@
 Universal Document Q&A System
 Works with ANY document type: Medical, Financial, Legal, Technical, etc.
 
-Author: UniDocVerse AI (Vijay Bomma)
+Author: Vijay Kumar Bomma
 """
 import ollama
 from typing import Dict, List, Any, Optional

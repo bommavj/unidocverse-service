@@ -10,7 +10,7 @@ Handles:
 - Treatment records
 - Multiple medical record formats
 
-Author: B-Box AI (Vijay Bomma)
+Author: Vijay Kumar Bomma
 """
 
 import re

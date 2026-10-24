@@ -252,7 +252,7 @@ Return ONLY valid JSON, no markdown, no explanation:
     "task_title": "<extracted task/reminder title or null>",
     "due_date": "<extracted due/reminder date as YYYY-MM-DD or null>"
   },
-  "named_subject": "<full name of the person, company, or entity the question is specifically about — e.g. 'Vijay Bomma', 'Acme Corp'. null if the question is about documents in general>",
+  "named_subject": "<full name of the person, company, or entity the question is specifically about — e.g. 'Vijay Kumar Bomma', 'Acme Corp'. null if the question is about documents in general>",
   "search_queries": [
     "<primary search query using field names as they appear in documents>",
     "<alternative phrasing using synonyms>",
@@ -262,7 +262,7 @@ Return ONLY valid JSON, no markdown, no explanation:
 }
 
 IMPORTANT: search_queries must use FIELD NAMES that appear in documents (e.g. "gross pay", "net pay", "federal tax"), NOT rephrasings of the user's question.
-IMPORTANT: If the question is about a specific person or entity (e.g. "Vijay Bomma documents"), set named_subject to that name. The system will use it to filter out irrelevant documents.
+IMPORTANT: If the question is about a specific person or entity (e.g. "Vijay Kumar Bomma documents"), set named_subject to that name. The system will use it to filter out irrelevant documents.
 
 Examples:
 
