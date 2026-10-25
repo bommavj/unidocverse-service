@@ -61,6 +61,32 @@ class PostProcessingRegistry:
         "insurance_claim":          ["ams"],
         "auto_insurance_claim":     ["ams"],
 
+        # ── Immigration: person on the notice → client (after approval) ─────
+        "uscis_receipt":     ["immigration"],
+        "uscis_notice":      ["immigration"],
+        "immigration_receipt":["immigration"],
+        "i797":              ["immigration"],
+        "i94":               ["immigration"],
+        "i20":               ["immigration"],
+        "ds2019":            ["immigration"],
+        "i130":              ["immigration"],
+        "i140":              ["immigration"],
+        "i485":              ["immigration"],
+        "i751":              ["immigration"],
+        "i765":              ["immigration"],
+        "i90":               ["immigration"],
+        "n400":              ["immigration"],
+        "ead":               ["immigration"],
+        "ead_card":          ["immigration"],
+        "green_card":        ["immigration"],
+        "permanent_resident_card":["immigration"],
+        "naturalization_certificate":["immigration"],
+        "passport":          ["immigration"],
+        "passport_document": ["immigration"],
+        "visa":              ["immigration"],
+        "visa_document":     ["immigration"],
+        "immigration":       ["immigration"],
+
         # ── Future domains — uncomment when ready ─────────────────────────────
         "contract":           ["legal"],
         "nda":                ["legal"],
@@ -109,6 +135,9 @@ class PostProcessingRegistry:
         if name == "hr":
             from app.services.hr_workflow_service import HRWorkflowService
             return HRWorkflowService
+        if name == "immigration":
+            from app.services.immigration_workflow_service import ImmigrationWorkflowService
+            return ImmigrationWorkflowService
         if name == "supply_chain":
             from app.services.supply_chain_workflow_service import SupplyChainWorkflowService
             return SupplyChainWorkflowService

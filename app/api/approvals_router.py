@@ -56,7 +56,7 @@ def ensure_table(db: Session):
             status TEXT NOT NULL DEFAULT 'pending', priority TEXT DEFAULT 'normal', due_date TEXT,
             created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW())"""))
     for col in ("tenant_id TEXT", "requested_by TEXT", "source TEXT NOT NULL DEFAULT 'manual'",
-                "clm_id TEXT", "expires_at TIMESTAMP"):
+                "clm_id TEXT", "expires_at TIMESTAMP", "action JSONB"):
         db.execute(text(f"ALTER TABLE approval_requests ADD COLUMN IF NOT EXISTS {col}"))
     db.commit()
 
@@ -90,18 +90,20 @@ def _identities(db: Session, user: dict) -> set:
 def create_request(db: Session, tenant_id: str, doc_id: str, title: str, description: str,
                    approvers: List[str], requested_by: str, source: str = "manual", priority: str = "normal",
                    due_date: Optional[str] = None, clm_id: Optional[str] = None,
-                   expires_days: Optional[int] = None) -> str:
+                   expires_days: Optional[int] = None, action: Optional[dict] = None) -> str:
     """Shared by the API, the research agent and contract lifecycle."""
     ensure_table(db)
     aid = str(uuid.uuid4())
     db.execute(text("""
         INSERT INTO approval_requests (id, doc_id, title, description, approvers, due_date, priority,
-            tenant_id, requested_by, source, clm_id, expires_at)
+            tenant_id, requested_by, source, clm_id, expires_at, action)
         VALUES (:id, :doc_id, :title, :desc, CAST(:approvers AS jsonb), :due, :priority,
-            :t, :by, :src, :clm, CASE WHEN :exp IS NULL THEN NULL ELSE NOW() + make_interval(days => :exp) END)
+            :t, :by, :src, :clm, CASE WHEN :exp IS NULL THEN NULL ELSE NOW() + make_interval(days => :exp) END,
+            CAST(:action AS jsonb))
     """), {"id": aid, "doc_id": doc_id or "", "title": title, "desc": description,
            "approvers": json.dumps(approvers), "due": due_date, "priority": priority, "t": tenant_id,
-           "by": requested_by, "src": source, "clm": clm_id, "exp": expires_days})
+           "by": requested_by, "src": source, "clm": clm_id, "exp": expires_days,
+           "action": json.dumps(action) if action else None})
     db.commit()
     audit("approval.requested", actor=requested_by, doc_id=doc_id or None, detail=title,
           extra={"approval_id": aid, "approvers": approvers, "source": source, "clm_id": clm_id}, tenant_id=tenant_id)
@@ -176,7 +178,7 @@ def decide(aid: str, body: ApprovalDecision, request: Request,
         status = "rejected"
     elif any(x["decision"] == "request_changes" for x in decisions):
         status = "changes_requested"
-    elif len(approved) >= max(1, len(approvers)) or (user.get("role") == "admin" and d.get("source") in ("agent", "clarification")):
+    elif len(approved) >= max(1, len(approvers)) or (user.get("role") == "admin" and d.get("source") in ("agent", "clarification", "document_ai")):
         status = "approved"
     else:
         status = "pending"
@@ -193,6 +195,14 @@ def decide(aid: str, body: ApprovalDecision, request: Request,
         from app.api.clm_router import move_entry
         move_entry(db, d["clm_id"], "active" if status == "approved" else "review", who,
                    f"Approval {status.replace('_', ' ')}" + (f": {body.comment}" if body.comment else ""))
+    # Document AI: approved "Create client X" → create the client and link its documents
+    action = d.get("action") or {}
+    if status == "approved" and action.get("type") == "create_client":
+        from app.services.immigration_workflow_service import create_client_from_approval
+        cid = create_client_from_approval(db, d.get("tenant_id") or _t(), action, who)
+        audit("client.created", actor=who, detail=f"{action.get('first_name')} {action.get('last_name')}",
+              extra={"approval_id": aid, "client_id": cid, "doc_ids": action.get("doc_ids")})
+        return {"ok": True, "status": status, "decisions": decisions, "client_id": cid}
     return {"ok": True, "status": status, "decisions": decisions}
 
 
