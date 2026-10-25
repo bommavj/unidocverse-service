@@ -188,6 +188,20 @@ async def lifespan(app: FastAPI):
             logger.info("✅ License already active")
     except Exception as _e:
         logger.warning(f"⚠ Trial auto-activation skipped: {_e}")
+
+    # ── Immigration documents uploaded before the client hook existed ─────
+    def _immigration_backfill():
+        from app.core.database import SessionLocal
+        from app.services.immigration_workflow_service import scan_existing
+        db = SessionLocal()
+        try:
+            logger.info(f"✅ Immigration client scan: {scan_existing(db)}")
+        except Exception as _e:
+            logger.warning(f"⚠ Immigration client scan skipped: {_e}")
+        finally:
+            db.close()
+    import threading
+    threading.Thread(target=_immigration_backfill, daemon=True).start()
     yield
     # Stop job worker cleanly on shutdown
     from app.services.job_worker import stop_background_worker
