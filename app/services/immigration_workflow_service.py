@@ -77,6 +77,48 @@ def _name_from_text(raw: str) -> str:
     return ""
 
 
+# USCIS fillable forms: which part holds the person who becomes the client, in order of preference
+_FORM_PARTS = {
+    "i130": ["Pt4"], "i140": ["Pt3"], "i129f": ["Pt2"], "i485": ["Pt1"], "i765": ["Pt2", "Pt1", "-"],
+    "i751": ["Pt1"], "n400": ["Pt2", "Pt1"], "i131": ["Pt2", "Pt1"], "i90": ["Pt1"], "i539": ["Pt1"],
+    "i821d": ["Pt1"], "i589": ["Pt1", "PtA"], "i864": ["Pt2"], "i360": ["Pt3"], "i526": ["Pt2"],
+}
+_FORM_ID = re.compile(r"\bForm\s+([IN])-(\d{2,3}[A-Z]?)\b")
+
+
+def form_id(raw: str, filename: str = "") -> str:
+    m = _FORM_ID.search(raw or "") or re.search(r"\b([IN])-?(\d{2,3}[A-Z]?)\b", filename or "")
+    return f"{m.group(1)}{m.group(2)}".lower() if m else ""
+
+
+def _name_from_pdf_form(path: str, form: str) -> str:
+    """Read the filled fields of a USCIS PDF (names survive here even when text extraction scrambles them)."""
+    parts = _FORM_PARTS.get(form)
+    if not parts or not path or not path.lower().endswith(".pdf"):
+        return ""
+    try:
+        import fitz
+        vals: Dict[str, Dict[str, str]] = {}
+        with fitz.open(path) as d:
+            for page in d:
+                for w in page.widgets() or []:
+                    n, v = w.field_name or "", (w.field_value or "").strip()
+                    leaf = n.split(".")[-1]                    # e.g. Pt4Line1a_FamilyName[0], P1_Line3a_FamilyName[0]
+                    pm = re.match(r"(?:Pt|Part|P)(\d+|A)", leaf)
+                    part = f"Pt{pm.group(1)}" if pm else "-"
+                    kind = ("last" if re.search(r"_(FamilyName|LastName)\[", leaf) else
+                            "first" if re.search(r"_(GivenName|FirstName)\[", leaf) else "")
+                    if v and kind:                               # first one per part is the person's own name
+                        vals.setdefault(part, {}).setdefault(kind, v)
+        for p in parts:
+            got = vals.get(p) or {}
+            if got.get("first") and got.get("last"):
+                return _clean_name(f"{got['last']}, {got['first']}")
+    except Exception as e:
+        logger.debug(f"  form fields unreadable: {e}")
+    return ""
+
+
 def _name_from_filename(filename: str) -> str:
     m = _FILENAME.search(re.sub(r"\.\w+$", "", filename or ""))
     return _clean_name(m.group(1)) if m else ""
@@ -101,7 +143,14 @@ class ImmigrationWorkflowService:
         if getattr(document, "client_id", None):
             return {"skipped": True, "reason": "already linked"}
         analysis = state.get("analysis_result") or {}
-        name = _person_name(analysis.get("fields") or {}) or _name_from_text(state.get("raw_text") or "")
+        form = form_id(state.get("raw_text") or "", getattr(document, "filename", ""))
+        form_name = _name_from_pdf_form(getattr(document, "file_path", "") or "", form)
+        if form_name and (document.doc_type or "").lower() != form:
+            # A filled USCIS form (its fields prove it) is not a receipt or a passport
+            self.db.execute(text("UPDATE documents SET doc_type = :t WHERE id = :id"), {"t": form, "id": doc_id})
+            self.db.commit()
+        name = (form_name
+                or _person_name(analysis.get("fields") or {}) or _name_from_text(state.get("raw_text") or ""))
         if not name:
             # A filename is only trusted to link to an existing client, never to create one
             guess = _name_from_filename(getattr(document, "filename", ""))
