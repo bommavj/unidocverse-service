@@ -40,7 +40,9 @@ TYPE_LABEL = {"passport": "Passport", "i94": "I-94 record", "visa": "Visa stamp"
               "ead": "EAD card", "green_card": "Green card", "lca": "LCA", "perm": "PERM",
               "status_period": "Status", "i140_approval": "I-140 approval", "i20": "I-20",
               "ds2019": "DS-2019", "marriage_certificate": "Marriage certificate", "birth_certificate": "Birth certificate"}
-RELATIONS = ("spouse", "child", "parent", "fiance", "relative")
+# A link stores what person_b is to person_a; parent/child read the other way round from person_b.
+RELATIONS = ("spouse", "child", "parent", "sibling", "fiance", "relative")
+INVERSE = {"parent": "child", "child": "parent"}
 _EXPIRY_TYPES = ("passport", "i94", "ead", "green_card", "status_period", "visa")
 
 
@@ -200,9 +202,16 @@ def _doc_node(db: Session, tenant: str, d) -> Optional[Dict]:
     if "," in (name or ""):
         last, first = [p.strip() for p in name.split(",", 1)]
         name = f"{first} {last}"
+    parents = []
+    if ntype == "birth_certificate":
+        lab = lambda l: _labelled(raw, l, r"([A-Z][A-Za-z'\-]+(?: (?!(?:Father|Mother|Date|Place|Sex)\b)[A-Z][A-Za-z'\-]+){1,3})")
+        name = lab(r"Name of (?:the )?Child|Child'?s Name|Child Name|Full Name") or name
+        parents = [p for p in (lab(r"(?:Name of )?Father(?:'s Name)?"), lab(r"(?:Name of )?Mother(?:'s Name)?")) if p]
     name = _clean_name(name or "") or ""
     name = " ".join(w.capitalize() if w.isupper() and len(w) > 1 else w for w in name.split())   # "MEHTA" → "Mehta"
     facts = extract_facts(ntype, raw, fields, name)
+    if parents:
+        facts["parents"] = [_clean_name(p) for p in parents if _clean_name(p)]
     return {"node_type": ntype, "document_id": str(d.id), "client_id": str(d.client_id) if d.client_id else None,
             "label": TYPE_LABEL.get(ntype) or (re.sub(r"^form_([in])(\d+)(\w*)$", lambda m: f"Form {m.group(1).upper()}-{m.group(2)}{m.group(3).upper()}", ntype)
                                                if ntype.startswith("form_") else ntype.replace("_", " ").capitalize()),
@@ -262,7 +271,8 @@ def _fv(facts: Dict, k: str):
 
 def _nodes(db: Session, tenant: str, pk: str) -> List[Dict]:
     return [dict(r._mapping) for r in db.execute(text(
-        "SELECT * FROM imm_nodes WHERE tenant_id = :t AND person_key = :pk ORDER BY valid_to NULLS LAST"),
+        "SELECT * FROM imm_nodes WHERE tenant_id = :t AND (person_key = :pk OR facts->'parties'->'value' ? :pk) "
+        "ORDER BY valid_to NULLS LAST"),
         {"t": tenant, "pk": pk})]
 
 
@@ -527,27 +537,51 @@ def _form_part_names(path: str) -> Dict[str, str]:
     return {p: f"{n['first']} {n['last']}".title() for p, n in out.items() if n.get("first") and n.get("last")}
 
 
+def _i130_relation(path: str) -> str:
+    """What the beneficiary is to the petitioner, from Part 1 of a filled I-130."""
+    try:
+        import fitz
+        with fitz.open(path) as d:
+            for w in d[0].widgets() or []:
+                m = re.search(r"Pt1Line1_(Spouse|Parent|Child|Siblings)\[", w.field_name or "")
+                if m and w.field_value and w.field_value == w.on_state() and w.field_value not in ("Off", "N"):
+                    return {"Spouse": "spouse", "Parent": "parent", "Child": "child", "Siblings": "sibling"}[m.group(1)]
+    except Exception:
+        pass
+    return "relative"
+
+
 def propose_family(db: Session, tenant: str) -> int:
     """Suggest family links from documents; the lawyer confirms. Never overrides a decision."""
     from app.services.immigration_workflow_service import _clean_name
     made = 0
-    rows = db.execute(text("""SELECT n.person_key, n.node_type, d.raw_text, d.file_path FROM imm_nodes n
+    rows = db.execute(text("""SELECT n.id, n.person_key, n.node_type, n.facts, d.raw_text, d.file_path FROM imm_nodes n
                               JOIN documents d ON d.id::text = n.document_id
-                              WHERE n.tenant_id = :t AND n.node_type IN ('marriage_certificate', 'form_i130', 'form_i129f')"""),
+                              WHERE n.tenant_id = :t AND n.node_type IN ('marriage_certificate', 'birth_certificate', 'form_i130', 'form_i129f')"""),
                       {"t": tenant}).fetchall()
     for r in rows:
         if r.node_type == "marriage_certificate":
             word = rf"(?!(?:{_SPOUSE_LABELS}|Date|Place)\b)[A-Z][A-Za-z'\-]+"     # a name word that is not the next label
             names = [_clean_name(m.group(1)) for m in re.finditer(rf"(?:{_SPOUSE_LABELS})\s*[:\-]?\s*({word}(?: {word}){{1,3}})", r.raw_text or "")]
             keys = [k for k in dict.fromkeys(_pk_for_name(db, tenant, n) for n in names if n) if k]
+            if keys:                                       # the certificate belongs to both spouses
+                facts = dict(r.facts or {})
+                facts["parties"] = {"value": keys}
+                db.execute(text("UPDATE imm_nodes SET facts = CAST(:f AS jsonb), person_key = COALESCE(NULLIF(person_key, ''), :pk) WHERE id = :id"),
+                           {"f": json.dumps(facts), "pk": keys[0], "id": r.id})
             if len(keys) >= 2:
                 made += _propose(db, tenant, keys[0], keys[1], "spouse", "Both named on the marriage certificate")
+        elif r.node_type == "birth_certificate":
+            child = r.person_key
+            for parent in value({"facts": r.facts}, "parents") or []:
+                made += _propose(db, tenant, child, _pk_for_name(db, tenant, parent), "parent",
+                                 f"{parent} named as a parent on the birth certificate")
         else:
             parts = _form_part_names(r.file_path)
             pet, ben = (parts.get("Pt2"), parts.get("Pt4")) if r.node_type == "form_i130" else (parts.get("Pt1"), parts.get("Pt2"))
             a, b = _pk_for_name(db, tenant, pet or ""), _pk_for_name(db, tenant, ben or "")
-            rel = "relative" if r.node_type == "form_i130" else "fiance"
-            made += _propose(db, tenant, a, b, rel, f"Petitioner and beneficiary on {'Form I-130' if rel == 'relative' else 'Form I-129F'}")
+            rel = _i130_relation(r.file_path) if r.node_type == "form_i130" else "fiance"
+            made += _propose(db, tenant, a, b, rel, f"Petitioner and beneficiary on {'Form I-130' if r.node_type == 'form_i130' else 'Form I-129F'}")
     # A dependent status and its principal status with the same family name
     deps = dependents()
     people: Dict[str, Tuple[str, str]] = {}
@@ -593,7 +627,10 @@ def decide_family(db: Session, tenant: str, link_id: str, decision: str, reason:
         raise ValueError("Decision must be confirm or reject")
     if decision == "reject":
         reason = _require_reason(reason)
-    rel = relation if relation in RELATIONS else row.relation
+    rel = relation if relation in RELATIONS else None
+    if rel and viewer and viewer == row.person_b:
+        rel = INVERSE.get(rel, rel)
+    rel = rel or row.relation
     state = "confirmed" if decision == "confirm" else "rejected"
     db.execute(text("UPDATE imm_family SET state=:s, relation=:r, decided_by=:a, decided_at=now(), reason=:reason WHERE id=:id"),
                {"s": state, "r": rel, "a": actor, "reason": reason, "id": link_id})
@@ -674,7 +711,8 @@ def person_graph(db: Session, tenant: str, pk: str) -> Dict:
     family = []
     for l in family_links(db, tenant, pk):
         other = _nodes(db, tenant, l["other"])
-        family.append({**l, "name": next((value(n, "name") for n in other if value(n, "name")), ""),
+        view = l["relation"] if l["person_a"] == pk else INVERSE.get(l["relation"], l["relation"])
+        family.append({**l, "relation_view": view, "name": next((value(n, "name") for n in other if value(n, "name")), ""),
                        "class": person_class(other), "status_until": status_until(other)})
     # a dependent can't stay past the principal: the earlier date is the real limit
     cls, until, limited_by = person_class(nodes), status_until(nodes), None
