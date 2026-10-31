@@ -83,6 +83,8 @@ class PostProcessingRegistry:
         "i864":              ["immigration"],
         "i360":              ["immigration"],
         "i526":              ["immigration"],
+        "marriage_certificate": ["immigration"],
+        "birth_certificate":    ["immigration"],
         "n400":              ["immigration"],
         "ead":               ["immigration"],
         "ead_card":          ["immigration"],

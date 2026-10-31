@@ -38,7 +38,9 @@ FIELD_LABEL = {"name": "Name", "dob": "Date of birth", "a_number": "A-number", "
 TYPE_LABEL = {"passport": "Passport", "i94": "I-94 record", "visa": "Visa stamp", "i797_approval": "I-797 approval",
               "i797_receipt": "I-797 receipt", "i797_rfe": "RFE", "i797_appointment": "Appointment notice",
               "ead": "EAD card", "green_card": "Green card", "lca": "LCA", "perm": "PERM",
-              "status_period": "Status", "i140_approval": "I-140 approval"}
+              "status_period": "Status", "i140_approval": "I-140 approval", "i20": "I-20",
+              "ds2019": "DS-2019", "marriage_certificate": "Marriage certificate", "birth_certificate": "Birth certificate"}
+RELATIONS = ("spouse", "child", "parent", "fiance", "relative")
 _EXPIRY_TYPES = ("passport", "i94", "ead", "green_card", "status_period", "visa")
 
 
@@ -46,8 +48,23 @@ def _id() -> str:
     return uuid.uuid4().hex[:16]
 
 
-def patterns() -> Dict:
+def _patterns_file() -> Dict:
     return yaml.safe_load(_PATTERNS.read_text()) or {}
+
+
+def patterns() -> Dict:
+    return _patterns_file().get("patterns", {})
+
+
+def dependents() -> Dict[str, str]:
+    """Dependent class → principal class (H-4 → H-1B …)."""
+    return _patterns_file().get("dependents", {})
+
+
+def norm_class(c: Optional[str]) -> str:
+    """'H1B' / 'h-1b' → 'H-1B'; 'TD' stays."""
+    c = re.sub(r"\s", "", str(c or "")).upper()
+    return re.sub(r"^([A-Z])-?(\d)", r"\1-\2", c)
 
 
 # ── Fact extraction ──────────────────────────────────────────────────────────
@@ -101,6 +118,14 @@ def node_type(doc_type: str, raw: str, fields: Dict, form: str) -> str:
         return "ead"
     if doc_type in ("green_card", "permanent_resident_card") or "PERMANENT RESIDENT" in head:
         return "green_card"
+    if doc_type == "i20" or "FORM I-20" in head or "CERTIFICATE OF ELIGIBILITY FOR NONIMMIGRANT STUDENT" in head:
+        return "i20"
+    if doc_type == "ds2019" or "DS-2019" in head:
+        return "ds2019"
+    if doc_type == "marriage_certificate" or "MARRIAGE" in head[:200] and "CERTIFICATE" in head[:200]:
+        return "marriage_certificate"
+    if doc_type == "birth_certificate" or "BIRTH" in head[:200] and "CERTIFICATE" in head[:200]:
+        return "birth_certificate"
     if "ETA-9035" in head or "LABOR CONDITION" in head:
         return "lca"
     if "ETA-9089" in head:
@@ -119,7 +144,7 @@ def extract_facts(ntype: str, raw: str, fields: Dict, name: str) -> Dict[str, An
     f["a_number"] = _labelled(raw, r"A-?Number|Alien (?:Registration )?Number|USCIS ?#|A#", r"A?-?(\d{3}[- ]?\d{3}[- ]?\d{3}|\d{8})")
     f["i94_number"] = _labelled(raw, r"I-94 (?:Number|No\.?|Record Number)|Admission \(I-94\) Record Number", r"(\d{9}[A-Z0-9]{2})")
     f["visa_class"] = (fields.get("visa_class") if fields.get("visa_class") not in (None, "OF") else None) or \
-        _labelled(raw, r"Class of Admission|Class|Visa Type|Category", r"([A-Z]{1,2}-?\d[A-Z]?|[A-Z]{2,3}\d?)\b")
+        _labelled(raw, r"Class of Admission|Class|Visa Type|Category", r"(?-i:([A-Z]{1,2}-?\d[A-Z]?|[A-Z]{2,3}\d?))\b")
     if f["a_number"]:
         f["a_number"] = re.sub(r"\D", "", f["a_number"])
     dob = _labelled(raw, r"Date of Birth|Birth Date|DOB", _DATE)
@@ -221,9 +246,11 @@ def rebuild(db: Session, tenant: str) -> Dict[str, int]:
         "SELECT DISTINCT person_key FROM imm_nodes WHERE tenant_id = :t AND person_key <> ''"), {"t": tenant})]
     counts = {"nodes": len(seen), "people": len(people), "edges": 0, "checks": 0}
     for pk in people:
-        e, c = _link_and_check(db, tenant, pk)
+        e, _ = _link_and_check(db, tenant, pk)
         counts["edges"] += e
-        counts["checks"] += c
+    counts["family"] = propose_family(db, tenant)
+    for pk in people:
+        counts["checks"] += run_checks(db, tenant, pk)
     db.commit()
     return counts
 
@@ -385,6 +412,7 @@ def run_checks(db: Session, tenant: str, pk: str, today: Optional[date] = None) 
                 f"{case['label']} needs: {names}." + ("" if p.get("reviewed") else " (Suggested list — attorney review pending.)"),
                 [], {"case_id": case["id"], "missing": missing})
 
+    _family_checks(db, tenant, pk, nodes, add, today)
     return _save_checks(db, tenant, pk, found)
 
 
@@ -423,6 +451,212 @@ def _save_checks(db, tenant, pk, found: Dict[str, Dict]) -> int:
     return len(found)
 
 
+# ── Family ───────────────────────────────────────────────────────────────────
+
+def person_class(nodes: List[Dict]) -> str:
+    """The person's current class, from the newest approval or I-94 (e.g. 'H-4')."""
+    best = None
+    for n in nodes:
+        if n["node_type"] in ("i797_approval", "i94") and value(n, "visa_class") and value(n, "valid_to"):
+            if not best or value(n, "valid_to") > value(best, "valid_to"):
+                best = n
+    return norm_class(value(best, "visa_class")) if best else ""
+
+
+def status_until(nodes: List[Dict]) -> Optional[str]:
+    """When the person's own status ends: the I-94 if there is one (it governs), else the latest approval."""
+    i94 = [value(n, "valid_to") for n in nodes if n["node_type"] == "i94" and value(n, "valid_to")]
+    if i94:
+        return max(i94)
+    st = [value(n, "valid_to") for n in nodes if n["node_type"] == "i797_approval" and value(n, "valid_to")]
+    return max(st) if st else None
+
+
+def family_links(db: Session, tenant: str, pk: str, states=("proposed", "confirmed")) -> List[Dict]:
+    rows = db.execute(text("""SELECT * FROM imm_family WHERE tenant_id = :t AND (person_a = :pk OR person_b = :pk)
+                              AND state = ANY(:st) ORDER BY created_at"""), {"t": tenant, "pk": pk, "st": list(states)})
+    out = []
+    for r in rows:
+        d = dict(r._mapping)
+        d["other"] = d["person_b"] if d["person_a"] == pk else d["person_a"]
+        out.append(d)
+    return out
+
+
+def _pk_for_name(db: Session, tenant: str, name: str) -> Optional[str]:
+    want = _norm("name", name)
+    if not want:
+        return None
+    for r in db.execute(text("SELECT person_key, facts FROM imm_nodes WHERE tenant_id = :t AND person_key <> '' AND facts ? 'name'"),
+                        {"t": tenant}):
+        if _norm("name", value({"facts": r.facts}, "name")) == want:
+            return r.person_key
+    return None
+
+
+def _propose(db, tenant, a, b, relation, basis) -> int:
+    if not a or not b or a == b:
+        return 0
+    r = db.execute(text("""INSERT INTO imm_family (id, tenant_id, person_a, person_b, relation, state, basis)
+                           VALUES (:id, :t, :a, :b, :r, 'proposed', :basis)
+                           ON CONFLICT (tenant_id, LEAST(person_a, person_b), GREATEST(person_a, person_b)) DO NOTHING"""),
+                   {"id": _id(), "t": tenant, "a": a, "b": b, "r": relation, "basis": basis})
+    return r.rowcount or 0
+
+
+_SPOUSE_LABELS = r"Husband|Groom|Bride|Wife|Spouse(?: ?[12AB])?|Party(?: ?[12AB])?|Name of (?:Husband|Wife|Groom|Bride)"
+
+
+def _form_part_names(path: str) -> Dict[str, str]:
+    """Names per form part in a filled USCIS PDF ({'Pt2': 'Daniel Ramirez', 'Pt4': 'Sofia Ramirez'})."""
+    out: Dict[str, Dict[str, str]] = {}
+    if not path or not path.lower().endswith(".pdf"):
+        return {}
+    try:
+        import fitz
+        with fitz.open(path) as d:
+            for page in d:
+                for w in page.widgets() or []:
+                    leaf, v = (w.field_name or "").split(".")[-1], (w.field_value or "").strip()
+                    pm = re.match(r"(?:Pt|Part|P)(\d+)", leaf)
+                    kind = "last" if re.search(r"_(FamilyName|LastName)\[", leaf) else "first" if re.search(r"_(GivenName|FirstName)\[", leaf) else ""
+                    if v and kind and pm:
+                        out.setdefault(f"Pt{pm.group(1)}", {}).setdefault(kind, v)
+    except Exception:
+        return {}
+    return {p: f"{n['first']} {n['last']}".title() for p, n in out.items() if n.get("first") and n.get("last")}
+
+
+def propose_family(db: Session, tenant: str) -> int:
+    """Suggest family links from documents; the lawyer confirms. Never overrides a decision."""
+    from app.services.immigration_workflow_service import _clean_name
+    made = 0
+    rows = db.execute(text("""SELECT n.person_key, n.node_type, d.raw_text, d.file_path FROM imm_nodes n
+                              JOIN documents d ON d.id::text = n.document_id
+                              WHERE n.tenant_id = :t AND n.node_type IN ('marriage_certificate', 'form_i130', 'form_i129f')"""),
+                      {"t": tenant}).fetchall()
+    for r in rows:
+        if r.node_type == "marriage_certificate":
+            word = rf"(?!(?:{_SPOUSE_LABELS}|Date|Place)\b)[A-Z][A-Za-z'\-]+"     # a name word that is not the next label
+            names = [_clean_name(m.group(1)) for m in re.finditer(rf"(?:{_SPOUSE_LABELS})\s*[:\-]?\s*({word}(?: {word}){{1,3}})", r.raw_text or "")]
+            keys = [k for k in dict.fromkeys(_pk_for_name(db, tenant, n) for n in names if n) if k]
+            if len(keys) >= 2:
+                made += _propose(db, tenant, keys[0], keys[1], "spouse", "Both named on the marriage certificate")
+        else:
+            parts = _form_part_names(r.file_path)
+            pet, ben = (parts.get("Pt2"), parts.get("Pt4")) if r.node_type == "form_i130" else (parts.get("Pt1"), parts.get("Pt2"))
+            a, b = _pk_for_name(db, tenant, pet or ""), _pk_for_name(db, tenant, ben or "")
+            rel = "relative" if r.node_type == "form_i130" else "fiance"
+            made += _propose(db, tenant, a, b, rel, f"Petitioner and beneficiary on {'Form I-130' if rel == 'relative' else 'Form I-129F'}")
+    # A dependent status and its principal status with the same family name
+    deps = dependents()
+    people: Dict[str, Tuple[str, str]] = {}
+    for pk in [x.person_key for x in db.execute(text("SELECT DISTINCT person_key FROM imm_nodes WHERE tenant_id=:t AND person_key <> ''"), {"t": tenant})]:
+        nodes = _nodes(db, tenant, pk)
+        name = next((value(n, "name") for n in nodes if value(n, "name")), "")
+        people[pk] = (person_class(nodes), (name.split() or [""])[-1].lower())
+    for pk, (cls, last) in people.items():
+        principal = deps.get(cls)
+        if not principal or not last:
+            continue
+        for qk, (qcls, qlast) in people.items():
+            if qk != pk and qcls == principal and qlast == last:
+                made += _propose(db, tenant, pk, qk, "spouse", f"{cls} and {principal} with the same family name")
+    db.commit()
+    return made
+
+
+def link_family(db: Session, tenant: str, a: str, b: str, relation: str, reason: str, actor: str) -> Dict:
+    reason = _require_reason(reason)
+    if relation not in RELATIONS:
+        raise ValueError(f"Relation must be one of: {', '.join(RELATIONS)}")
+    if not a or not b or a == b:
+        raise ValueError("Choose two different people")
+    db.execute(text("""INSERT INTO imm_family (id, tenant_id, person_a, person_b, relation, state, basis, decided_by, decided_at, reason)
+                       VALUES (:id, :t, :a, :b, :r, 'confirmed', 'Linked by lawyer', :by, now(), :reason)
+                       ON CONFLICT (tenant_id, LEAST(person_a, person_b), GREATEST(person_a, person_b))
+                       DO UPDATE SET relation = :r, state = 'confirmed', decided_by = :by, decided_at = now(), reason = :reason"""),
+               {"id": _id(), "t": tenant, "a": a, "b": b, "r": relation, "by": actor, "reason": reason})
+    _log(db, tenant, a, "link_family", b, None, {"relation": relation}, reason, actor)
+    _log(db, tenant, b, "link_family", a, None, {"relation": relation}, reason, actor)
+    run_checks(db, tenant, a); run_checks(db, tenant, b)
+    db.commit()
+    return person_graph(db, tenant, a)
+
+
+def decide_family(db: Session, tenant: str, link_id: str, decision: str, reason: Optional[str], actor: str,
+                  relation: Optional[str] = None, viewer: Optional[str] = None) -> Dict:
+    row = db.execute(text("SELECT * FROM imm_family WHERE tenant_id=:t AND id=:id"), {"t": tenant, "id": link_id}).fetchone()
+    if not row:
+        raise LookupError("family link")
+    if decision not in ("confirm", "reject"):
+        raise ValueError("Decision must be confirm or reject")
+    if decision == "reject":
+        reason = _require_reason(reason)
+    rel = relation if relation in RELATIONS else row.relation
+    state = "confirmed" if decision == "confirm" else "rejected"
+    db.execute(text("UPDATE imm_family SET state=:s, relation=:r, decided_by=:a, decided_at=now(), reason=:reason WHERE id=:id"),
+               {"s": state, "r": rel, "a": actor, "reason": reason, "id": link_id})
+    for me, other in ((row.person_a, row.person_b), (row.person_b, row.person_a)):
+        _log(db, tenant, me, f"{decision}_family", other, {"state": row.state, "relation": row.relation},
+             {"state": state, "relation": rel}, reason, actor)
+    run_checks(db, tenant, row.person_a); run_checks(db, tenant, row.person_b)
+    db.commit()
+    return person_graph(db, tenant, viewer or row.person_a)
+
+
+def _family_checks(db: Session, tenant: str, pk: str, nodes: List[Dict], add, today: date):
+    deps = dependents()
+    mine = person_class(nodes)
+    my_until = status_until(nodes)
+    linked = [l for l in family_links(db, tenant, pk, ("confirmed",))]
+    principal_found = False
+    for l in linked:
+        other = _nodes(db, tenant, l["other"])
+        if not other:
+            continue
+        oname = next((value(n, "name") for n in other if value(n, "name")), "the family member")
+        ocls, ountil = person_class(other), status_until(other)
+        if mine and deps.get(mine) == ocls:              # I depend on them
+            principal_found = True
+            if ountil and my_until and my_until > ountil:
+                add(f"family:outlasts:{l['other']}", "dependent_outlasts_principal", "warning",
+                    f"{mine} status runs to {_fmt(my_until)}, past {oname}'s {ocls} ({_fmt(ountil)}). "
+                    f"A dependent status ends with the principal's.", [], {"other": l["other"]})
+            if ountil:
+                days = (date.fromisoformat(ountil) - today).days
+                if days < 0:
+                    add(f"family:principal_expired:{l['other']}", "principal_expired", "blocker",
+                        f"{oname}'s {ocls} ended {_fmt(ountil)}. This {mine} status depends on it.", [], {"other": l["other"]})
+                elif days <= 180:
+                    add(f"family:principal_expiring:{l['other']}", "principal_expiring", "warning",
+                        f"{oname}'s {ocls} ends {_fmt(ountil)} — in {days} days. This {mine} status depends on it; "
+                        f"extend both together.", [], {"other": l["other"], "days": days})
+        elif ocls and deps.get(ocls) == mine and my_until:   # they depend on me
+            days = (date.fromisoformat(my_until) - today).days
+            if days <= 180:
+                add(f"family:dependent_affected:{l['other']}", "dependent_affected", "info",
+                    f"{oname}'s {ocls} depends on this {mine} status, which ends {_fmt(my_until)}.", [], {"other": l["other"]})
+    if mine in deps and not principal_found:
+        add("family:no_principal", "no_principal", "info",
+            f"In {mine} status, but no {deps[mine]} principal is linked. Link the family member so both are checked together.", [])
+    # what the matter needs from the principal
+    pats = patterns()
+    for case in _cases_for(db, tenant, pk, [n for n in nodes if n["node_type"] != "status_period"]):
+        need = (pats.get(case["case_type"]) or {}).get("principal") or []
+        if not need:
+            continue
+        principals = [l["other"] for l in linked]
+        have = {n["node_type"] for o in principals for n in _nodes(db, tenant, o)}
+        missing = [t for t in need if t not in have]
+        if missing:
+            names = ", ".join(TYPE_LABEL.get(t, t.replace("_", " ")) for t in missing)
+            who = "the linked principal" if principals else "a linked principal (none linked yet)"
+            add(f"missing_principal:{case['id']}", "missing_principal_document", "info",
+                f"{case['label']} needs from {who}: {names}. (Suggested — attorney review pending.)", [],
+                {"case_id": case["id"], "missing": missing})
+
+
 # ── Read ─────────────────────────────────────────────────────────────────────
 
 def person_graph(db: Session, tenant: str, pk: str) -> Dict:
@@ -437,7 +671,20 @@ def person_graph(db: Session, tenant: str, pk: str) -> Dict:
     log = [dict(r._mapping) for r in db.execute(text(
         "SELECT * FROM imm_graph_log WHERE tenant_id = :t AND person_key = :pk ORDER BY at DESC LIMIT 50"), {"t": tenant, "pk": pk})]
     name = next((value(n, "name") for n in nodes if value(n, "name")), "")
-    return {"person_key": pk, "name": name, "nodes": nodes, "edges": edges, "checks": checks, "log": log}
+    family = []
+    for l in family_links(db, tenant, pk):
+        other = _nodes(db, tenant, l["other"])
+        family.append({**l, "name": next((value(n, "name") for n in other if value(n, "name")), ""),
+                       "class": person_class(other), "status_until": status_until(other)})
+    # a dependent can't stay past the principal: the earlier date is the real limit
+    cls, until, limited_by = person_class(nodes), status_until(nodes), None
+    principal = dependents().get(cls)
+    for f in family:
+        if principal and f["state"] == "confirmed" and f["class"] == principal and f["status_until"] \
+                and (not until or f["status_until"] < until):
+            until, limited_by = f["status_until"], f"{f['name']}'s {principal}"
+    return {"person_key": pk, "name": name, "class": cls, "status_until": until, "limited_by": limited_by,
+            "nodes": nodes, "edges": edges, "checks": checks, "family": family, "log": log}
 
 
 def people(db: Session, tenant: str) -> List[Dict]:

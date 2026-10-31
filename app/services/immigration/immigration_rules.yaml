@@ -131,6 +131,213 @@ case_types:
       - "Passport photos"
       - "Proof of U.S. status (I-797 / visa / I-94)"
 
+  h1b_cap:
+    label: "H-1B new (cap) petition"
+    form: I-129
+    visa_class: H-1B
+    intake_sections: [personal, immigration, employment, education]
+    evidence:
+      - "H-1B registration selection notice"
+      - "Certified Labor Condition Application (ETA-9035)"
+      - "Employer support letter / job description"
+      - "Degree certificate and transcripts (or credential evaluation)"
+      - "Passport"
+      - "Current status documents (I-94, I-20 / EAD if in the US)"
+  h1b_amendment:
+    label: "H-1B amendment (worksite or job change)"
+    form: I-129
+    visa_class: H-1B
+    intake_sections: [personal, immigration, employment]
+    evidence:
+      - "New certified LCA for the new worksite"
+      - "Current I-797 approval notice"
+      - "Updated job description / client letter"
+      - "Recent pay stubs"
+  l1:
+    label: "L-1A / L-1B intracompany transferee"
+    form: I-129
+    visa_class: L-1
+    intake_sections: [personal, immigration, employment, education]
+    evidence:
+      - "Proof of one year of employment abroad with the related company in the last three years"
+      - "Evidence of the qualifying relationship between the companies"
+      - "Organisation charts (US and abroad)"
+      - "Job descriptions abroad and in the US (managerial / specialized knowledge)"
+      - "Passport"
+  l2:
+    label: "L-2 dependent"
+    form: I-539
+    visa_class: L-2
+    intake_sections: [personal, immigration, family]
+    evidence:
+      - "Passport"
+      - "Principal's L-1 approval and I-94"
+      - "Marriage certificate (spouse) or birth certificate (child)"
+  o1:
+    label: "O-1 extraordinary ability"
+    form: I-129
+    visa_class: O-1
+    intake_sections: [personal, immigration, employment, education]
+    evidence:
+      - "Evidence meeting at least three O-1 criteria (awards, publications, judging, high salary …)"
+      - "Advisory opinion (consultation) from a peer group or labor organisation"
+      - "Itinerary and contracts for the period requested"
+      - "Passport"
+  o3:
+    label: "O-3 dependent"
+    form: I-539
+    visa_class: O-3
+    intake_sections: [personal, immigration, family]
+    evidence:
+      - "Passport"
+      - "Principal's O-1 approval"
+      - "Marriage or birth certificate"
+  tn:
+    label: "TN (USMCA professional)"
+    form: I-129
+    visa_class: TN
+    intake_sections: [personal, immigration, employment, education]
+    evidence:
+      - "Proof of Canadian or Mexican citizenship"
+      - "Offer letter describing a USMCA profession"
+      - "Degree / licence required for the profession"
+  td:
+    label: "TD dependent"
+    form: I-539
+    visa_class: TD
+    intake_sections: [personal, immigration, family]
+    evidence:
+      - "Passport"
+      - "Principal's TN approval or I-94"
+      - "Marriage or birth certificate"
+  e3:
+    label: "E-3 (Australian specialty occupation)"
+    form: I-129
+    visa_class: E-3
+    intake_sections: [personal, immigration, employment, education]
+    evidence:
+      - "Australian passport"
+      - "Certified Labor Condition Application (ETA-9035)"
+      - "Offer letter / job description"
+      - "Degree certificate"
+  e2:
+    label: "E-2 treaty investor"
+    form: I-129
+    visa_class: E-2
+    intake_sections: [personal, immigration, employment]
+    evidence:
+      - "Passport showing treaty nationality"
+      - "Evidence of the investment and its source of funds"
+      - "Business plan and company documents"
+  f1_opt:
+    label: "F-1 OPT (post-completion work permit)"
+    form: I-765
+    visa_class: F-1
+    intake_sections: [personal, immigration, education]
+    evidence:
+      - "I-20 with the DSO's OPT recommendation"
+      - "Passport and I-94"
+      - "Two passport-style photos"
+  stem_opt:
+    label: "F-1 STEM OPT extension"
+    form: I-765
+    visa_class: F-1
+    file_window_days: 90           # file within 90 days before the current OPT EAD expires
+    intake_sections: [personal, immigration, education, employment]
+    evidence:
+      - "I-20 with the STEM OPT recommendation"
+      - "Form I-983 training plan signed by the employer"
+      - "Current OPT EAD"
+      - "STEM degree certificate"
+      - "Employer's E-Verify number"
+  j1:
+    label: "J-1 exchange visitor"
+    form: "DS-2019 (sponsor)"
+    visa_class: J-1
+    intake_sections: [personal, immigration, education]
+    evidence:
+      - "DS-2019 from the program sponsor"
+      - "Passport"
+      - "SEVIS fee receipt"
+      - "Note: 212(e) two-year home residency requirement may apply"
+  j2:
+    label: "J-2 dependent"
+    form: "DS-2019 (sponsor)"
+    visa_class: J-2
+    intake_sections: [personal, immigration, family]
+    evidence:
+      - "Own DS-2019"
+      - "Passport"
+      - "Marriage or birth certificate"
+  b_extension:
+    label: "B-1 / B-2 visitor extension"
+    form: I-539
+    visa_class: B-2
+    intake_sections: [personal, immigration]
+    evidence:
+      - "Most recent I-94 (file before it expires)"
+      - "Passport"
+      - "Reason for the extension and proof of funds"
+      - "Return ticket or travel plans"
+  r1:
+    label: "R-1 religious worker"
+    form: I-129
+    visa_class: R-1
+    intake_sections: [personal, immigration, employment]
+    evidence:
+      - "Evidence of the religious organisation's tax-exempt status"
+      - "Proof of two years' membership in the denomination"
+      - "Job offer and compensation details"
+  eb1a:
+    label: "EB-1A extraordinary ability green card"
+    form: I-140
+    intake_sections: [personal, immigration, employment, education]
+    evidence:
+      - "Evidence meeting at least three of the ten criteria, or a major internationally recognised award"
+      - "Expert recommendation letters"
+      - "Evidence of continuing work in the field"
+  eb1b_eb1c:
+    label: "EB-1B researcher / EB-1C multinational manager"
+    form: I-140
+    intake_sections: [personal, immigration, employment, education]
+    evidence:
+      - "Permanent job offer (EB-1B) or proof of managerial role abroad and in the US (EB-1C)"
+      - "Publications, citations and recommendation letters (EB-1B)"
+      - "Organisation charts and corporate relationship evidence (EB-1C)"
+  eb2_niw:
+    label: "EB-2 National Interest Waiver"
+    form: I-140
+    intake_sections: [personal, immigration, employment, education]
+    evidence:
+      - "Advanced degree or exceptional ability evidence"
+      - "Proposed endeavour statement and its national importance"
+      - "Recommendation letters and record of achievement"
+  eb5:
+    label: "EB-5 immigrant investor"
+    form: I-526E
+    intake_sections: [personal, immigration, employment, history]
+    evidence:
+      - "Proof of investment"
+      - "Lawful source-of-funds documentation"
+      - "Regional center / project documents"
+  k1:
+    label: "K-1 fiancé(e)"
+    form: I-129F
+    intake_sections: [personal, family, history]
+    evidence:
+      - "Petitioner's proof of U.S. citizenship"
+      - "Evidence the couple met in person within the last two years"
+      - "Statements of intent to marry within 90 days"
+      - "Proof prior marriages ended"
+  i751:
+    label: "Remove conditions on residence"
+    form: I-751
+    file_window_days: 90           # file in the 90 days before the 2-year card expires
+    intake_sections: [personal, family]
+    evidence:
+      - "Conditional green card (front and back)"
+      - "Evidence of the ongoing marriage (joint tax returns, lease, accounts, children's birth certificates)"
+      - "Marriage certificate"
 intake_sections:
   personal:
     title: "About you"

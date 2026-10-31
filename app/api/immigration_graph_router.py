@@ -72,3 +72,17 @@ def decide_check(check_id: str, request: Request, user: dict = Depends(get_curre
     if body.get("decision") == "use_value":
         return _guard(graph.resolve_identity, db, _t(), check_id, body.get("value"), body.get("reason"), _actor(user))
     return _guard(graph.decide_check, db, _t(), check_id, body.get("decision"), body.get("reason"), _actor(user))
+
+
+@router.post("/family")
+def link_family(request: Request, user: dict = Depends(get_current_user), body: dict = Body(...), db: Session = Depends(get_db)):
+    """Link two people (spouse, child, parent, fiance, relative) — confirmed, with a reason."""
+    return _guard(graph.link_family, db, _t(), body.get("person_a"), body.get("person_b"), body.get("relation"),
+                  body.get("reason"), _actor(user))
+
+
+@router.post("/family/{link_id}")
+def decide_family(link_id: str, request: Request, user: dict = Depends(get_current_user), body: dict = Body(...),
+                  db: Session = Depends(get_db)):
+    return _guard(graph.decide_family, db, _t(), link_id, body.get("decision"), body.get("reason"), _actor(user),
+                  body.get("relation"), body.get("viewer"))

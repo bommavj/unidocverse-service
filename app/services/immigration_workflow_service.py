@@ -33,6 +33,9 @@ _NOT_NAMES = {"visa", "passport", "uscis", "notice", "approval", "receipt", "app
 
 def _clean_name(v: str) -> str:
     """A person's name or '' — table cells, dates and form labels are rejected, not guessed around."""
+    # text extraction often runs the next form label into the name: "Priya Mehta Class H-4", "Arjun Mehta Wife: …"
+    v = re.split(r"\s+(?:Class|Valid|Receipt|Notice|Date|I-94|Petitioner|Beneficiary|Applicant|Case|Received|"
+                 r"Husband|Wife|Spouse|Bride|Groom|Party|Place|Nationality|Sex|DOB)\b", v or "")[0]
     if "|" in (v or ""):                       # spilled across table cells: partial names are worse than none
         return ""
     v = re.split(r"\n|\s{3,}", v or "")[0]

@@ -1,47 +1,74 @@
 # Document-graph patterns: which documents a matter of each case type needs, so missing ones show
-# as a check on the client. Keys match case_types in immigration_rules.yaml.
+# as a check on the person. Keys match case_types in immigration_rules.yaml.
 #
 # General practice, NOT legal advice. `reviewed: false` patterns are shown to the lawyer as
 # "suggested — attorney review pending"; a firm attorney sets reviewed: true (and edits the lists)
-# before they count as requirements. Node types are the ones graph.py produces.
+# before they count as requirements.
+#
+#   requires   documents the matter cannot be filed without (missing → check)
+#   principal  documents the PRINCIPAL (linked family member) must have (missing → check on the dependent)
+#   recommends shown as suggestions only
+#
+# Node types are the ones graph.py produces: passport, i94, visa, i797_approval, i797_receipt, i797_rfe,
+# i140_approval, lca, perm, ead, green_card, i20, ds2019, marriage_certificate, birth_certificate, form_<form>.
 
-h1b_extension:
-  reviewed: false
-  requires: [passport, i94, i797_approval, lca]
-  recommends: [pay_stub, support_letter]
-h1b_transfer:
-  reviewed: false
-  requires: [passport, i94, i797_approval, lca, offer_letter]
-  recommends: [pay_stub]
-h4_extension:
-  reviewed: false
-  requires: [passport, i94, marriage_certificate]
-  principal: [i797_approval]
-h4_ead:
-  reviewed: false
-  requires: [passport, i94]
-  principal: [i140_approval]
-ead_renewal:
-  reviewed: false
-  requires: [passport, ead]
-i140:
-  reviewed: false
-  requires: [passport, perm]
-  recommends: [degree, experience_letter]
-i485:
-  reviewed: false
-  requires: [passport, i94, birth_certificate, i140_approval]
-  recommends: [medical_exam]
-i130:
-  reviewed: false
-  requires: [passport, birth_certificate]
-  recommends: [marriage_certificate]
-i90:
-  reviewed: false
-  requires: [green_card]
-n400:
-  reviewed: false
-  requires: [green_card, passport]
-passport_renewal:
-  reviewed: false
-  requires: [passport]
+# A dependent's status lasts only as long as the principal's (checked when family members are linked).
+dependents:
+  H-4: H-1B
+  L-2: L-1
+  O-3: O-1
+  TD: TN
+  J-2: J-1
+  F-2: F-1
+  E-3D: E-3
+  E-2: E-2
+  R-2: R-1
+  P-4: P-1
+
+patterns:
+  # ── Temporary work ─────────────────────────────────────────────────────────
+  h1b_cap:          { reviewed: false, requires: [passport, lca], recommends: [degree, support_letter] }
+  h1b_extension:    { reviewed: false, requires: [passport, i94, i797_approval, lca], recommends: [pay_stub, support_letter] }
+  h1b_transfer:     { reviewed: false, requires: [passport, i94, i797_approval, lca], recommends: [pay_stub, offer_letter] }
+  h1b_amendment:    { reviewed: false, requires: [i797_approval, lca] }
+  l1:               { reviewed: false, requires: [passport], recommends: [org_chart, employment_letter] }
+  o1:               { reviewed: false, requires: [passport], recommends: [advisory_opinion, award_evidence] }
+  tn:               { reviewed: false, requires: [passport], recommends: [offer_letter, degree] }
+  e3:               { reviewed: false, requires: [passport, lca], recommends: [offer_letter, degree] }
+  e2:               { reviewed: false, requires: [passport], recommends: [investment_evidence, business_plan] }
+  r1:               { reviewed: false, requires: [passport], recommends: [tax_exempt_letter] }
+
+  # ── Dependents (need the linked principal's documents) ─────────────────────
+  h4_extension:     { reviewed: false, requires: [passport, i94, marriage_certificate], principal: [i797_approval] }
+  h4_ead:           { reviewed: false, requires: [passport, i94], principal: [i140_approval] }
+  l2:               { reviewed: false, requires: [passport, marriage_certificate], principal: [i797_approval] }
+  o3:               { reviewed: false, requires: [passport], principal: [i797_approval] }
+  td:               { reviewed: false, requires: [passport], principal: [i94] }
+  j2:               { reviewed: false, requires: [passport, ds2019], principal: [ds2019] }
+
+  # ── Students, exchange, visitors ───────────────────────────────────────────
+  f1_opt:           { reviewed: false, requires: [passport, i94, i20] }
+  stem_opt:         { reviewed: false, requires: [passport, i20, ead], recommends: [i983, degree] }
+  j1:               { reviewed: false, requires: [passport, ds2019] }
+  b_extension:      { reviewed: false, requires: [passport, i94] }
+
+  # ── Work authorization ─────────────────────────────────────────────────────
+  ead_renewal:      { reviewed: false, requires: [passport, ead] }
+
+  # ── Green card, employment ─────────────────────────────────────────────────
+  i140:             { reviewed: false, requires: [passport, perm], recommends: [degree, experience_letter] }
+  eb1a:             { reviewed: false, requires: [passport], recommends: [award_evidence, recommendation_letters] }
+  eb1b_eb1c:        { reviewed: false, requires: [passport], recommends: [org_chart, recommendation_letters] }
+  eb2_niw:          { reviewed: false, requires: [passport], recommends: [degree, recommendation_letters] }
+  eb5:              { reviewed: false, requires: [passport], recommends: [investment_evidence, source_of_funds] }
+  i485:             { reviewed: false, requires: [passport, i94, birth_certificate, i140_approval], recommends: [medical_exam] }
+
+  # ── Green card, family ─────────────────────────────────────────────────────
+  i130:             { reviewed: false, requires: [passport, birth_certificate], recommends: [marriage_certificate] }
+  k1:               { reviewed: false, requires: [passport], recommends: [meeting_evidence] }
+  i751:             { reviewed: false, requires: [green_card, marriage_certificate] }
+
+  # ── After the green card ───────────────────────────────────────────────────
+  i90:              { reviewed: false, requires: [green_card] }
+  n400:             { reviewed: false, requires: [green_card, passport] }
+  passport_renewal: { reviewed: false, requires: [passport] }
