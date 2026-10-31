@@ -1,0 +1,47 @@
+# Document-graph patterns: which documents a matter of each case type needs, so missing ones show
+# as a check on the client. Keys match case_types in immigration_rules.yaml.
+#
+# General practice, NOT legal advice. `reviewed: false` patterns are shown to the lawyer as
+# "suggested — attorney review pending"; a firm attorney sets reviewed: true (and edits the lists)
+# before they count as requirements. Node types are the ones graph.py produces.
+
+h1b_extension:
+  reviewed: false
+  requires: [passport, i94, i797_approval, lca]
+  recommends: [pay_stub, support_letter]
+h1b_transfer:
+  reviewed: false
+  requires: [passport, i94, i797_approval, lca, offer_letter]
+  recommends: [pay_stub]
+h4_extension:
+  reviewed: false
+  requires: [passport, i94, marriage_certificate]
+  principal: [i797_approval]
+h4_ead:
+  reviewed: false
+  requires: [passport, i94]
+  principal: [i140_approval]
+ead_renewal:
+  reviewed: false
+  requires: [passport, ead]
+i140:
+  reviewed: false
+  requires: [passport, perm]
+  recommends: [degree, experience_letter]
+i485:
+  reviewed: false
+  requires: [passport, i94, birth_certificate, i140_approval]
+  recommends: [medical_exam]
+i130:
+  reviewed: false
+  requires: [passport, birth_certificate]
+  recommends: [marriage_certificate]
+i90:
+  reviewed: false
+  requires: [green_card]
+n400:
+  reviewed: false
+  requires: [green_card, passport]
+passport_renewal:
+  reviewed: false
+  requires: [passport]

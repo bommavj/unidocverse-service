@@ -139,6 +139,16 @@ class ImmigrationWorkflowService:
         self.db = db
 
     def process(self, document: Any, state: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            return self._process(document, state)
+        finally:
+            try:
+                from app.services.immigration import graph
+                graph.rebuild(self.db, str(getattr(document, "tenant_id", "") or get_current_tenant_id() or DEFAULT_TENANT_ID))
+            except Exception as e:
+                logger.warning(f"  document graph update failed: {e}")
+
+    def _process(self, document: Any, state: Dict[str, Any]) -> Dict[str, Any]:
         doc_id = str(document.id)
         if getattr(document, "client_id", None):
             return {"skipped": True, "reason": "already linked"}

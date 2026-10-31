@@ -60,6 +60,7 @@ from app.api.guardrails_router import router as guardrails_router
 from app.api.immigration_router import router as immigration_router
 from app.api.vendor_compliance_router import router as vendor_compliance_router
 from app.api.immigration_suite_router import router as immigration_suite_router, public as immigration_public_router
+from app.api.immigration_graph_router import router as immigration_graph_router
 # Feature routers that existed but were never registered (their pages showed "not found" → empty)
 from app.api.claims_router import router as claims_router
 from app.api.matters_router import router as matters_router
@@ -196,6 +197,10 @@ async def lifespan(app: FastAPI):
         db = SessionLocal()
         try:
             logger.info(f"✅ Immigration client scan: {scan_existing(db)}")
+            from sqlalchemy import text as _sql
+            from app.services.immigration import graph as _graph
+            for (_tid,) in db.execute(_sql("SELECT DISTINCT tenant_id::text FROM documents WHERE tenant_id IS NOT NULL")):
+                _graph.rebuild(db, _tid)
         except Exception as _e:
             logger.warning(f"⚠ Immigration client scan skipped: {_e}")
         finally:
@@ -339,6 +344,7 @@ app.include_router(domain_workflow_router,       **_protected)
 app.include_router(approvals_router,             **_protected)
 app.include_router(vendor_compliance_router,     **_protected)
 app.include_router(immigration_suite_router,     **_protected)
+app.include_router(immigration_graph_router,     **_protected)
 app.include_router(immigration_public_router)    # public — client links authenticate by token
 for _r in (claims_router, matters_router, quote_router, clm_router, audit_router, risk_router, jurisdiction_router,
            export_router, insurance_automation_router):
