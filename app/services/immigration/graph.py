@@ -280,9 +280,12 @@ def _edge(db, tenant, a, b, etype, state, basis, conf=1.0) -> int:
     r = db.execute(text("""
         INSERT INTO imm_edges (id, tenant_id, from_node, to_node, edge_type, state, confidence, basis)
         VALUES (:id, :t, :a, :b, :e, :s, :c, :basis)
-        ON CONFLICT (tenant_id, from_node, to_node, edge_type) DO NOTHING"""),
+        ON CONFLICT (tenant_id, from_node, to_node, edge_type) DO UPDATE SET basis = EXCLUDED.basis
+            WHERE imm_edges.decided_by IS NULL AND imm_edges.basis IS DISTINCT FROM EXCLUDED.basis
+        RETURNING (xmax = 0) AS inserted"""),     # refresh the system's wording; a lawyer's decision is left alone
         {"id": _id(), "t": tenant, "a": a, "b": b, "e": etype, "s": state, "c": conf, "basis": basis})
-    return r.rowcount or 0
+    row = r.fetchone()
+    return 1 if row and row.inserted else 0
 
 
 def _link_and_check(db: Session, tenant: str, pk: str) -> Tuple[int, int]:
@@ -307,7 +310,9 @@ def _link_and_check(db: Session, tenant: str, pk: str) -> Tuple[int, int]:
             kind = {"i94": "Authorized stay (I-94)", "ead": "Work authorization (EAD)",
                     "green_card": "Permanent resident"}.get(n["node_type"], f"{value(n, 'visa_class') or 'Status'} status")
             sid = _status_node(db, tenant, pk, n, kind)
-            made += _edge(db, tenant, n["id"], sid, "grants", "confirmed", f"{n['label']} valid to {value(n, 'valid_to')}")
+            basis = (f"Card renews {value(n, 'valid_to')}; residence itself does not expire" if n["node_type"] == "green_card"
+                     else f"{n['label']} valid to {value(n, 'valid_to')}")
+            made += _edge(db, tenant, n["id"], sid, "grants", "confirmed", basis)
     # A newer document of the same type supersedes the older one (proposed: the lawyer confirms)
     by_type: Dict[str, List[Dict]] = {}
     for n in nodes:
@@ -326,7 +331,8 @@ def _status_node(db, tenant, pk, src: Dict, kind: str) -> str:
                              WHERE e.from_node = :s AND e.edge_type = 'grants' AND n.tenant_id = :t"""),
                      {"s": src["id"], "t": tenant}).fetchone()
     facts = {"kind": {"value": kind}, "valid_from": {"value": value(src, "valid_from") or value(src, "entry_date")},
-             "valid_to": {"value": value(src, "valid_to")}}
+             # permanent residence does not end when the card expires; the card date stays on the card (renew with I-90)
+             "valid_to": {"value": None if src["node_type"] == "green_card" else value(src, "valid_to")}}
     if row:
         db.execute(text("UPDATE imm_nodes SET facts = CAST(:f AS jsonb), valid_from=:vf, valid_to=:vt, label=:l, updated_at=now() WHERE id=:id"),
                    {"f": json.dumps(facts), "vf": facts["valid_from"]["value"], "vt": facts["valid_to"]["value"], "l": kind, "id": row.id})
@@ -407,8 +413,9 @@ def run_checks(db: Session, tenant: str, pk: str, today: Optional[date] = None) 
         if days < 0:
             add(f"expired:{k}", "expired", "blocker", f"{n['label']} expired {_fmt(value(n, 'valid_to'))}.", [n["id"]])
         elif days <= 180:
-            add(f"expiring:{k}", "expiring", "warning",
-                f"{n['label']} expires {_fmt(value(n, 'valid_to'))} — in {days} days.", [n["id"]], {"days": days})
+            what = (f"Green card (the card, not residence) expires {_fmt(value(n, 'valid_to'))} — in {days} days. Renew with Form I-90."
+                    if n["node_type"] == "green_card" else f"{n['label']} expires {_fmt(value(n, 'valid_to'))} — in {days} days.")
+            add(f"expiring:{k}", "expiring", "warning", what, [n["id"]], {"days": days})
 
     # 5. What the person's open matters still need (attorney-reviewed patterns count as requirements)
     have = {n["node_type"] for n in docs}
@@ -721,7 +728,9 @@ def person_graph(db: Session, tenant: str, pk: str) -> Dict:
         if principal and f["state"] == "confirmed" and f["class"] == principal and f["status_until"] \
                 and (not until or f["status_until"] < until):
             until, limited_by = f["status_until"], f"{f['name']}'s {principal}"
-    return {"person_key": pk, "name": name, "class": cls, "status_until": until, "limited_by": limited_by,
+    permanent = any(n["node_type"] == "green_card" for n in nodes)
+    return {"person_key": pk, "name": name, "class": cls or ("LPR" if permanent else ""), "status_until": None if permanent else until,
+            "permanent": permanent, "limited_by": limited_by,
             "nodes": nodes, "edges": edges, "checks": checks, "family": family, "log": log}
 
 

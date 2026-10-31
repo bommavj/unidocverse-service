@@ -289,7 +289,7 @@ class ProcessingService:
                 db.refresh(doc)
                 if doc.client_id and doc.doc_type in (
                     "uscis_receipt", "immigration_receipt", "immigration_document",
-                    "visa_document", "i94", "h1b", "ead", "i797", "i140", "passport",
+                    "visa_document", "green_card", "i94", "h1b", "ead", "i797", "i140", "passport",
                 ):
                     from app.services.immigration_service import upsert_immigration_from_doc
                     from app.services.immigration_cross_linker import reason as cross_link_reason

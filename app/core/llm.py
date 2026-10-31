@@ -58,7 +58,7 @@ for _p in PROVIDERS.values():
 # prices vary by account, so their usage is shown in tokens only.
 PRICES = {"claude-opus-5-5": (4.00, 20.00), "claude-sonnet-5-5": (2.00, 10.00), "claude-haiku-5-5": (0.10, 0.50)}
 
-DEFAULT_BLOCKED_TYPES = ["passport", "visa_document", "birth_certificate", "uscis_receipt", "immigration_notice",
+DEFAULT_BLOCKED_TYPES = ["passport", "visa_document", "green_card", "birth_certificate", "uscis_receipt", "immigration_notice",
                          "w2", "form_1040", "medical_record", "government_id", "drivers_license", "ssn_card"]
 DEFAULT_POLICY = {"ask_before_send": True, "mask_identifiers": True, "blocked_types": DEFAULT_BLOCKED_TYPES,
                   "cascade_local_first": True,       # answer locally first; use the cloud only if that fails

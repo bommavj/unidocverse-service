@@ -18,7 +18,7 @@ from datetime import date
 from typing import Dict, List, Optional
 
 IMMIGRATION_DOC_TYPES = ["uscis_receipt", "immigration_receipt", "immigration_document", "visa_document", "visa", "passport",
-                         "passport_document", "i94", "ead", "i797", "h1b", "i140"]
+                         "passport_document", "i94", "ead", "i797", "h1b", "i140", "green_card"]
 
 _URGENCY_LABEL = {"expired": "🔴 Expired", "critical": "🔴 Critical", "high": "🟠 Expiring Soon",
                   "medium": "🟡 Renew Soon", "low": "🟢 Valid", "unknown": "⚪ Unknown"}

@@ -422,7 +422,7 @@ DOC_TYPES = [
 
     # Government / Public Sector
     "tax_form", "uscis_receipt", "government_form", "passport_document",
-    "visa_document", "public_notice",
+    "visa_document", "green_card", "public_notice",
 
     # Education
     "transcript", "education_certificate",
@@ -1635,6 +1635,8 @@ Return JSON:
     _CONTENT_SIGNATURES = [
         (r"CDTFA-?230|BOE-?230|\bresale certificate\b", "resale_certificate"),
         (r"CDTFA-?401|BOE-?401|sales and use tax return", "sales_tax_return"),
+        # Green card (Form I-551): its category code (IR1, EB2 …) otherwise reads like a visa class
+        (r"permanent\s+resident\s+card|resident\s+alien\s+card|\bform\s+I-?551\b|\bresident\s+since\b", "green_card"),
         # US visa foil: machine-readable line "VNUSA…" / "VCUSA…", or the printed field labels
         (r"\bV[NC]USA[A-Z<&]|visa\s*type\s*/?\s*class.{0,80}issue\s*date|issuing\s*post\s*name", "visa_document"),
     ]
@@ -1658,6 +1660,7 @@ Return JSON:
         (["receipt"],                                  "receipt",               0.85),
         (["purchase_order", "purchase-order"],         "purchase_order",        0.85),
         (["w2", "w-2"],                                "w2",                    0.90),
+        (["green card", "green_card", "green-card", "greencard", "permanent resident card", "i-551", "i551"], "green_card", 0.92),
         (["1099"],                                     "tax_form",              0.90),
         (["1040"],                                     "tax_return",            0.90),
         (["dec-page", "dec_page", "declarations"],     "declarations_page",     0.88),
