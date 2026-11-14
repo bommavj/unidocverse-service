@@ -342,47 +342,47 @@ intake_sections:
   personal:
     title: "About you"
     fields:
-      - {key: full_name, label: "Full legal name (as on passport)", required: true}
-      - {key: other_names, label: "Other names used"}
-      - {key: date_of_birth, label: "Date of birth", type: date, required: true}
-      - {key: country_of_birth, label: "Country of birth", required: true}
-      - {key: citizenship, label: "Country of citizenship", required: true}
-      - {key: passport_number, label: "Passport number", sensitive: true}
-      - {key: passport_expiry, label: "Passport expiration date", type: date}
-      - {key: us_address, label: "Current U.S. address", type: textarea}
-      - {key: phone, label: "Phone"}
-      - {key: email, label: "Email", type: email}
+      - {key: full_name, label: "Full legal name (as on passport)", required: true, check: name, hint: "Exactly as printed on the photo page of your passport."}
+      - {key: other_names, label: "Other names used", hint: "Maiden name, nicknames or spellings used on other documents. Leave blank if none."}
+      - {key: date_of_birth, label: "Date of birth", type: date, required: true, check: dob}
+      - {key: country_of_birth, label: "Country of birth", required: true, check: country}
+      - {key: citizenship, label: "Country of citizenship", required: true, check: country, hint: "The country that issued your passport."}
+      - {key: passport_number, label: "Passport number", sensitive: true, check: passport, hint: "On the photo page of your passport, usually next to your photo."}
+      - {key: passport_expiry, label: "Passport expiration date", type: date, check: future, hint: "On the photo page. Most visas need a passport valid for at least 6 months."}
+      - {key: us_address, label: "Current U.S. address", type: textarea, hint: "Where you live now: street, apartment, city, state and ZIP."}
+      - {key: phone, label: "Phone", check: phone, hint: "A number where your legal team can reach you."}
+      - {key: email, label: "Email", type: email, check: email}
       - {key: marital_status, label: "Marital status", type: select, options: [Single, Married, Divorced, Widowed]}
   immigration:
     title: "Your immigration status"
     fields:
-      - {key: a_number, label: "A-Number (if any)", sensitive: true}
-      - {key: current_status, label: "Current status / visa class (e.g. H-1B)"}
-      - {key: status_expiry, label: "Status expiration (I-94 / I-797 date)", type: date}
-      - {key: i94_number, label: "Most recent I-94 number", sensitive: true}
-      - {key: last_entry_date, label: "Date of last entry to the U.S.", type: date}
-      - {key: last_entry_port, label: "Port of last entry"}
+      - {key: a_number, label: "A-Number (if any)", sensitive: true, check: a_number, hint: "8 or 9 digits, printed on a green card, work permit (EAD) or USCIS notices. Leave blank if you have none."}
+      - {key: current_status, label: "Current status / visa class (e.g. H-1B)", hint: "For example H-1B, H-4, F-1, L-1 or green card."}
+      - {key: status_expiry, label: "Status expiration (I-94 / I-797 date)", type: date, check: sane, hint: "The “valid until” date on your I-797 approval notice, or “admit until” on your I-94."}
+      - {key: i94_number, label: "Most recent I-94 number", sensitive: true, check: i94, hint: "11 letters and numbers. Get it free at i94.cbp.dhs.gov (choose “Get most recent I-94”)."}
+      - {key: last_entry_date, label: "Date of last entry to the U.S.", type: date, check: past, hint: "The date you last arrived in the U.S. It is on your I-94 record."}
+      - {key: last_entry_port, label: "Port of last entry", hint: "The city or airport where you entered, for example Newark, NJ."}
   employment:
     title: "Employment"
     fields:
       - {key: employer, label: "Current employer"}
       - {key: job_title, label: "Job title"}
-      - {key: employment_start, label: "Start date", type: date}
-      - {key: annual_salary, label: "Annual salary (USD)", type: number}
-      - {key: work_address, label: "Work site address", type: textarea}
+      - {key: employment_start, label: "Start date", type: date, check: sane}
+      - {key: annual_salary, label: "Annual salary (USD)", type: number, check: money, hint: "Your gross yearly pay before tax, in US dollars. Numbers only."}
+      - {key: work_address, label: "Work site address", type: textarea, hint: "The street address where you actually work, including city, state and ZIP."}
   education:
     title: "Education"
     fields:
       - {key: highest_degree, label: "Highest degree"}
       - {key: field_of_study, label: "Field of study"}
       - {key: university, label: "University"}
-      - {key: graduation_year, label: "Year awarded", type: number}
+      - {key: graduation_year, label: "Year awarded", type: number, check: year}
   family:
     title: "Family"
     fields:
       - {key: spouse_name, label: "Spouse's full name"}
-      - {key: spouse_dob, label: "Spouse's date of birth", type: date}
-      - {key: marriage_date, label: "Date of marriage", type: date}
+      - {key: spouse_dob, label: "Spouse's date of birth", type: date, check: dob}
+      - {key: marriage_date, label: "Date of marriage", type: date, check: past}
       - {key: children, label: "Children (name and date of birth, one per line)", type: textarea}
   history:
     title: "History"

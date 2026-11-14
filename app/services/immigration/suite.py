@@ -19,6 +19,8 @@ from typing import Dict, List, Optional
 import yaml
 from sqlalchemy import text
 
+from app.services.immigration import validate
+
 _RULES = Path(__file__).with_name("immigration_rules.yaml")
 CASE_FIELDS = {"beneficiary", "petitioner", "case_type", "visa_class", "status", "receipt_number", "filed_date",
                "priority_date", "decision_date", "rfe_due_date", "expiry_date", "notes", "client_id"}
@@ -473,6 +475,15 @@ def intake_by_token(db, token: str) -> Optional[Dict]:
     return _row(r) if r else None
 
 
+def firm_name(db, tenant_id: str) -> str:
+    try:
+        r = db.execute(text("SELECT name FROM tenants WHERE id = :t"), {"t": tenant_id}).fetchone()
+        return (r[0] if r and r[0] else "Your legal team")
+    except Exception:
+        db.rollback()
+        return "Your legal team"
+
+
 def submit_intake(db, token: str, answers: Dict, final: bool) -> Dict:
     it = intake_by_token(db, token)
     if not it or it["status"] == "submitted":
@@ -483,6 +494,9 @@ def submit_intake(db, token: str, answers: Dict, final: bool) -> Dict:
         missing = [allowed[k]["label"] for k, f in allowed.items() if f.get("required") and not clean.get(k)]
         if missing:
             raise ValueError("Please answer: " + "; ".join(missing))
+        bad = validate.check_all(allowed, clean)
+        if bad:
+            raise ValueError("Please correct: " + "; ".join(f"{allowed[k]['label']} — {m}" for k, m in bad.items()))
     db.execute(text("UPDATE imm_intakes SET answers = CAST(:a AS jsonb), status = :s, submitted_at = :at WHERE id = :id"),
                {"a": json.dumps(clean), "s": "submitted" if final else "in_progress",
                 "at": datetime.utcnow() if final else None, "id": it["id"]})

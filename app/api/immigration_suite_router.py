@@ -6,6 +6,7 @@ Immigration suite API.
 """
 import html
 import json
+from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
@@ -14,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.tenant_scope import current_tenant
-from app.services.immigration import suite
+from app.services.immigration import suite, validate
 
 router = APIRouter(prefix="/api/immigration-suite", tags=["immigration-suite"])
 public = APIRouter(prefix="/public/imm", tags=["immigration-public"])
@@ -302,18 +303,74 @@ def translate(body: dict = Body(...)):
 # ── Public client pages ───────────────────────────────────────────────────────
 
 _CSS = """
-:root{--ink:#0f172a;--muted:#475569;--line:#e2e8f0;--accent:#4338ca;--bg:#f8fafc}
-*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif}
+:root{--ink:#1d1d1f;--muted:#6e6e73;--line:#e5e5ea;--accent:#0071e3;--bg:#f5f5f7}
+*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,'SF Pro Text','Inter','Segoe UI',sans-serif}
 main{max-width:720px;margin:0 auto;padding:32px 16px} h1{font-size:22px;margin:0 0 4px} .sub{color:var(--muted);margin:0 0 24px}
 section{background:#fff;border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin-bottom:16px}
 h2{font-size:16px;margin:0 0 12px} label{display:block;font-size:13px;font-weight:600;margin:12px 0 4px}
 input,select,textarea{width:100%;padding:9px 10px;border:1px solid #cbd5e1;border-radius:6px;font:inherit}
-textarea{min-height:70px} input:focus,select:focus,textarea:focus{outline:2px solid #a5b4fc;border-color:var(--accent)}
+textarea{min-height:70px} input:focus,select:focus,textarea:focus{outline:4px solid rgba(0,113,227,.18);border-color:var(--accent)}
 .req{color:#b91c1c} .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
 button{padding:10px 18px;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:#fff;font:inherit;font-weight:600;cursor:pointer}
 button.sec{background:#fff;color:var(--accent)} button:focus-visible{outline:2px solid #a5b4fc;outline-offset:2px}
 .msg{padding:12px 14px;border-radius:8px;margin-bottom:16px} .ok{background:#ecfdf5;color:#065f46} .err{background:#fef2f2;color:#991b1b}
 .note{font-size:12px;color:var(--muted)} .tr{display:block;font-weight:400;color:var(--muted);font-size:12px}
+ main{max-width:640px}
+.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:28px}
+.brand{font-weight:700;font-size:17px;letter-spacing:-.2px}.tag{font-size:12px;color:var(--muted);background:#fff;border:1px solid var(--line);border-radius:99px;padding:3px 10px}
+h1{font-size:26px;letter-spacing:-.4px}
+.prog{margin:0 0 20px}.bar{height:6px;background:#e2e8f0;border-radius:99px;overflow:hidden}.bar i{display:block;height:100%;width:0;background:var(--accent);border-radius:99px;transition:width .25s}
+.lbl{font-size:12px;color:var(--muted);margin-top:6px}
+section.step{box-shadow:0 1px 2px rgba(15,23,42,.04),0 8px 24px rgba(15,23,42,.05);border-radius:14px;padding:22px 24px}
+section.step[hidden]{display:none} h2{font-size:18px;margin:0 0 6px;letter-spacing:-.2px}
+.fld{margin-top:16px}.fld label{margin:0 0 5px}.hint{font-size:12px;color:var(--muted);margin-top:4px}
+.ferr{font-size:12px;color:#b91c1c;margin-top:4px;min-height:0}.fld.bad input,.fld.bad select,.fld.bad textarea{border-color:#dc2626;background:#fef2f2}
+.fld.good input{border-color:#16a34a}
+input,select,textarea{font-size:16px;padding:11px 12px;border-radius:8px}
+.row{align-items:center;margin-top:20px}.row #next,.row #submit{margin-left:auto} button{padding:12px 24px;border-radius:980px}
+button[hidden]{display:none}
+#review dl{margin:12px 0;display:grid;grid-template-columns:42% 1fr;gap:8px 14px;font-size:14px}#review dt{color:var(--muted)}#review dd{margin:0;font-weight:600;word-break:break-word}
+#review h3{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:18px 0 0}
+@media(max-width:520px){main{padding:20px 12px}section.step{padding:18px 16px}#review dl{grid-template-columns:1fr}.row{flex-direction:column;align-items:stretch}.row #next,.row #submit{margin-left:0}}
+"""
+
+_INTAKE_JS = r"""
+const f=document.getElementById('f'),msg=document.getElementById('msg'),steps=[...f.querySelectorAll('.step')];
+let cur=0;const today=new Date().toISOString().slice(0,10);
+const canon=v=>{v=v.trim().toLowerCase();if(CFG.aliases[v])return CFG.aliases[v];return CFG.countries.find(c=>c.toLowerCase()===v)||null};
+function check(el){const v=(el.value||'').trim(),n=el.dataset.check;
+ if(!v)return el.dataset.req?'This answer is required.':'';
+ if(!n)return '';
+ if(n==='country')return canon(v)?'':CFG.msg.country;
+ if(CFG.patterns[n]){let x=v;if(['passport','i94','a_number'].includes(n))x=v.toUpperCase();if(['passport','i94'].includes(n))x=x.replace(/ /g,'');
+  const ok=new RegExp(CFG.patterns[n][0],'i').test(x)&&((v.match(/\d/g)||[]).length>=(CFG.need[n]||0));return ok?'':CFG.patterns[n][1]}
+ if(CFG.dates[n]){const d=new Date(v);if(isNaN(d)||d.getFullYear()<1900||d.getFullYear()>new Date().getFullYear()+30)return CFG.dates.sane;
+  if(n==='dob'&&(v>=today||(Date.now()-d)/864e5<16*365))return CFG.dates.dob;if(n==='past'&&v>today)return CFG.dates.past;if(n==='future'&&v<today)return CFG.dates.future;return ''}
+ if(n==='year'){const y=+v;return(/^\d{4}$/.test(v)&&y>=1950&&y<=new Date().getFullYear()+6)?'':CFG.msg.year}
+ if(n==='money'){const m=parseFloat(v.replace(/,/g,''));return(m>=1&&m<=1e7)?'':CFG.msg.money}
+ return ''}
+function show(el,m){const w=el.closest('.fld');w.classList.toggle('bad',!!m);w.classList.toggle('good',!m&&!!el.value.trim());document.getElementById('e_'+el.id).textContent=m||''}
+function stepOk(n){let ok=true,first=null;steps[n].querySelectorAll('input,select,textarea').forEach(el=>{const m=check(el);show(el,m);if(m){ok=false;first=first||el}});if(first)first.focus();return ok}
+f.querySelectorAll('input,select,textarea').forEach(el=>{el.addEventListener('blur',()=>{if(el.value.trim()||el.closest('.fld').classList.contains('bad'))show(el,check(el))});
+ el.addEventListener('input',()=>{if(el.closest('.fld').classList.contains('bad'))show(el,check(el))})});
+function review(){let h='';steps.slice(0,-1).forEach(s=>{h+='<h3>'+s.querySelector('h2').firstChild.textContent+'</h3><dl>';
+ s.querySelectorAll('.fld').forEach(w=>{const el=w.querySelector('input,select,textarea'),v=el.value.trim();
+  h+='<dt>'+w.querySelector('label').firstChild.textContent+'</dt><dd>'+(v?v.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])):'<span style="color:#94a3b8;font-weight:400">Not answered</span>')+'</dd>'});h+='</dl>'});
+ document.getElementById('review').innerHTML=h}
+function go(n){cur=Math.max(0,Math.min(steps.length-1,n));steps.forEach((s,i)=>s.hidden=i!==cur);if(cur===steps.length-1)review();
+ const last=cur===steps.length-1;document.getElementById('back').hidden=cur===0;document.getElementById('next').hidden=last;document.getElementById('submit').hidden=!last;
+ document.getElementById('bar').style.width=((cur+1)/steps.length*100)+'%';
+ document.getElementById('plabel').textContent=last?'Last step: review':'Step '+(cur+1)+' of '+steps.length;window.scrollTo(0,0)}
+function collect(){const a={};new FormData(f).forEach((v,k)=>{let x=String(v).trim();const el=document.getElementById(k);if(el&&el.dataset.check==='country'&&canon(x))x=canon(x);if(el&&['passport','i94','a_number'].includes(el.dataset.check))x=x.toUpperCase().replace(/ /g,'');a[k]=x});return a}
+async function send(final){const r=await fetch(location.pathname,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answers:collect(),final})});
+ const j=await r.json().catch(()=>({}));msg.className='msg '+(r.ok?'ok':'err');
+ msg.textContent=r.ok?(final?'Submitted. Thank you, your legal team has your answers.':'Saved. You can come back to this link later.'):(j.detail||'Something went wrong');
+ if(r.ok&&final){f.remove();document.querySelector('.prog').remove()}window.scrollTo(0,0)}
+document.getElementById('next').onclick=()=>{if(stepOk(cur))go(cur+1)};
+document.getElementById('back').onclick=()=>go(cur-1);
+document.getElementById('save').onclick=()=>send(false);
+f.addEventListener('submit',e=>{e.preventDefault();for(let i=0;i<steps.length-1;i++){if(!stepOk(i)){go(i);return}}send(true)});
+go(0);
 """
 
 
@@ -351,7 +408,7 @@ def intake_page(token: str, db: Session = Depends(get_db)):
     idx = iter(range(n_labels))
     answers = it.get("answers") or {}
     secs = []
-    for s in schema:
+    for n, s in enumerate(schema):
         i = next(idx)
         head = html.escape(s["title"]) + (f"<span class='tr'>{html.escape(tr[i])}</span>" if tr else "")
         fields = []
@@ -361,31 +418,44 @@ def intake_page(token: str, db: Session = Depends(get_db)):
                 + (f"<span class='tr'>{html.escape(tr[j])}</span>" if tr else "")
             val = html.escape(str(answers.get(f["key"], "")))
             name, typ = html.escape(f["key"]), f.get("type", "text")
+            chk = html.escape(f.get("check", ""))
+            attrs = f"id='{name}' name='{name}' data-check='{chk}'" + (" data-req='1'" if f.get("required") else "")
             if typ == "textarea":
-                ctl = f"<textarea id='{name}' name='{name}'>{val}</textarea>"
+                ctl = f"<textarea {attrs}>{val}</textarea>"
             elif typ == "select":
                 opts = "".join(f"<option{' selected' if o == answers.get(f['key']) else ''}>{html.escape(o)}</option>"
                                for o in [""] + f.get("options", []))
-                ctl = f"<select id='{name}' name='{name}'>{opts}</select>"
+                ctl = f"<select {attrs}>{opts}</select>"
             else:
                 t = {"date": "date", "number": "number", "email": "email"}.get(typ, "text")
-                ctl = f"<input id='{name}' name='{name}' type='{t}' value='{val}' autocomplete='off'>"
-            fields.append(f"<label for='{name}'>{lab}</label>{ctl}")
-        secs.append(f"<section><h2>{head}</h2>{''.join(fields)}</section>")
+                extra = " list='countries'" if f.get("check") == "country" else ""
+                extra += " inputmode='numeric'" if typ == "number" else ""
+                extra += " max='%s'" % date.today().isoformat() if f.get("check") in ("dob", "past") else ""
+                ctl = f"<input {attrs} type='{t}' value='{val}' autocomplete='off'{extra}>"
+            hint = f"<div class='hint'>{html.escape(f['hint'])}</div>" if f.get("hint") else ""
+            fields.append(f"<div class='fld'><label for='{name}'>{lab}</label>{ctl}{hint}<div class='ferr' id='e_{name}'></div></div>")
+        secs.append(f"<section class='step' data-n='{n}' hidden><h2>{head}</h2>{''.join(fields)}</section>")
     case_label = html.escape(suite.rules()["case_types"][it["case_type"]]["label"])
-    body = f"""<h1>Immigration questionnaire</h1><p class="sub">{case_label} · for {html.escape(it['beneficiary'])}</p>
-<div id="msg"></div><form id="f">{''.join(secs)}
-<div class="row"><button type="submit">Submit answers</button><button type="button" class="sec" id="save">Save and finish later</button></div>
-<p class="note">Your answers go only to your legal team. Fields marked * are required to submit.</p></form>
-<script>
-const f=document.getElementById('f'),msg=document.getElementById('msg');
-async function send(final){{const a={{}};new FormData(f).forEach((v,k)=>a[k]=v);
- const r=await fetch(location.pathname,{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{answers:a,final}})}});
- const j=await r.json().catch(()=>({{}}));
- msg.className='msg '+(r.ok?'ok':'err');msg.textContent=r.ok?(final?'Submitted — thank you.':'Saved. You can come back to this link later.'):(j.detail||'Something went wrong');
- if(r.ok&&final)f.remove();window.scrollTo(0,0);}}
-f.addEventListener('submit',e=>{{e.preventDefault();send(true)}});document.getElementById('save').onclick=()=>send(false);
-</script>"""
+    who = html.escape(it["beneficiary"])
+    firm = html.escape(suite.firm_name(db, it["tenant_id"]))
+    countries = "".join(f"<option value=\"{html.escape(c)}\">" for c in validate.COUNTRIES)
+    cfg = json.dumps({"patterns": {k: [v[0], v[1]] for k, v in validate.PATTERNS.items()},
+                      "need": validate.NEED_DIGITS, "dates": validate.DATE_RULES, "msg": validate.MESSAGES,
+                      "countries": validate.COUNTRIES, "aliases": validate.ALIASES, "total": len(schema)}).replace("</", "<\\/")
+    body = f"""<header class="top"><div class="brand">{firm}</div><div class="tag">Secure questionnaire</div></header>
+<h1>Hello {who}</h1><p class="sub">{case_label}. It takes about {max(3, len(schema) * 2)} minutes. You can save and come back to this link any time.</p>
+<div class="prog"><div class="bar"><i id="bar"></i></div><div class="lbl" id="plabel"></div></div>
+<div id="msg" role="status"></div>
+<form id="f" novalidate>{''.join(secs)}
+<section class="step" data-n="{len(schema)}" hidden><h2>Review and submit</h2><div id="review"></div>
+<p class="note">Check your answers, then submit. Your answers go only to your legal team.</p></section>
+<div class="row"><button type="button" class="sec" id="back">Back</button>
+<button type="button" class="sec" id="save">Save and finish later</button>
+<button type="button" id="next">Next</button><button type="submit" id="submit" hidden>Submit answers</button></div>
+<p class="note">Fields marked <span class="req">*</span> are required. Your connection is private and your answers are shared only with {firm}.</p></form>
+<datalist id="countries">{countries}</datalist>
+<script>const CFG={cfg};
+{_INTAKE_JS}</script>"""
     return _page("Immigration questionnaire", body)
 
 
